@@ -23,6 +23,7 @@ from app.storage.repositories import (
     DownloadJobRepository,
     RuntimeSettingsRepository,
     SingleFlightRepository,
+    TelegramDeliveryRepository,
     TelegramFileCacheRepository,
     TrackRepository,
     TrackSourceRepository,
@@ -41,6 +42,7 @@ class Repositories:
     runtime_settings: RuntimeSettingsRepository
     singleflight: SingleFlightRepository
     telegram_cache: TelegramFileCacheRepository
+    telegram_delivery: TelegramDeliveryRepository
 
 
 class Database:
@@ -82,6 +84,7 @@ class Database:
             runtime_settings=RuntimeSettingsRepository(session),
             singleflight=SingleFlightRepository(session),
             telegram_cache=TelegramFileCacheRepository(session),
+            telegram_delivery=TelegramDeliveryRepository(session),
         )
 
     @staticmethod
@@ -110,6 +113,10 @@ class Database:
             message = str(exc).lower()
             return (
                 "unique constraint failed: track_sources.provider, track_sources.provider_track_id"
+            ) in message or (
+                "unique constraint failed: telegram_delivery_requests.telegram_bot_id, "
+                "telegram_delivery_requests.telegram_chat_id, "
+                "telegram_delivery_requests.source_message_id"
             ) in message
         if not isinstance(exc, OperationalError):
             return False

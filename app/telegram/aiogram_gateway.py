@@ -19,7 +19,12 @@ from aiogram.utils.token import TokenValidationError
 
 from app.core.enums import QueueErrorCode, TelegramMediaKind
 from app.core.models import TelegramBotIdentity, TelegramUploadReceipt
-from app.telegram.gateway import TelegramGatewayError, TelegramUploadSpec
+from app.telegram.gateway import (
+    TelegramCachedMediaSpec,
+    TelegramDeliveryReceipt,
+    TelegramGatewayError,
+    TelegramUploadSpec,
+)
 
 
 class AiogramTelegramGateway:
@@ -32,6 +37,10 @@ class AiogramTelegramGateway:
             ) from None
         self._identity: TelegramBotIdentity | None = None
         self._identity_lock = asyncio.Lock()
+
+    @property
+    def bot(self) -> Bot:
+        return self._bot
 
     async def get_bot_identity(self) -> TelegramBotIdentity:
         if self._identity is not None:
@@ -79,6 +88,27 @@ class AiogramTelegramGateway:
             )
         return _receipt(identity, message, TelegramMediaKind.DOCUMENT)
 
+    async def send_cached_audio(self, spec: TelegramCachedMediaSpec) -> TelegramDeliveryReceipt:
+        try:
+            message = await self._bot.send_audio(chat_id=spec.chat_id, audio=spec.file_id)
+        except TelegramAPIError as exc:
+            raise _normalized_error(exc, cached_send=True) from None
+        return TelegramDeliveryReceipt(message.chat.id, message.message_id)
+
+    async def send_cached_document(self, spec: TelegramCachedMediaSpec) -> TelegramDeliveryReceipt:
+        try:
+            message = await self._bot.send_document(chat_id=spec.chat_id, document=spec.file_id)
+        except TelegramAPIError as exc:
+            raise _normalized_error(exc, cached_send=True) from None
+        return TelegramDeliveryReceipt(message.chat.id, message.message_id)
+
+    async def send_text(self, chat_id: int, text: str) -> TelegramDeliveryReceipt:
+        try:
+            message = await self._bot.send_message(chat_id=chat_id, text=text)
+        except TelegramAPIError as exc:
+            raise _normalized_error(exc) from None
+        return TelegramDeliveryReceipt(message.chat.id, message.message_id)
+
     async def close(self) -> None:
         await self._bot.session.close()
 
@@ -100,7 +130,7 @@ def _receipt(
     )
 
 
-def _normalized_error(exc: TelegramAPIError) -> TelegramGatewayError:
+def _normalized_error(exc: TelegramAPIError, *, cached_send: bool = False) -> TelegramGatewayError:
     if isinstance(exc, TelegramRetryAfter):
         return TelegramGatewayError(
             QueueErrorCode.TELEGRAM_RATE_LIMITED.value,
@@ -118,5 +148,18 @@ def _normalized_error(exc: TelegramAPIError) -> TelegramGatewayError:
             QueueErrorCode.TELEGRAM_PERMISSION_DENIED.value, retryable=False
         )
     if isinstance(exc, TelegramBadRequest):
-        return TelegramGatewayError(QueueErrorCode.TELEGRAM_BAD_REQUEST.value, retryable=False)
+        description = str(exc).lower()
+        invalid_cached_file = cached_send and any(
+            marker in description
+            for marker in (
+                "wrong file identifier",
+                "wrong remote file identifier",
+                "file_id is invalid",
+            )
+        )
+        return TelegramGatewayError(
+            QueueErrorCode.TELEGRAM_BAD_REQUEST.value,
+            retryable=False,
+            invalid_cached_file=invalid_cached_file,
+        )
     return TelegramGatewayError(QueueErrorCode.TELEGRAM_BAD_REQUEST.value, retryable=False)

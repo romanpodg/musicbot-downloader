@@ -19,6 +19,7 @@ from app.core.exceptions import (
     InvalidTrackUrl,
     MetadataUnavailable,
     ProviderUnavailable,
+    UnsupportedMediaType,
     UnsupportedProvider,
 )
 from app.core.models import (
@@ -72,7 +73,7 @@ class OnTheSpotProvider(MusicProvider):
         if reference is not None:
             return reference
         if self._is_known_host(host):
-            raise InvalidTrackUrl()
+            raise UnsupportedMediaType()
         raise UnsupportedProvider()
 
     async def get_metadata(self, url: str) -> NormalizedTrackMetadata:

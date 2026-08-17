@@ -2,6 +2,8 @@
 
 from app.telegram.aiogram_gateway import AiogramTelegramGateway
 from app.telegram.gateway import (
+    TelegramCachedMediaSpec,
+    TelegramDeliveryReceipt,
     TelegramGateway,
     TelegramGatewayError,
     TelegramUploadSpec,
@@ -9,6 +11,8 @@ from app.telegram.gateway import (
 
 __all__ = [
     "AiogramTelegramGateway",
+    "TelegramCachedMediaSpec",
+    "TelegramDeliveryReceipt",
     "TelegramGateway",
     "TelegramGatewayError",
     "TelegramUploadSpec",

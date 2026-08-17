@@ -82,6 +82,8 @@ class Settings(BaseSettings):
     download_workers_max: int = Field(default=8, ge=1)
     upload_workers_default: int = Field(default=3, ge=1)
     upload_workers_max: int = Field(default=10, ge=1)
+    telegram_delivery_workers: int = Field(default=4, ge=1, le=32)
+    telegram_delivery_max_attempts: int = Field(default=3, ge=1, le=20)
     queue_max_size: int = Field(default=1000, ge=1)
 
     default_locale: str = "en"

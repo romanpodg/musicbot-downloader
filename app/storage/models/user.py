@@ -23,8 +23,14 @@ class User(TimestampMixin, Base):
     )
     telegram_language_code: Mapped[str | None] = mapped_column(String(32))
     preferred_locale: Mapped[str | None] = mapped_column(String(32))
-    default_quality: Mapped[QualityProfile | None] = mapped_column(
+    preferred_quality_profile: Mapped[QualityProfile | None] = mapped_column(
         Enum(QualityProfile, native_enum=False, length=16)
     )
     is_banned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utc_now, nullable=False)
+
+    @property
+    def default_quality(self) -> QualityProfile | None:
+        """Compatibility alias for the pre-Stage-9 internal field name."""
+
+        return self.preferred_quality_profile

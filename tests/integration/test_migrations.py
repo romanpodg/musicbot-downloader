@@ -193,3 +193,60 @@ def test_stage8_migration_upgrades_0005_and_round_trips(
         command.check(config)
     finally:
         get_settings.cache_clear()
+
+
+def test_stage9_migration_upgrades_0006_and_round_trips(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    database_path = tmp_path / "stage9.db"
+    database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", database_url)  # type: ignore[attr-defined]
+    get_settings.cache_clear()
+    config = Config("alembic.ini")
+    try:
+        command.upgrade(config, "20260818_0006")
+        with sqlite3.connect(database_path) as connection:
+            connection.execute(
+                "INSERT INTO users "
+                "(telegram_id, role, default_quality, is_banned, last_seen_at, "
+                "created_at, updated_at) "
+                "VALUES (1, 'USER', 'AAC_256', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, "
+                "CURRENT_TIMESTAMP)"
+            )
+        command.upgrade(config, "head")
+        with sqlite3.connect(database_path) as connection:
+            columns = {
+                row[1] for row in connection.execute("PRAGMA table_info('users')").fetchall()
+            }
+            assert "preferred_quality_profile" in columns
+            assert "default_quality" not in columns
+            assert connection.execute(
+                "SELECT preferred_quality_profile FROM users WHERE telegram_id = 1"
+            ).fetchone() == ("AAC_256",)
+            indexes = {
+                row[1]
+                for row in connection.execute(
+                    "PRAGMA index_list('telegram_delivery_requests')"
+                ).fetchall()
+            }
+            assert {
+                "ix_telegram_delivery_claim",
+                "ix_telegram_delivery_subscriber",
+                "ix_telegram_delivery_user",
+            } <= indexes
+        command.check(config)
+        command.downgrade(config, "20260818_0006")
+        with sqlite3.connect(database_path) as connection:
+            tables = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            assert "telegram_delivery_requests" not in tables
+            columns = {
+                row[1] for row in connection.execute("PRAGMA table_info('users')").fetchall()
+            }
+            assert "default_quality" in columns
+        command.upgrade(config, "head")
+        command.check(config)
+    finally:
+        get_settings.cache_clear()

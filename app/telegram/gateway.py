@@ -19,6 +19,18 @@ class TelegramUploadSpec:
     duration_seconds: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class TelegramCachedMediaSpec:
+    chat_id: int
+    file_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class TelegramDeliveryReceipt:
+    chat_id: int
+    message_id: int
+
+
 class TelegramGatewayError(Exception):
     def __init__(
         self,
@@ -26,11 +38,13 @@ class TelegramGatewayError(Exception):
         *,
         retryable: bool,
         retry_after_seconds: float | None = None,
+        invalid_cached_file: bool = False,
     ) -> None:
         super().__init__()
         self.code = code
         self.retryable = retryable
         self.retry_after_seconds = retry_after_seconds
+        self.invalid_cached_file = invalid_cached_file
 
 
 class TelegramGateway(Protocol):
@@ -39,5 +53,13 @@ class TelegramGateway(Protocol):
     async def upload_audio(self, spec: TelegramUploadSpec) -> TelegramUploadReceipt: ...
 
     async def upload_document(self, spec: TelegramUploadSpec) -> TelegramUploadReceipt: ...
+
+    async def send_cached_audio(self, spec: TelegramCachedMediaSpec) -> TelegramDeliveryReceipt: ...
+
+    async def send_cached_document(
+        self, spec: TelegramCachedMediaSpec
+    ) -> TelegramDeliveryReceipt: ...
+
+    async def send_text(self, chat_id: int, text: str) -> TelegramDeliveryReceipt: ...
 
     async def close(self) -> None: ...

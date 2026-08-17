@@ -1,18 +1,41 @@
-"""Reusable Stage 8 service composition; intentionally starts no bot update loop."""
+"""Reusable Stage 8 and Stage 9 application composition roots."""
 
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from typing import cast
+
+from aiogram import Dispatcher
 
 from app.config import Settings
 from app.core.models import TelegramBotIdentity
+from app.i18n import LocalizationService
+from app.providers.base import MusicProvider
+from app.services.artifacts import DownloadArtifactManager
 from app.services.delivery import DeliveryPreparationService
-from app.services.queues import SubscriberLifecycleNotifier
+from app.services.download_pipeline import DownloadPipeline, NativeDownloadBoundary
+from app.services.media import MediaProbe, Transcoder
+from app.services.provider_resolution import ProviderResolver
+from app.services.quality_resolution import QualityResolver
+from app.services.queues import (
+    DownloadQueueService,
+    SubscriberLifecycleNotifier,
+    UploadQueueService,
+    WorkerSettingsService,
+)
+from app.services.singleflight import SingleFlightService, SubscriberNotifier
 from app.services.telegram_cache import TelegramFileCacheService
+from app.services.telegram_delivery import TelegramDeliveryFanoutManager, TelegramDeliveryWorker
+from app.services.telegram_requests import ResolveTrackAdapter, TelegramTrackRequestService
 from app.services.telegram_upload import TelegramCacheUploadExecutor
+from app.services.telegram_users import TelegramUserService
+from app.services.track_resolution import ResolveTrackService
+from app.services.workers import DownloadWorkerBackend, QueueManager, UploadWorkerBackend
 from app.storage import Database
 from app.telegram import AiogramTelegramGateway, TelegramGateway
+from app.telegram.handlers import TelegramHandlerDependencies, create_stage9_router
+from app.telegram.presentation import TelegramPresentation
 
 
 @dataclass(slots=True)
@@ -59,3 +82,132 @@ async def compose_stage8(
             notifier=notifier,
         ),
     )
+
+
+@dataclass(slots=True)
+class Stage9Components:
+    stage8: Stage8Components
+    dispatcher: Dispatcher
+    queue_manager: QueueManager
+    delivery_fanout: TelegramDeliveryFanoutManager
+    provider: MusicProvider
+
+    async def start(self) -> None:
+        await self.queue_manager.start()
+        await self.delivery_fanout.start()
+
+    async def stop(self) -> None:
+        await self.delivery_fanout.stop()
+        await self.queue_manager.stop()
+        await self.provider.close()
+        await self.stage8.close()
+
+
+async def compose_stage9(
+    database: Database,
+    settings: Settings,
+    provider: MusicProvider,
+    *,
+    gateway: TelegramGateway | None = None,
+) -> Stage9Components:
+    """Compose the queue/cache/user-delivery runtime without starting polling."""
+
+    download_wake = asyncio.Event()
+    upload_wake = asyncio.Event()
+    delivery_wake = asyncio.Event()
+    notifier = SubscriberNotifier()
+    artifacts = DownloadArtifactManager(settings.temp_dir)
+    downloads = DownloadQueueService(
+        database,
+        max_size=settings.queue_max_size,
+        wake_event=download_wake,
+        subscriber_notifier=notifier,
+    )
+    uploads = UploadQueueService(
+        database,
+        artifacts,
+        wake_event=upload_wake,
+        subscriber_notifier=notifier,
+    )
+    singleflight = SingleFlightService(
+        database,
+        max_size=settings.queue_max_size,
+        download_wake_event=download_wake,
+        upload_wake_event=upload_wake,
+        notifier=notifier,
+        upload_queue=uploads,
+    )
+    stage8 = await compose_stage8(
+        database,
+        settings,
+        gateway=gateway,
+        download_wake_event=download_wake,
+        notifier=notifier,
+    )
+    pipeline = DownloadPipeline(
+        database,
+        QualityResolver(ProviderResolver(database, provider)),
+        cast(NativeDownloadBoundary, provider),
+        artifacts,
+        MediaProbe(settings.temp_dir, settings.ffprobe_binary),
+        Transcoder(
+            settings.temp_dir,
+            settings.ffmpeg_binary,
+            timeout=settings.transcode_timeout_seconds,
+        ),
+        download_timeout=settings.download_timeout_seconds,
+    )
+    download_backend = DownloadWorkerBackend(
+        database,
+        pipeline,
+        artifacts,
+        wake_event=download_wake,
+        subscriber_notifier=notifier,
+    )
+    upload_backend = UploadWorkerBackend(
+        database,
+        stage8.upload_executor,
+        uploads,
+        wake_event=upload_wake,
+        subscriber_notifier=notifier,
+    )
+    queue_manager = QueueManager(
+        settings,
+        WorkerSettingsService(database, settings),
+        downloads,
+        uploads,
+        download_backend,
+        upload_backend,
+        singleflight=singleflight,
+    )
+    i18n = LocalizationService(settings.supported_locales, settings.default_locale)
+    users = TelegramUserService(database, i18n, owner_id=settings.owner_id)
+    requests = TelegramTrackRequestService(
+        database,
+        ResolveTrackAdapter(
+            ResolveTrackService(database, provider), database=database, provider=provider
+        ),
+        telegram_bot_id=stage8.bot_identity.telegram_bot_id,
+        wake_event=delivery_wake,
+    )
+    dispatcher = Dispatcher()
+    dispatcher.include_router(
+        create_stage9_router(
+            TelegramHandlerDependencies(users, requests, TelegramPresentation(i18n))
+        )
+    )
+    delivery_worker = TelegramDeliveryWorker(
+        database,
+        stage8.delivery_preparation,
+        stage8.telegram_cache,
+        stage8.gateway,
+        i18n,
+        max_attempts=settings.telegram_delivery_max_attempts,
+        wake_event=delivery_wake,
+    )
+    fanout = TelegramDeliveryFanoutManager(
+        delivery_worker,
+        workers=settings.telegram_delivery_workers,
+        wake_event=delivery_wake,
+    )
+    return Stage9Components(stage8, dispatcher, queue_manager, fanout, provider)

@@ -16,6 +16,10 @@ class InvalidTrackUrl(MusicBotError):
     pass
 
 
+class UnsupportedMediaType(InvalidTrackUrl):
+    """A recognized provider URL targets an out-of-scope non-track entity."""
+
+
 class ProviderUnavailable(MusicBotError):
     pass
 

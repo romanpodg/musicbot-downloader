@@ -1,18 +1,21 @@
 # Musicbot Downloader
 
 Production-oriented foundation for a future Telegram music downloader service. This repository
-implements Stage 0 through Stage 8: canonical recording identity, ambiguity-safe matching,
+implements Stage 0 through Stage 9.1: canonical recording identity, ambiguity-safe matching,
 verified cross-provider discovery, runtime provider candidate resolution, quality-dependent
 download planning, safe one-shot execution, persistent asynchronous queue orchestration, and
-durable SingleFlight subscribers, and a bot-scoped Telegram completed-result cache. It does not
-contain the Stage 9 user-facing Telegram bot, handlers, polling/webhooks, or an API.
+durable SingleFlight subscribers, a bot-scoped Telegram completed-result cache, and the
+long-polling user downloader bot with persistent cached-file delivery.
 
 Current delivery roadmap:
 
 - Stage 7: persistent download/upload queues;
 - Stage 7.1: active-work SingleFlight and durable subscribers;
 - Stage 8: Telegram completed-result cache;
-- Stage 9: user Telegram bot — not implemented yet.
+- Stage 9: user Telegram bot runtime and durable user delivery;
+- Stage 9.1: first/default quality selection;
+- Stage 9.2: Track Card and per-track quality choice — not implemented;
+- Stage 9.3: albums — not implemented.
 
 ## Architecture
 
@@ -91,6 +94,20 @@ upstream the numeric `LOG_LEVEL=20`; neither value is changed in the application
 
 `FFMPEG_BINARY` and `FFPROBE_BINARY` may name explicit cross-platform binaries. Blank values use
 normal PATH discovery. `DOWNLOAD_TIMEOUT_SECONDS` and `TRANSCODE_TIMEOUT_SECONDS` must be positive.
+The bot can still start without FFmpeg/ffprobe and serve valid Telegram cache hits. Cache misses
+that require unavailable media tools fail through the existing typed Stage 6 error path.
+
+The real downloader runtime additionally requires:
+
+```env
+BOT_TOKEN=<downloader bot token>
+TELEGRAM_CACHE_CHAT_ID=<private cache chat/channel ID>
+TELEGRAM_DELIVERY_WORKERS=4
+TELEGRAM_DELIVERY_MAX_ATTEMPTS=3
+```
+
+Only the bot runtime requires the Telegram settings; Alembic and non-Telegram developer CLIs do
+not. Delivery worker values are positive and bounded. Never commit the token.
 
 OnTheSpot stores configuration in its platform config directory (normally
 `%APPDATA%/onthespot/otsconfig.json` on Windows or `~/.config/onthespot/otsconfig.json` on Linux)
@@ -330,12 +347,67 @@ a successful replacement upload reactivates the same logical row. There is no ev
 scheduler, negative provider cache, or periodic Telegram validation. A valid hit bypasses music
 provider authentication, provider resolution, downloads, FFmpeg, queues, and Telegram network calls.
 
-The real adapter uses async `aiogram` behind a small `TelegramGateway` (`getMe`, `sendAudio`, and
-`sendDocument`). No Dispatcher, long polling, webhook, commands, callbacks, or user delivery fanout
-is started. `compose_stage8()` builds the gateway, cache service, production upload executor, and
-delivery service for an explicit queue/application lifecycle; `app.main` still starts no daemon.
+The real adapter uses async `aiogram` behind a small `TelegramGateway` (`getMe`, cached-file
+`sendAudio`, cached-file `sendDocument`, and cache-chat uploads). `compose_stage8()` remains the
+lower cache boundary. `compose_stage9()` adds the Dispatcher/router, Stage 7 queue manager, and a
+fixed bounded pool of lease-based delivery workers. Long polling is the only update transport;
+webhooks and inline mode are absent.
 Setup and recovery details are in
 [`docs/stage8-telegram-cache.md`](docs/stage8-telegram-cache.md).
+
+## User Telegram bot (Stage 9 + 9.1)
+
+The supported commands are `/start`, `/help`, `/quality`, and `/language`. The user sends a
+supported single-track URL; free-text search, albums, playlists, podcasts, and group download flows
+are not implemented. The downloader is intentionally private-chat-only for predictable privacy
+and delivery semantics.
+
+On the first real track request, the resolved canonical Track and request identity are persisted
+as `AWAITING_QUALITY` before any download job is created. The four choices are exactly MP3 128,
+MP3 320, AAC 256, and Lossless. The selection becomes `users.preferred_quality_profile`, and the
+same persisted request continues automatically. `/quality` changes only future requests;
+already-active requests retain their selected profile. `/language` sets `preferred_locale`, while
+the Telegram language code continues to synchronize on interactions without overriding that
+manual choice.
+
+```text
+Telegram track URL
+  -> user/locale and canonical Track resolution
+  -> first default-quality selection when missing
+  -> durable telegram_delivery_requests row
+  -> Stage 8 cache-first preparation
+     -> CACHE_HIT: queue cached file_id delivery
+     -> PENDING: persist SingleFlight subscriber and wait durably
+  -> subscriber READY resolves the ACTIVE cache row
+  -> sendAudio(file_id) or sendDocument(file_id)
+  -> DELIVERED and cache last_used_at
+```
+
+Handlers do not wait for downloads. Delivery requests use a SQLite lease and bounded persistent
+retry schedule, including Telegram `retry_after`. A confirmed invalid cached file reference
+invalidates only that cache row and permits one persisted repair cycle. User-blocked, chat,
+network, and rate-limit failures never invalidate shared media. Sending to Telegram and committing
+SQLite cannot be atomic, so a process death after Telegram accepts a send but before the DELIVERED
+commit retains the documented at-least-once duplicate edge case.
+
+Apply migrations and run the single production entry point:
+
+```bash
+uv run alembic upgrade head
+uv run python -m app.main --check
+uv run python -m app.main
+```
+
+Startup verifies that the database is at Alembic head, resolves the bot identity, composes the
+Stage 8 cache uploader, reconciles SingleFlight/queues, starts download/upload workers, starts the
+delivery fanout, and begins polling. Ctrl+C stops polling and fanout, gracefully stops queue
+workers, closes the OnTheSpot child and Telegram session, and disposes database resources.
+
+Authentication with only a subset of supported music providers is valid. Download planning uses
+only providers available at actual execution time; it never requires the provider from the input
+URL to perform the download. Provider availability is re-evaluated during execution. Telegram
+cache hits require no current music-provider authentication, and no background provider-login
+polling is performed.
 
 Source and output files are probed with direct argv-based `ffprobe` execution. Codec, container,
 bitrate, sample rate, bit depth, channels, audio-stream presence, and duration are normalized.
@@ -517,7 +589,6 @@ SQLite-only operations.
   distributed locks are intentionally absent.
 - Telegram upload and cache persistence are not one distributed transaction. A process crash after
   Telegram accepts a file but before SQLite commits can leave an extra cache-chat message on retry.
-- Stage 8 provides the production upload executor and cache-first services, but no long-running
-  queue daemon is started by `app.main`; Stage 9 will own the user-bot lifecycle.
-- User Telegram delivery, handlers, polling/webhooks, bot/admin UI, albums, playlists, cache
-  refresh/eviction, and APIs are intentionally absent.
+- Telegram user delivery is at-least-once across the external-send/SQLite-commit crash window.
+- Track Cards/per-track alternate quality (Stage 9.2), albums (Stage 9.3), admin UI, webhooks,
+  inline mode, publishing-bot integration, deep links/internal API, and cache eviction are absent.
