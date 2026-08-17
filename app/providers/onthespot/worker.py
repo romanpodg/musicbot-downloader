@@ -25,8 +25,10 @@ from typing import Any, TextIO
 from app.providers.onthespot.ipc import (
     GET_METADATA_METHOD,
     INITIALIZE_METHOD,
+    LIST_SEARCHABLE_PROVIDERS_METHOD,
     MAX_MESSAGE_BYTES,
     PROTOCOL_VERSION,
+    SEARCH_TRACKS_METHOD,
     SHUTDOWN_METHOD,
 )
 
@@ -47,6 +49,19 @@ _WIRE_METADATA_KEYS = frozenset(
         "title",
     }
 )
+_SEARCHABLE_SERVICES = frozenset(
+    {
+        "apple_music",
+        "bandcamp",
+        "deezer",
+        "qobuz",
+        "soundcloud",
+        "spotify",
+        "tidal",
+        "youtube_music",
+    }
+)
+_MAX_SEARCH_RESULTS = 10
 
 
 class WorkerError(Exception):
@@ -61,6 +76,8 @@ class OnTheSpotWorker:
         self._accounts: Any = None
         self._parse: Any = None
         self._registry: Any = None
+        self._config: Any = None
+        self._runtime: Any = None
 
     def initialize(self) -> dict[str, Any]:
         if self._initialized:
@@ -71,6 +88,8 @@ class OnTheSpotWorker:
                 self._accounts = importlib.import_module("onthespot.accounts")
                 self._parse = importlib.import_module("onthespot.parse_item")
                 self._registry = importlib.import_module("onthespot.api.registry")
+                self._config = importlib.import_module("onthespot.otsconfig").config
+                self._runtime = importlib.import_module("onthespot.runtimedata")
                 self._accounts.AccountPoolLoader(gui=False).run()
             self._initialized = True
         except Exception as exc:
@@ -117,6 +136,84 @@ class OnTheSpotWorker:
                 if key in raw and _wire_value(raw[key]) is not None
             },
         }
+
+    def list_searchable_providers(self) -> list[str]:
+        if not self._initialized:
+            self.initialize()
+        registered = self._registry.SERVICE_SEARCH_FUNCTIONS
+        return sorted(
+            {
+                str(account.get("service"))
+                for account in self._runtime.account_pool
+                if isinstance(account, Mapping)
+                and account.get("status") == "active"
+                and account.get("service") in registered
+                and account.get("service") in _SEARCHABLE_SERVICES
+            }
+        )
+
+    def search_tracks(self, provider: str, query: str, limit: int) -> list[dict[str, str]]:
+        if not self._initialized:
+            self.initialize()
+        if (
+            provider not in _SEARCHABLE_SERVICES
+            or not query.strip()
+            or len(query) > 1024
+            or isinstance(limit, bool)
+            or not 1 <= limit <= _MAX_SEARCH_RESULTS
+        ):
+            raise WorkerError("unsupported_provider")
+        if provider not in self.list_searchable_providers():
+            code = (
+                "provider_authentication_error"
+                if provider in _AUTHENTICATED_SERVICES
+                else "provider_unavailable"
+            )
+            raise WorkerError(code)
+        search_function = self._registry.SERVICE_SEARCH_FUNCTIONS.get(provider)
+        if search_function is None:
+            raise WorkerError("unsupported_provider")
+        try:
+            with _silence_upstream():
+                token = self._accounts.get_account_token(provider)
+                if provider in _AUTHENTICATED_SERVICES and token is None:
+                    raise WorkerError("provider_authentication_error")
+                previous_limit = self._config.get("max_search_results")
+                self._config.set("max_search_results", limit)
+                try:
+                    raw = search_function(token, query.strip(), ["track"])
+                finally:
+                    self._config.set("max_search_results", previous_limit)
+        except WorkerError:
+            raise
+        except (KeyError, IndexError) as exc:
+            raise WorkerError("provider_authentication_error") from exc
+        except Exception as exc:
+            raise WorkerError("provider_unavailable") from exc
+        if not isinstance(raw, list):
+            raise WorkerError("provider_unavailable")
+
+        candidates: list[dict[str, str]] = []
+        for item in raw:
+            if not isinstance(item, Mapping):
+                continue
+            if item.get("item_service") != provider or item.get("item_type") != "track":
+                continue
+            item_id = item.get("item_id")
+            url = item.get("item_url")
+            if item_id is None or not isinstance(url, str) or not url:
+                continue
+            candidate = {"provider": provider, "provider_track_id": str(item_id), "url": url}
+            title = item.get("item_name")
+            artist = item.get("item_by")
+            if title is not None:
+                candidate["title"] = str(title)
+            if artist is not None:
+                candidate["artist"] = str(artist)
+            candidates.append(candidate)
+            if len(candidates) == limit:
+                break
+        return candidates
 
     @staticmethod
     def _validate_config_location() -> None:
@@ -181,6 +278,7 @@ def _response(request_id: str | None, *, result: Any = None, error: str | None =
 def main() -> int:
     protocol_stdout = sys.stdout.buffer
     worker = OnTheSpotWorker()
+    result: Any
     while True:
         line = sys.stdin.buffer.readline(MAX_MESSAGE_BYTES + 1)
         if not line:
@@ -209,6 +307,19 @@ def main() -> int:
                 if not isinstance(url, str):
                     raise WorkerError("invalid_track_url")
                 result = worker.get_metadata(url)
+            elif method == LIST_SEARCHABLE_PROVIDERS_METHOD:
+                result = worker.list_searchable_providers()
+            elif method == SEARCH_TRACKS_METHOD:
+                provider = params.get("provider")
+                query = params.get("query")
+                limit = params.get("limit")
+                if (
+                    not isinstance(provider, str)
+                    or not isinstance(query, str)
+                    or not isinstance(limit, int)
+                ):
+                    raise WorkerError("unsupported_provider")
+                result = worker.search_tracks(provider, query, limit)
             elif method == SHUTDOWN_METHOD:
                 protocol_stdout.write(_response(request_id, result={"stopped": True}))
                 protocol_stdout.flush()

@@ -23,8 +23,9 @@ def test_provider_enum_migration_converts_existing_rows(
         with sqlite3.connect(database_path) as connection:
             connection.execute(
                 "INSERT INTO tracks "
-                "(id, title, created_at, updated_at) "
-                "VALUES (1, 'Track', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                "(id, title, isrc, created_at, updated_at) "
+                "VALUES (1, 'Song - Live', 'us-abc-12-34567', "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
             )
             connection.execute(
                 "INSERT INTO track_sources "
@@ -36,6 +37,13 @@ def test_provider_enum_migration_converts_existing_rows(
             assert connection.execute("SELECT provider FROM track_sources").fetchone() == (
                 "apple_music",
             )
+            assert connection.execute(
+                "SELECT normalized_title, normalized_artist, isrc FROM tracks"
+            ).fetchone() == ("song", None, "USABC1234567")
+            indexes = {
+                row[1] for row in connection.execute("PRAGMA index_list('tracks')").fetchall()
+            }
+            assert "ix_tracks_normalized_artist_title" in indexes
         command.downgrade(config, "20260817_0001")
         with sqlite3.connect(database_path) as connection:
             assert connection.execute("SELECT provider FROM track_sources").fetchone() == (

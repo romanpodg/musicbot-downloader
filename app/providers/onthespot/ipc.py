@@ -10,4 +10,6 @@ PROTOCOL_VERSION: Final = 1
 
 INITIALIZE_METHOD: Final = "initialize"
 GET_METADATA_METHOD: Final = "get_metadata"
+LIST_SEARCHABLE_PROVIDERS_METHOD: Final = "list_searchable_providers"
+SEARCH_TRACKS_METHOD: Final = "search_tracks"
 SHUTDOWN_METHOD: Final = "shutdown"

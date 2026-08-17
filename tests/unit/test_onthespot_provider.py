@@ -7,6 +7,7 @@ import pytest
 
 from app.core.enums import MusicProviderName
 from app.core.exceptions import InvalidTrackUrl, UnsupportedProvider
+from app.core.models import TrackSearchRequest
 from app.providers.base import ProviderAvailability
 from app.providers.onthespot.provider import OnTheSpotProvider
 
@@ -14,6 +15,7 @@ from app.providers.onthespot.provider import OnTheSpotProvider
 class FakeProcessClient:
     def __init__(self) -> None:
         self.requested_url: str | None = None
+        self.requested_search: tuple[str, str, int] | None = None
         self.was_closed = False
 
     async def availability(self) -> ProviderAvailability:
@@ -37,6 +39,22 @@ class FakeProcessClient:
                 "access_token": "must-not-be-persisted",
             },
         }
+
+    async def list_searchable_providers(self) -> list[str]:
+        return ["deezer", "not_a_provider", "deezer"]
+
+    async def search_tracks(self, provider: str, query: str, limit: int) -> list[Mapping[str, Any]]:
+        self.requested_search = (provider, query, limit)
+        return [
+            {
+                "provider": "deezer",
+                "provider_track_id": "123",
+                "url": "https://www.deezer.com/track/123?tracking=yes",
+                "title": "Search title",
+                "artist": "Search artist",
+            },
+            {"provider": "deezer", "provider_track_id": "bad", "url": "https://bad.invalid"},
+        ]
 
     async def close(self) -> None:
         self.was_closed = True
@@ -117,3 +135,18 @@ async def test_provider_close_delegates_to_process_client() -> None:
     provider = _provider(client)
     await provider.close()
     assert client.was_closed is True
+
+
+@pytest.mark.asyncio
+async def test_search_capabilities_and_candidates_are_normalized() -> None:
+    client = FakeProcessClient()
+    provider = _provider(client)
+    searchable = await provider.list_searchable_providers()
+    candidates = await provider.search_tracks(
+        TrackSearchRequest(MusicProviderName.DEEZER, "Artist Track", 5)
+    )
+    assert searchable == (MusicProviderName.DEEZER,)
+    assert client.requested_search == ("deezer", "Artist Track", 5)
+    assert len(candidates) == 1
+    assert candidates[0].provider_track_id == "123"
+    assert candidates[0].url == "https://www.deezer.com/track/123"

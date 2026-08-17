@@ -22,7 +22,9 @@ from app.providers.onthespot.ipc import (
     DEFAULT_REQUEST_TIMEOUT_SECONDS,
     GET_METADATA_METHOD,
     INITIALIZE_METHOD,
+    LIST_SEARCHABLE_PROVIDERS_METHOD,
     MAX_MESSAGE_BYTES,
+    SEARCH_TRACKS_METHOD,
     SHUTDOWN_METHOD,
 )
 
@@ -74,6 +76,21 @@ class OnTheSpotProcessClient:
     async def get_metadata(self, url: str) -> Mapping[str, Any]:
         result = await self._request(GET_METADATA_METHOD, {"url": url})
         if not isinstance(result, dict):
+            raise MetadataUnavailable()
+        return result
+
+    async def list_searchable_providers(self) -> list[str]:
+        result = await self._request(LIST_SEARCHABLE_PROVIDERS_METHOD, {})
+        if not isinstance(result, list) or not all(isinstance(value, str) for value in result):
+            raise ProviderUnavailable()
+        return result
+
+    async def search_tracks(self, provider: str, query: str, limit: int) -> list[Mapping[str, Any]]:
+        result = await self._request(
+            SEARCH_TRACKS_METHOD,
+            {"provider": provider, "query": query, "limit": limit},
+        )
+        if not isinstance(result, list) or not all(isinstance(value, dict) for value in result):
             raise MetadataUnavailable()
         return result
 

@@ -10,7 +10,12 @@ from urllib.parse import parse_qs, urlsplit
 
 from app.core.enums import MusicProviderName
 from app.core.exceptions import InvalidTrackUrl, MetadataUnavailable, UnsupportedProvider
-from app.core.models import NativeMediaInfo, NormalizedTrackMetadata
+from app.core.models import (
+    NativeMediaInfo,
+    NormalizedTrackMetadata,
+    TrackSearchCandidate,
+    TrackSearchRequest,
+)
 from app.providers.base import MusicProvider, ProviderAvailability, TrackReference
 from app.providers.onthespot.process import OnTheSpotProcessClient, get_shared_process_client
 
@@ -88,6 +93,44 @@ class OnTheSpotProvider(MusicProvider):
                 key: raw[key] for key in _SAFE_METADATA_KEYS if key in raw and raw[key] is not None
             },
         )
+
+    async def list_searchable_providers(self) -> tuple[MusicProviderName, ...]:
+        raw = await self._process_client.list_searchable_providers()
+        providers: list[MusicProviderName] = []
+        for value in raw:
+            try:
+                provider = MusicProviderName(value)
+            except ValueError:
+                continue
+            if provider not in providers:
+                providers.append(provider)
+        return tuple(providers)
+
+    async def search_tracks(self, request: TrackSearchRequest) -> list[TrackSearchCandidate]:
+        raw = await self._process_client.search_tracks(
+            request.target_provider.value, request.query, request.limit
+        )
+        candidates: list[TrackSearchCandidate] = []
+        for item in raw:
+            url = item.get("url")
+            if not isinstance(url, str):
+                continue
+            try:
+                reference = self.detect_url(url)
+            except (InvalidTrackUrl, UnsupportedProvider):
+                continue
+            if reference.provider is not request.target_provider:
+                continue
+            candidates.append(
+                TrackSearchCandidate(
+                    provider=reference.provider,
+                    provider_track_id=reference.provider_track_id,
+                    url=reference.source_url,
+                    title=_optional_text(item.get("title")),
+                    artist=_optional_text(item.get("artist")),
+                )
+            )
+        return candidates[: request.limit]
 
     @staticmethod
     def _detect_known_track(host: str, segments: list[str], query: str) -> TrackReference | None:
@@ -197,7 +240,7 @@ def _duration_ms(value: Any) -> int | None:
         duration = int(value)
     except (TypeError, ValueError):
         return None
-    return duration if duration >= 0 else None
+    return duration if duration > 0 else None
 
 
 def _optional_bool(value: Any) -> bool | None:

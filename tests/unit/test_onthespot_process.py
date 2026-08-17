@@ -51,6 +51,22 @@ for line in sys.stdin.buffer:
                 "app_log_level": os.environ.get("APP_LOG_LEVEL"),
             },
         }
+    elif method == "list_searchable_providers":
+        response = {
+            "id": request_id,
+            "ok": True,
+            "result": ["bandcamp", "youtube_music"],
+        }
+    elif method == "search_tracks":
+        response = {
+            "id": request_id,
+            "ok": True,
+            "result": [{
+                "provider": request["params"]["provider"],
+                "provider_track_id": "candidate",
+                "url": "https://artist.bandcamp.com/track/candidate",
+            }],
+        }
     elif method == "shutdown":
         if sentinel:
             with open(sentinel, "w", encoding="utf-8") as handle:
@@ -151,6 +167,18 @@ async def test_shutdown_is_graceful(tmp_path: Path) -> None:
     assert client.closed is True
     assert client.process_id is None
     assert sentinel.read_text(encoding="utf-8") == "closed"
+
+
+@pytest.mark.asyncio
+async def test_search_operations_share_the_serialized_worker(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    try:
+        providers = await client.list_searchable_providers()
+        candidates = await client.search_tracks("bandcamp", "Artist Track", 5)
+    finally:
+        await client.close()
+    assert providers == ["bandcamp", "youtube_music"]
+    assert candidates[0]["provider_track_id"] == "candidate"
 
 
 @pytest.mark.asyncio

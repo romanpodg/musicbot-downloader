@@ -1,8 +1,9 @@
 # Musicbot Downloader
 
 Production-oriented foundation for a future Telegram music downloader service. This repository
-implements Stage 0, Stage 1, and the metadata-only portion of Stage 2. It does not contain a
-Telegram bot, cross-provider resolver, quality resolver, downloader, queue, worker pool, or API.
+implements Stage 0 through Stage 3: canonical recording identity, ambiguity-safe matching, and
+verified cross-provider discovery. It does not contain a Telegram bot, Provider Resolver, Quality
+Resolver, downloader, queue, worker pool, or API.
 
 ## Architecture
 
@@ -12,10 +13,18 @@ The central identity rule is:
 Track identity != search provider != download provider
 ```
 
-`tracks` stores nullable provider-independent metadata. Provider identities and canonical URLs
-live in `track_sources`, and one track may eventually have several sources. Stage 2 deliberately
-does not attach a new source to a Track by ISRC: an unseen `(provider, provider_track_id)` creates
-a new Track. Cross-provider identity decisions belong exclusively to Stage 3.
+`Track` means one specific audio recording/version, independent of streaming provider. It is not
+a provider catalog item, composition, album slot, or URL. Provider identities and canonical URLs
+live in `track_sources`, so a confirmed recording can have several provider sources. Album
+difference is weak evidence and does not prevent a match; Live, Remix, Remaster, Acoustic,
+Explicit/Clean, and similar recording variants remain separate when metadata shows a conflict.
+
+Stage 3 resolves an exact `(provider, provider_track_id)` first, then performs bounded indexed
+database candidate lookup. Valid matching ISRC is strong but not absolute evidence. Without ISRC,
+automatic matching requires normalized title and artist equality plus duration within 3000 ms.
+A 3001–5000 ms difference is plausible but ambiguous, and more than 5000 ms is a conflict.
+Missing duration never counts as a match. Multiple compatible candidates return `AMBIGUOUS`; an
+uncertain input source receives its own Track instead of being attached to an existing candidate.
 
 The four user delivery profiles are exactly `MP3_128`, `MP3_320`, `AAC_256`, and `LOSSLESS`.
 Provider-native codec/container/bitrate data is a separate nullable model.
@@ -29,7 +38,7 @@ python -m app.providers.onthespot.worker
 ```
 
 The child owns OnTheSpot's global accounts/configuration, logging handlers, exception hook, and
-Protobuf compatibility setting. Current metadata requests are serialized by the process client.
+Protobuf compatibility setting. Current metadata and search requests are serialized by the process client.
 This is a dependency-isolation boundary, not a download worker pool.
 
 ## Internationalization
@@ -92,12 +101,21 @@ uv run alembic check
 ```
 
 SQLite initialization centrally enables WAL, foreign keys, and a 5000 ms busy timeout. Provider
-enum values are persisted as stable lowercase values. ISRC is nullable, indexed, and non-unique.
+enum values are persisted as stable lowercase values. ISRC is validated, nullable, indexed, and
+non-unique. Internal normalized artist/title keys have a composite index and are maintained during
+conservative canonical metadata enrichment; they are candidate keys, not public identity.
 
-For an existing source, Stage 2 fills only missing Track fields. Existing canonical values and a
+For an existing source, resolution fills only missing Track fields. Existing canonical values and a
 known ISRC are not overwritten by conflicting or degraded responses. Provider metadata uses an
 allowlisted, non-destructive merge and never stores cookies, tokens, or credentials. A provider
-identity cannot move to another Track through ordinary upsert.
+identity cannot move to another Track through ordinary upsert. If verified discovery finds a
+source owned by another Track, it reports `IDENTITY_CONFLICT` and does not merge or reassign it.
+
+Cross-provider search is bounded to 10 lightweight candidates per initialized provider. Every
+candidate is resolved to full metadata and passed through the same matcher before persistence;
+search result text alone is never trusted. Provider failures are reported independently and do not
+roll back successful canonical input resolution. Searchability is identity discovery only—it does
+not choose a future download provider.
 
 ## Development checks
 
@@ -126,9 +144,19 @@ After applying migrations and configuring OnTheSpot if needed:
 uv run python -m app.tools.resolve "<TRACK_URL>"
 ```
 
-The command validates and canonicalizes one supported track URL, retrieves normalized metadata
-from the isolated worker, and persists one provider identity. Repeating the same identity updates
-its existing TrackSource without creating a duplicate or orphan Track.
+The command validates and canonicalizes one supported track URL, retrieves normalized metadata,
+and resolves it to a canonical Track. Repeating the same exact identity is idempotent. To search
+other initialized provider catalogs and attach only fully verified matches:
+
+```bash
+uv run python -m app.tools.resolve "<TRACK_URL>" --discover
+```
+
+OnTheSpot v1.8.1 exposes common lightweight track search results for Apple Music, Bandcamp,
+Deezer, Qobuz, SoundCloud, Spotify, Tidal, and YouTube Music. Bandcamp and YouTube Music are
+tokenless; the other providers require an active OnTheSpot account/session. Upstream has no
+dedicated cross-provider ISRC-search contract, so Stage 3 uses the recording's artist and full
+title (including version text) as its bounded query and verifies full metadata afterward.
 
 ## Current limitations
 
@@ -140,5 +168,7 @@ its existing TrackSource without creating a duplicate or orphan Track.
   the failed process client during controlled application lifecycle recovery.
 - Native codec, container, and bitrate remain unknown when upstream metadata does not expose them
   without entering later stream/download flows.
-- Albums, playlists, cross-provider matching, provider/quality resolution, downloads, conversion,
-  Telegram upload/cache, queues, and APIs are intentionally absent.
+- Search is serialized through one OnTheSpot worker and can be slow across several providers.
+- Incomplete metadata intentionally produces ambiguity or no match rather than fuzzy guessing.
+- Albums, playlists, Provider/Quality Resolver behavior, downloads, conversion, Telegram
+  upload/cache, queues, and APIs are intentionally absent.

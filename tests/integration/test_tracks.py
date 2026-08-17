@@ -19,6 +19,7 @@ async def test_track_without_isrc_is_valid_and_creation_works(database: Database
         found = await repositories.tracks.get_track_by_id(track_id)
         assert found is not None
         assert found.isrc is None
+        assert found.normalized_title == "unknown release"
 
 
 @pytest.mark.asyncio
@@ -29,6 +30,33 @@ async def test_multiple_tracks_may_share_normalized_isrc(database: Database) -> 
     async with database.transaction() as repositories:
         found = await repositories.tracks.get_tracks_by_isrc(" USABC1234567 ")
         assert [track.id for track in found] == [first.id, second.id]
+
+
+@pytest.mark.asyncio
+async def test_normalized_identity_keys_are_indexed_and_stay_synchronized(
+    database: Database,
+) -> None:
+    async with database.transaction() as repositories:
+        track = await repositories.tracks.create_track(title=None, artist="Artist ft. Guest")
+        await repositories.tracks.enrich_missing(
+            track,
+            isrc=None,
+            title="Song - 2011 Remaster",
+            artist=None,
+            album=None,
+            duration_ms=None,
+            release_date=None,
+            explicit=None,
+        )
+        assert track.normalized_title == "song"
+        assert track.normalized_artist == "artist feat guest"
+    async with database.engine.connect() as connection:
+        indexes = await connection.run_sync(
+            lambda sync_connection: inspect(sync_connection).get_indexes("tracks")
+        )
+    assert any(
+        index["column_names"] == ["normalized_artist", "normalized_title"] for index in indexes
+    )
 
 
 @pytest.mark.asyncio
