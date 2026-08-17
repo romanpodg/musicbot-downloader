@@ -22,6 +22,7 @@ from app.core.enums import (
     QualityCandidateRejectionReason,
     QualityProfile,
     QualityResolutionStatus,
+    QueueJobStatus,
     SourceValidationConfidence,
     TrackEvidenceCode,
     TrackMatchDecision,
@@ -211,6 +212,90 @@ class DownloadResult:
     fallback_index: int
     attempts: tuple[DownloadAttempt, ...]
     created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadJobView:
+    id: int
+    track_id: int
+    quality_profile: QualityProfile
+    status: QueueJobStatus
+    attempt_count: int
+    queued_at: datetime
+    available_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    last_error_code: str | None
+    cancel_requested: bool
+
+
+@dataclass(frozen=True, slots=True)
+class UploadJobView:
+    id: int
+    download_job_id: int
+    track_id: int
+    quality_profile: QualityProfile
+    status: QueueJobStatus
+    attempt_count: int
+    queued_at: datetime
+    available_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    last_error_code: str | None
+    cancel_requested: bool
+
+
+@dataclass(frozen=True, slots=True)
+class UploadRequest:
+    upload_job_id: int
+    download_job_id: int
+    track_id: int
+    quality_profile: QualityProfile
+    artifact_job_id: str
+    artifact_path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class UploadResult:
+    external_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class QueueStatusCounts:
+    queued: int = 0
+    running: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    cancelled: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerSettingValues:
+    current: int
+    default: int
+    maximum: int
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerSettingsSnapshot:
+    download: WorkerSettingValues
+    upload: WorkerSettingValues
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerPoolSnapshot:
+    desired_workers: int
+    actual_workers: int
+    default_workers: int
+    max_workers: int
+
+
+@dataclass(frozen=True, slots=True)
+class QueueRuntimeSnapshot:
+    download: WorkerPoolSnapshot
+    upload: WorkerPoolSnapshot
+    download_jobs: QueueStatusCounts
+    upload_jobs: QueueStatusCounts
 
 
 @dataclass(frozen=True, slots=True)

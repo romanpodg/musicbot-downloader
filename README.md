@@ -1,10 +1,10 @@
 # Musicbot Downloader
 
 Production-oriented foundation for a future Telegram music downloader service. This repository
-implements Stage 0 through Stage 6: canonical recording identity, ambiguity-safe matching,
-verified cross-provider discovery, runtime provider candidate resolution, and quality-dependent
-download planning plus safe one-shot execution. It does not contain a Telegram bot, queue, worker
-pool, or API.
+implements Stage 0 through Stage 7: canonical recording identity, ambiguity-safe matching,
+verified cross-provider discovery, runtime provider candidate resolution, quality-dependent
+download planning, safe one-shot execution, and persistent asynchronous queue orchestration. It
+does not contain a Telegram bot, Telegram upload implementation, SingleFlight, or API.
 
 ## Architecture
 
@@ -164,6 +164,7 @@ Track
   -> Provider Resolver candidates (Stage 4)
   -> Quality Resolver plans (Stage 5)
   -> revalidated native acquisition and validated temporary artifact (Stage 6)
+  -> persistent UploadJob handoff and injected delivery executor (Stage 7)
 ```
 
 In operational terms, Stage 3 answers “what is this recording?”, Stage 4 answers “which verified
@@ -191,6 +192,67 @@ directory. Rejected attempts are removed before fallback. A successful `Download
 only its validated final artifact until `DownloadArtifactManager.release(job_id)` is called;
 release is containment-checked and idempotent. Audio is stored only temporarily. Stage 6 does not
 introduce a permanent local music cache.
+
+## Persistent queues and workers
+
+Stage 6 is the one-shot execution boundary. Stage 7 persists `DownloadJob` and `UploadJob` rows in
+the same SQLite/WAL database and uses that database—not an in-memory queue—as the source of truth:
+
+```text
+DownloadJob (FIFO claim)
+  -> download worker
+  -> fresh DownloadPipeline.download(track_id, quality_profile)
+  -> validated Stage 6 artifact
+  -> atomic DownloadJob SUCCEEDED + unique UploadJob insert
+  -> upload worker
+  -> injected UploadExecutor
+  -> UploadJob SUCCEEDED
+  -> artifact release
+```
+
+Jobs use `QUEUED`, `RUNNING`, `SUCCEEDED`, `FAILED`, and `CANCELLED`. A claim is one atomic
+SQLite `UPDATE ... RETURNING` over the first eligible row ordered by `queued_at, id`. Claims set an
+in-process worker identity and conservative lease; heartbeats protect long work, while an expired
+lease is requeued or terminalized according to its bounded attempt count. This is minimum ordinary
+restart safety for one application instance with multiple async workers, not a distributed or
+exactly-once queue.
+
+Queue retries use persisted `available_at` exponential backoff. Every DownloadJob retry calls Stage
+6 from scratch, so provider planning, authentication, and runtime state are current. Stage 6 provider
+fallback is separate from a Stage 7 retry. The pinned OnTheSpot child still serializes native
+provider operations; DB work, planning, transcoding, future backends, and uploads can overlap.
+
+Artifact ownership is explicit. Stage 6 initially owns a successful `DownloadResult`; the download
+worker validates containment and stores a TEMP_DIR-relative artifact path in the unique UploadJob
+handoff transaction. A failed handoff releases the artifact. Retryable uploads retain it. Successful,
+terminal, or cancelled uploads commit their status and then release only through
+`DownloadArtifactManager`. DB paths are checked under `TEMP_DIR/<job_id>/output` before use.
+
+The filesystem and SQLite cannot share a transaction. A crash after Stage 6 returns but before
+handoff can leave an orphan directory; a crash after external delivery but before the UploadJob
+success commit can cause duplicate delivery; and a crash after a terminal commit but before release
+can leak an artifact. Full cleanup/reconstruction remains deferred to the later recovery stage.
+
+Worker settings have three distinct authorities:
+
+- `DOWNLOAD_WORKERS_DEFAULT` / `UPLOAD_WORKERS_DEFAULT` bootstrap a missing DB singleton.
+- `DOWNLOAD_WORKERS_MAX` / `UPLOAD_WORKERS_MAX` are hard current-process safety ceilings.
+- `runtime_settings` stores current desired values changed at runtime.
+
+Explicit runtime values outside `1..ENV_MAX` are rejected. On startup only, a stored value above a
+newly lowered maximum is clamped and persisted. `WorkerSettingsService` changes desired values
+without restart; `QueueManager` immediately resizes independent pools and continuously reconciles
+actual workers to desired state. Upscaling starts tasks. Downscaling lets excess workers finish their
+active job and retire without claiming another.
+
+`QUEUE_MAX_SIZE` limits active non-terminal DownloadJobs accepted through submission. Terminal
+DownloadJobs do not count, and internally created UploadJobs do not use this limit. Job history is
+retained and inspection is bounded and paginated.
+
+Stage 7 defines only an injected `UploadExecutor`. There is no production default and no destructive
+fake uploader. `QueueManager.start()` starts neither pool when an executor is absent, preventing
+artifact accumulation with no delivery path. `app.main` does not auto-start queue processing until
+a real backend arrives in Stage 8/9.
 
 Source and output files are probed with direct argv-based `ffprobe` execution. Codec, container,
 bitrate, sample rate, bit depth, channels, audio-stream presence, and duration are normalized.
@@ -297,6 +359,24 @@ The destination parent must exist and an existing file is never overwritten. Acc
 providers use already configured OnTheSpot accounts; credentials are neither accepted by this CLI
 nor printed.
 
+## Queue tool
+
+Apply migrations first. Queue inspection never starts workers or pretends to upload:
+
+```bash
+uv run python -m app.tools.queue submit <TRACK_ID> MP3_320
+uv run python -m app.tools.queue status
+uv run python -m app.tools.queue jobs download --limit 50
+uv run python -m app.tools.queue jobs upload --limit 50
+uv run python -m app.tools.queue workers
+uv run python -m app.tools.queue workers download 4
+uv run python -m app.tools.queue workers upload 5
+```
+
+Worker changes use the same persisted service intended for the future admin UI. The inspection CLI
+has no running pool and reports zero actual workers; an executor-enabled QueueManager immediately
+reconciles to the stored desired values.
+
 ## Current limitations
 
 - OnTheSpot exposes no documented stable Python library API. Only the child worker imports the
@@ -315,4 +395,8 @@ nor printed.
   cannot succeed safely when it is unavailable. FFmpeg absence affects transcode plans and optional
   direct stream-copy tagging; a later direct fallback can still succeed when ffprobe is available.
 - There is no automatic stale-artifact watchdog yet; the immediate caller owns successful release.
-- Albums, playlists, Telegram upload/cache, queues, and APIs are intentionally absent.
+- Stage 7 targets one application instance and one SQLite database; multi-host workers and
+  distributed locks are intentionally absent.
+- Stage 7.1 SingleFlight and job subscribers are not implemented, so identical submissions create
+  independent DownloadJobs.
+- Telegram upload, `file_id` cache, bot/admin UI, albums, playlists, and APIs are intentionally absent.

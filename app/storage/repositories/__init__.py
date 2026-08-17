@@ -9,4 +9,12 @@ __all__ = [
     "TrackSourceRepository",
     "UpsertSourceResult",
     "UserRepository",
+    "DownloadJobRepository",
+    "RuntimeSettingsRepository",
+    "UploadJobRepository",
 ]
+from app.storage.repositories.queue import (
+    DownloadJobRepository,
+    RuntimeSettingsRepository,
+    UploadJobRepository,
+)

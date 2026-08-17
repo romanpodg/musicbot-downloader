@@ -20,8 +20,11 @@ from sqlalchemy.ext.asyncio import (
 
 from app.core.exceptions import DatabaseConcurrencyError, DatabaseError
 from app.storage.repositories import (
+    DownloadJobRepository,
+    RuntimeSettingsRepository,
     TrackRepository,
     TrackSourceRepository,
+    UploadJobRepository,
     UserRepository,
 )
 
@@ -31,6 +34,9 @@ class Repositories:
     users: UserRepository
     tracks: TrackRepository
     track_sources: TrackSourceRepository
+    download_jobs: DownloadJobRepository
+    upload_jobs: UploadJobRepository
+    runtime_settings: RuntimeSettingsRepository
 
 
 class Database:
@@ -67,6 +73,9 @@ class Database:
             users=UserRepository(session),
             tracks=TrackRepository(session),
             track_sources=TrackSourceRepository(session),
+            download_jobs=DownloadJobRepository(session),
+            upload_jobs=UploadJobRepository(session),
+            runtime_settings=RuntimeSettingsRepository(session),
         )
 
     @staticmethod

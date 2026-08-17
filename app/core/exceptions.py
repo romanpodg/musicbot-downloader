@@ -1,6 +1,6 @@
 """Stable application error contract; errors intentionally contain no UI text."""
 
-from app.core.enums import DownloadFailureCode
+from app.core.enums import DownloadFailureCode, QueueErrorCode
 from app.core.models import DownloadAttempt
 
 
@@ -69,3 +69,42 @@ class DownloadPipelineError(MusicBotError):
         super().__init__()
         self.code = code
         self.attempts = attempts
+
+
+class QueueServiceError(MusicBotError):
+    """Typed queue operation failure without presentation text."""
+
+    def __init__(self, code: QueueErrorCode) -> None:
+        super().__init__()
+        self.code = code
+
+
+class QueueFullError(QueueServiceError):
+    def __init__(self) -> None:
+        super().__init__(QueueErrorCode.QUEUE_FULL)
+
+
+class QueueJobNotFoundError(QueueServiceError):
+    def __init__(self) -> None:
+        super().__init__(QueueErrorCode.JOB_NOT_FOUND)
+
+
+class WorkerLimitError(QueueServiceError):
+    def __init__(self) -> None:
+        super().__init__(QueueErrorCode.WORKER_LIMIT_EXCEEDED)
+
+
+class UploadRetryableError(MusicBotError):
+    """Delivery failed transiently and may be retried by Stage 7."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.code = QueueErrorCode.UPLOAD_RETRYABLE
+
+
+class UploadTerminalError(MusicBotError):
+    """Delivery failed permanently for this artifact."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.code = QueueErrorCode.UPLOAD_TERMINAL

@@ -51,3 +51,40 @@ def test_provider_enum_migration_converts_existing_rows(
             )
     finally:
         get_settings.cache_clear()
+
+
+def test_stage7_migration_creates_clean_queue_schema(tmp_path: Path, monkeypatch: object) -> None:
+    database_path = tmp_path / "stage7.db"
+    database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", database_url)  # type: ignore[attr-defined]
+    get_settings.cache_clear()
+    config = Config("alembic.ini")
+    try:
+        command.upgrade(config, "head")
+        with sqlite3.connect(database_path) as connection:
+            tables = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            assert {"download_jobs", "upload_jobs", "runtime_settings"} <= tables
+            download_indexes = {
+                row[1]
+                for row in connection.execute("PRAGMA index_list('download_jobs')").fetchall()
+            }
+            upload_indexes = {
+                row[1] for row in connection.execute("PRAGMA index_list('upload_jobs')").fetchall()
+            }
+            assert "ix_download_jobs_claim" in download_indexes
+            assert "ix_upload_jobs_claim" in upload_indexes
+            assert any(row[2] for row in connection.execute("PRAGMA index_list('upload_jobs')"))
+        command.check(config)
+        command.downgrade(config, "20260817_0003")
+        with sqlite3.connect(database_path) as connection:
+            tables = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            assert "download_jobs" not in tables
+        command.upgrade(config, "head")
+    finally:
+        get_settings.cache_clear()
