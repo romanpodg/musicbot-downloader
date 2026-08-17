@@ -12,11 +12,13 @@ from pathlib import Path
 from typing import Any
 
 from app.core.exceptions import (
+    AlbumTooLarge,
     InvalidTrackUrl,
     MetadataUnavailable,
     ProviderAuthenticationError,
     ProviderOperationTimeout,
     ProviderUnavailable,
+    UnsupportedAlbum,
     UnsupportedProvider,
 )
 from app.providers.base import ProviderAvailability
@@ -25,20 +27,25 @@ from app.providers.onthespot.ipc import (
     DEFAULT_REQUEST_TIMEOUT_SECONDS,
     DOWNLOAD_NATIVE_METHOD,
     GET_METADATA_METHOD,
+    GET_TRACK_METADATA_METHOD,
     INITIALIZE_METHOD,
     LIST_SEARCHABLE_PROVIDERS_METHOD,
+    MATCH_URL_METHOD,
     MAX_MESSAGE_BYTES,
     PREPARE_SOURCE_METHOD,
+    RESOLVE_ALBUM_METHOD,
     SEARCH_TRACKS_METHOD,
     SHUTDOWN_METHOD,
 )
 
 _ERROR_TYPES: dict[str, type[Exception]] = {
+    "album_too_large": AlbumTooLarge,
     "invalid_track_url": InvalidTrackUrl,
     "metadata_unavailable": MetadataUnavailable,
     "provider_authentication_error": ProviderAuthenticationError,
     "provider_unavailable": ProviderUnavailable,
     "unsupported_provider": UnsupportedProvider,
+    "unsupported_album": UnsupportedAlbum,
 }
 
 
@@ -86,6 +93,27 @@ class OnTheSpotProcessClient:
 
     async def get_metadata(self, url: str) -> Mapping[str, Any]:
         result = await self._request(GET_METADATA_METHOD, {"url": url})
+        if not isinstance(result, dict):
+            raise MetadataUnavailable()
+        return result
+
+    async def match_url(self, url: str) -> Mapping[str, Any]:
+        result = await self._request(MATCH_URL_METHOD, {"url": url})
+        if not isinstance(result, dict):
+            raise MetadataUnavailable()
+        return result
+
+    async def get_track_metadata(self, provider: str, provider_track_id: str) -> Mapping[str, Any]:
+        result = await self._request(
+            GET_TRACK_METADATA_METHOD,
+            {"provider": provider, "provider_track_id": provider_track_id},
+        )
+        if not isinstance(result, dict):
+            raise MetadataUnavailable()
+        return result
+
+    async def resolve_album(self, url: str) -> Mapping[str, Any]:
+        result = await self._request(RESOLVE_ALBUM_METHOD, {"url": url})
         if not isinstance(result, dict):
             raise MetadataUnavailable()
         return result

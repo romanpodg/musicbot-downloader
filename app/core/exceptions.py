@@ -20,6 +20,18 @@ class UnsupportedMediaType(InvalidTrackUrl):
     """A recognized provider URL targets an out-of-scope non-track entity."""
 
 
+class UnsupportedAlbum(UnsupportedMediaType):
+    """The pinned provider boundary cannot reliably resolve this album."""
+
+
+class AlbumTooLarge(MusicBotError):
+    """The provider release exceeds the bounded durable snapshot limit."""
+
+
+class AlbumResolutionFailed(MusicBotError):
+    """A recognized album could not be resolved through its provider boundary."""
+
+
 class ProviderUnavailable(MusicBotError):
     pass
 

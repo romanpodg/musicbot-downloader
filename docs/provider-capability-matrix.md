@@ -16,6 +16,30 @@ OnTheSpot enters its stream/download path.
 | Tidal | Authenticated track/album metadata; `streamReady` supplies playability | Registered | Requests manifests in `LOSSLESS`, `HIGH`, then `LOW` order; handles direct FLAC/MP4 URLs or an MPD through yt-dlp | Configured access token, refresh flow, and country code | Lossy and lossless paths exist, but the chosen source codec, container, bitrate, sample rate, and bit depth are unknown until manifest selection. OnTheSpot silently falls back across qualities. |
 | YouTube Music | yt-dlp metadata-only extraction; public, non-live availability supplies playability | Registered | yt-dlp requests best audio in M4A | Default public bootstrap; no user credentials | Pinned path labels AAC/M4A at 128 kbps. Private, unavailable, and live items are not usable. |
 
+## Stage 9.3 album snapshot audit
+
+Album support is based only on the pinned OnTheSpot registries and provider implementations. The
+application stores a provider-specific snapshot; it does not infer a canonical album or merge
+releases between providers. Ordered item identity is mandatory, snapshots are capped at 500 tracks,
+and provider dictionaries, credentials, tokens, manifests, and media URLs remain inside the child
+process.
+
+| Provider | Album URL detection and ordered listing | Runtime/auth requirement | Snapshot completeness and known limitations |
+| --- | --- | --- | --- |
+| Apple Music | Native album URL matcher and registered album-track ID function | Active Apple Music session, user media token, and subscription | Stable album and track IDs, disc/track order, title, artist, album, and duration are normally available through per-track metadata. Album title/artist are inferred from the returned tracks. |
+| Bandcamp | `/album/<slug>` matcher and public album-page scrape | Public bootstrap; no user credentials | Ordered track URLs and title/artist/track number are available. Duration, release date, disc number, and a stable non-URL track ID may be absent; the canonical album URL is retained as provider identity. |
+| Deezer | Numeric album matcher and registered album-track listing | Public album listing; active Deezer session is used for complete per-track metadata and fallback behavior | Ordered IDs plus title, artist, album, disc, track number, duration, and release metadata are generally available. Catalog/session restrictions can still fail resolution. |
+| Qobuz | Album path/ID matcher and registered album-track listing | Configured authenticated Qobuz account/session | Ordered stable IDs and rich per-track metadata are normally available. Account or regional restrictions can make the album unavailable. |
+| SoundCloud | URL classification is delegated to the isolated worker; upstream album releases are playlist-shaped objects marked as albums | Public runtime token/account; optional OAuth may change catalog access | Ordered track IDs and per-track metadata are available when upstream identifies the set as an album. Ordinary SoundCloud playlists are rejected. URL shape alone is not trusted. |
+| Spotify | 22-character album matcher and paginated registered album-track listing | Configured Spotify/librespot session | Ordered stable IDs, disc/track numbers, title, artist, album, duration, and release metadata are normally available. Market/account availability still applies. |
+| Tidal | Numeric/stable album matcher and registered album-track listing | Configured access/refresh token and country session | Ordered stable IDs and rich per-track metadata are normally available. Regional and subscription restrictions still apply. |
+| YouTube Music | No pinned album matcher or album-track listing contract | N/A | Unsupported for Stage 9.3. YouTube playlists are intentionally not treated as albums. |
+
+For supported providers, the child first obtains the ordered provider track identities, then returns
+only allowlisted normalized display metadata for each item. Missing optional fields stay `None`;
+the application neither fabricates values nor fuzzy-matches the full release eagerly. Each selected
+item is canonicalized later and may download from any currently eligible verified source.
+
 ## Runtime interpretation
 
 Stage 4 checks one verified `TrackSource` at a time through the serialized child process. It first

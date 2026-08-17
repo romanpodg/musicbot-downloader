@@ -448,7 +448,7 @@ class SingleFlightSnapshot:
 class NormalizedTrackMetadata:
     provider: MusicProviderName
     provider_track_id: str
-    source_url: str
+    source_url: str | None
     title: str | None = None
     artist: str | None = None
     album: str | None = None
@@ -458,6 +458,34 @@ class NormalizedTrackMetadata:
     explicit: bool | None = None
     native: NativeMediaInfo = field(default_factory=NativeMediaInfo)
     provider_metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class AlbumTrackSnapshot:
+    provider_track_id: str
+    position: int
+    title: str | None = None
+    artist: str | None = None
+    disc_number: int | None = None
+    track_number: int | None = None
+    duration_ms: int | None = None
+    explicit: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AlbumSnapshot:
+    provider: MusicProviderName
+    provider_album_id: str
+    source_url: str
+    title: str
+    artist: str
+    tracks: tuple[AlbumTrackSnapshot, ...]
+    release_date: str | None = None
+    duration_ms: int | None = None
+
+    @property
+    def track_count(self) -> int:
+        return len(self.tracks)
 
 
 @dataclass(frozen=True, slots=True)

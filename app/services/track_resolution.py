@@ -61,6 +61,23 @@ class ResolveTrackService:
 
     async def resolve(self, url: str, *, discover: bool = False) -> ResolveResult:
         metadata = await self._provider.get_metadata(url)
+        return await self._resolve_metadata(metadata, discover=discover)
+
+    async def resolve_provider_track(
+        self,
+        provider: MusicProviderName,
+        provider_track_id: str,
+        *,
+        discover: bool = False,
+    ) -> ResolveResult:
+        """Resolve stable provider identity without fabricating an external URL."""
+
+        metadata = await self._provider.get_track_metadata(provider, provider_track_id)
+        return await self._resolve_metadata(metadata, discover=discover)
+
+    async def _resolve_metadata(
+        self, metadata: NormalizedTrackMetadata, *, discover: bool
+    ) -> ResolveResult:
         identity = identity_from_metadata(metadata)
         result = await self._retry_persist_input(metadata, identity)
         if not discover:

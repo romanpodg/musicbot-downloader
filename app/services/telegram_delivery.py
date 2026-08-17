@@ -237,6 +237,10 @@ class TelegramDeliveryWorker:
 
     @staticmethod
     def _request_key(request: TelegramDeliveryRequest) -> str:
+        if request.album_item_id is not None:
+            return f"alb:{request.album_item_id}"
+        if request.source_message_id is None:
+            raise ValueError("Telegram delivery request has no durable origin")
         return (
             f"tg:{request.telegram_bot_id}:{request.telegram_chat_id}:{request.source_message_id}"
         )

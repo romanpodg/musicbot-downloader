@@ -1,11 +1,12 @@
 # Musicbot Downloader
 
 Production-oriented foundation for a future Telegram music downloader service. This repository
-implements Stage 0 through Stage 9.2: canonical recording identity, ambiguity-safe matching,
+implements Stage 0 through Stage 9.3: canonical recording identity, ambiguity-safe matching,
 verified cross-provider discovery, runtime provider candidate resolution, quality-dependent
 download planning, safe one-shot execution, persistent asynchronous queue orchestration, and
 durable SingleFlight subscribers, a bot-scoped Telegram completed-result cache, and the
-  long-polling user downloader bot with persistent cached-file delivery and explicit Track Cards.
+long-polling user downloader bot with persistent cached-file delivery, explicit Track Cards, and
+durable provider-specific Album Cards with selective track fan-out.
 
 Current delivery roadmap:
 
@@ -15,7 +16,7 @@ Current delivery roadmap:
 - Stage 9: user Telegram bot runtime and durable user delivery;
 - Stage 9.1: first/default quality selection;
 - Stage 9.2: Track Card, explicit Download, and per-track quality choice;
-- Stage 9.3: albums — not implemented.
+- Stage 9.3: provider-specific album snapshots, durable track selection, and per-track delivery.
 
 ## Architecture
 
@@ -30,6 +31,12 @@ a provider catalog item, composition, album slot, or URL. Provider identities an
 live in `track_sources`, so a confirmed recording can have several provider sources. Album
 difference is weak evidence and does not prevent a match; Live, Remix, Remaster, Acoustic,
 Explicit/Clean, and similar recording variants remain separate when metadata shows a conflict.
+
+An album is deliberately not a canonical cross-provider entity. Each accepted album URL creates a
+provider-specific immutable snapshot containing its ordered track identities and display metadata.
+Only selected tracks are resolved into canonical `Track` rows, lazily during expansion. Each child
+then uses the normal provider-neutral TrackSource discovery, quality planning, SingleFlight, and
+Telegram cache pipeline; the provider in the album URL is never forced as the download source.
 
 Stage 3 resolves an exact `(provider, provider_track_id)` first, then performs bounded indexed
 database candidate lookup. Valid matching ISRC is strong but not absolute evidence. Without ISRC,
@@ -355,12 +362,12 @@ webhooks and inline mode are absent.
 Setup and recovery details are in
 [`docs/stage8-telegram-cache.md`](docs/stage8-telegram-cache.md).
 
-## User Telegram bot (Stage 9–9.2)
+## User Telegram bot (Stage 9–9.3)
 
 The supported commands are `/start`, `/help`, `/quality`, and `/language`. The user sends a
-supported single-track URL; free-text search, albums, playlists, podcasts, and group download flows
-are not implemented. The downloader is intentionally private-chat-only for predictable privacy
-and delivery semantics.
+supported track or album URL. Free-text search, playlists, podcasts, and group download flows are
+not implemented. The downloader is intentionally private-chat-only for predictable privacy and
+delivery semantics.
 
 On the first real track request, the resolved canonical Track and request identity are persisted
 as `AWAITING_QUALITY` before any download job is created. The four choices are exactly MP3 128,
@@ -381,6 +388,20 @@ immediately continues the request but never changes `users.preferred_quality_pro
 first-ever quality selection remains different: it is both the explicit action for that track and
 the persisted global default, so the original request continues without another Download click.
 
+Album URLs produce a durable Album Card without creating child download jobs. It shows the album
+artist/title, track count, and available duration/release metadata. With an existing default,
+`Download all`, `Select tracks`, and `Other quality` are offered. Selection is persisted in SQLite,
+paginated eight tracks at a time, and supports per-track toggles, Select all, Clear all, Back, and
+Download selected. The album quality is one snapshot shared by all selected child requests; the
+one-off album picker does not change the user's default.
+
+For a user's first-ever request, choosing a quality from an Album Card saves the global default and
+returns to the card—the user must still explicitly choose Download all or Select tracks. Expansion
+is restart-safe and idempotent: selected items become ordinary delivery requests, already-known
+provider identities take the exact-source fast path, and unresolved identities pass through the
+same conservative canonical matcher as standalone tracks. Duplicate album positions and concurrent
+standalone/album requests converge through the existing `(track_id, quality)` SingleFlight key.
+
 After either explicit action, the durable delivery worker still enters through
 `DeliveryPreparationService`. An ACTIVE Telegram cache entry delivers its `file_id` without music
 provider or FFmpeg work; a miss joins or creates the existing quality-scoped SingleFlight. Track
@@ -398,6 +419,15 @@ Telegram track URL
   -> subscriber READY resolves the ACTIVE cache row
   -> sendAudio(file_id) or sendDocument(file_id)
   -> DELIVERED and cache last_used_at
+
+Telegram album URL
+  -> provider-specific ordered album snapshot
+  -> durable Album Card / first default-quality picker
+  -> Download all or persisted paginated selection
+  -> lazily resolve each selected item to a canonical Track
+  -> create one ordinary delivery request per selected item
+  -> existing cache-first / SingleFlight pipeline independently per track
+  -> one localized terminal album summary
 ```
 
 Handlers do not wait for downloads. Delivery requests use a SQLite lease and bounded persistent
@@ -420,7 +450,8 @@ Stage 8 cache uploader, reconciles SingleFlight/queues, starts download/upload w
 delivery fanout, and begins polling. Ctrl+C stops polling and fanout, gracefully stops queue
 workers, closes the OnTheSpot child and Telegram session, and disposes database resources.
 
-No new Stage 9.2 environment variables.
+No new Stage 9.3 environment variables. Album expansion uses one bounded coordinator worker and a
+hard 500-track snapshot limit.
 
 Authentication with only a subset of supported music providers is valid. Download planning uses
 only providers available at actual execution time; it never requires the provider from the input
@@ -609,5 +640,9 @@ SQLite-only operations.
 - Telegram upload and cache persistence are not one distributed transaction. A process crash after
   Telegram accepts a file but before SQLite commits can leave an extra cache-chat message on retry.
 - Telegram user delivery is at-least-once across the external-send/SQLite-commit crash window.
-- Albums and album track selection (Stage 9.3), playlists, admin UI, webhooks, inline mode,
-  publishing-bot integration, deep links/internal API, and cache eviction are absent.
+- Album snapshots are provider-specific and are not merged across services. Album metadata is
+  derived from the pinned provider's ordered track listing and can be incomplete.
+- Album delivery is per track. There is no ZIP/archive, concatenated audio, M3U, album-wide media
+  job/cache artifact, strict Telegram delivery ordering, or per-track quality override.
+- Playlists, admin UI, webhooks, inline mode, publishing-bot integration, deep links/internal API,
+  and cache eviction are absent. YouTube Music album URLs are unsupported by the pinned adapter.

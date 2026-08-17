@@ -16,13 +16,17 @@ from app.core.enums import (
     ProviderRuntimeStatus,
 )
 from app.core.exceptions import (
+    AlbumTooLarge,
     InvalidTrackUrl,
     MetadataUnavailable,
     ProviderUnavailable,
+    UnsupportedAlbum,
     UnsupportedMediaType,
     UnsupportedProvider,
 )
 from app.core.models import (
+    AlbumSnapshot,
+    AlbumTrackSnapshot,
     NativeMediaInfo,
     NormalizedTrackMetadata,
     PreparedSourceMedia,
@@ -31,7 +35,13 @@ from app.core.models import (
     TrackSearchCandidate,
     TrackSearchRequest,
 )
-from app.providers.base import MusicProvider, ProviderAvailability, TrackReference
+from app.providers.base import (
+    AlbumReference,
+    MediaReference,
+    MusicProvider,
+    ProviderAvailability,
+    TrackReference,
+)
 from app.providers.onthespot.capabilities import ONTHESPOT_CAPABILITIES
 from app.providers.onthespot.process import OnTheSpotProcessClient, get_shared_process_client
 
@@ -39,6 +49,8 @@ _SPOTIFY_ID = re.compile(r"^[A-Za-z0-9]{22}$")
 _SIMPLE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 _PATH_SEGMENT = re.compile(r"^[A-Za-z0-9._~-]+$")
 _SAFE_METADATA_KEYS = frozenset({"item_id", "is_playable", "release_year"})
+MAX_ALBUM_TRACKS = 500
+_MAX_ALBUM_TEXT_LENGTH = 1024
 
 
 class OnTheSpotProvider(MusicProvider):
@@ -52,62 +64,68 @@ class OnTheSpotProvider(MusicProvider):
         await self._process_client.close()
 
     def detect_url(self, url: str) -> TrackReference:
-        if not url or len(url) > 2048:
-            raise InvalidTrackUrl()
-        try:
-            parsed = urlsplit(url)
-            port = parsed.port
-        except ValueError as exc:
-            raise InvalidTrackUrl() from exc
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise InvalidTrackUrl()
-        if parsed.username is not None or parsed.password is not None or parsed.fragment:
-            raise InvalidTrackUrl()
-        expected_port = 80 if parsed.scheme == "http" else 443
-        if port is not None and port != expected_port:
-            raise InvalidTrackUrl()
+        reference = self.detect_media(url)
+        if not isinstance(reference, TrackReference):
+            raise UnsupportedMediaType()
+        return reference
 
-        host = parsed.hostname.lower()
-        segments = [segment for segment in parsed.path.split("/") if segment]
-        reference = self._detect_known_track(host, segments, parsed.query)
+    def detect_media(self, url: str) -> MediaReference:
+        host, segments, query = _validated_url(url)
+        reference = self._detect_known_track(host, segments, query)
         if reference is not None:
             return reference
+        album = self._detect_known_album(host, segments)
+        if album is not None:
+            return album
         if self._is_known_host(host):
             raise UnsupportedMediaType()
         raise UnsupportedProvider()
 
+    async def classify_url(self, url: str) -> MediaReference:
+        host, _, _ = _validated_url(url)
+        if host not in {"soundcloud.com", "m.soundcloud.com"}:
+            return self.detect_media(url)
+        raw = await self._process_client.match_url(url)
+        service = raw.get("service")
+        item_type = raw.get("item_type")
+        item_id = raw.get("item_id")
+        if service != MusicProviderName.SOUNDCLOUD.value or not isinstance(item_id, str):
+            raise UnsupportedMediaType()
+        canonical = urlsplit(url)._replace(query="", fragment="").geturl()
+        if item_type == "track":
+            return TrackReference(MusicProviderName.SOUNDCLOUD, item_id, canonical)
+        if item_type == "album":
+            return AlbumReference(MusicProviderName.SOUNDCLOUD, item_id, canonical)
+        raise UnsupportedMediaType()
+
+    async def get_album(self, url: str) -> AlbumSnapshot:
+        reference = await self.classify_url(url)
+        if not isinstance(reference, AlbumReference):
+            raise UnsupportedAlbum()
+        raw = await self._process_client.resolve_album(reference.source_url)
+        return _album_snapshot(raw, reference)
+
+    async def get_track_metadata(
+        self, provider: MusicProviderName, provider_track_id: str
+    ) -> NormalizedTrackMetadata:
+        if not provider_track_id or len(provider_track_id) > 2048:
+            raise MetadataUnavailable()
+        result = await self._process_client.get_track_metadata(provider.value, provider_track_id)
+        return _normalized_track_metadata(
+            result,
+            expected_provider=provider,
+            expected_track_id=provider_track_id,
+            source_url=_provider_track_url(provider, provider_track_id),
+        )
+
     async def get_metadata(self, url: str) -> NormalizedTrackMetadata:
         detected = self.detect_url(url)
         result = await self._process_client.get_metadata(detected.source_url)
-        service = result.get("service")
-        item_type = result.get("item_type")
-        item_id = result.get("item_id")
-        raw = result.get("metadata")
-        if (
-            service != detected.provider.value
-            or item_type != "track"
-            or not isinstance(item_id, str)
-            or not isinstance(raw, Mapping)
-        ):
-            raise MetadataUnavailable()
-
-        provider = MusicProviderName(service)
-        resolved_id = str(raw.get("item_id") or item_id)
-        return NormalizedTrackMetadata(
-            provider=provider,
-            provider_track_id=resolved_id,
+        return _normalized_track_metadata(
+            result,
+            expected_provider=detected.provider,
+            expected_track_id=detected.provider_track_id,
             source_url=detected.source_url,
-            title=_optional_text(raw.get("title")),
-            artist=_optional_text(raw.get("artists")),
-            album=_optional_text(raw.get("album_name")),
-            isrc=_optional_text(raw.get("isrc")),
-            duration_ms=_duration_ms(raw.get("length")),
-            release_date=_release_date(raw),
-            explicit=_optional_bool(raw.get("explicit")),
-            native=NativeMediaInfo(),
-            provider_metadata={
-                key: raw[key] for key in _SAFE_METADATA_KEYS if key in raw and raw[key] is not None
-            },
         )
 
     async def list_searchable_providers(self) -> tuple[MusicProviderName, ...]:
@@ -313,6 +331,59 @@ class OnTheSpotProvider(MusicProvider):
         return None
 
     @staticmethod
+    def _detect_known_album(host: str, segments: list[str]) -> AlbumReference | None:
+        if host == "open.spotify.com":
+            if len(segments) == 3 and segments[0].startswith("intl-"):
+                segments = segments[1:]
+            if len(segments) == 2 and segments[0] == "album" and _SPOTIFY_ID.fullmatch(segments[1]):
+                item_id = segments[1]
+                return AlbumReference(
+                    MusicProviderName.SPOTIFY,
+                    item_id,
+                    f"https://open.spotify.com/album/{item_id}",
+                )
+        if host in {"deezer.com", "www.deezer.com"}:
+            if len(segments) == 3 and len(segments[0]) == 2:
+                segments = segments[1:]
+            if len(segments) == 2 and segments[0] == "album" and segments[1].isdigit():
+                item_id = segments[1]
+                return AlbumReference(
+                    MusicProviderName.DEEZER,
+                    item_id,
+                    f"https://www.deezer.com/album/{item_id}",
+                )
+        if host == "music.apple.com" and len(segments) == 4 and segments[1] == "album":
+            if len(segments[0]) == 2 and all(_PATH_SEGMENT.fullmatch(item) for item in segments):
+                item_id = segments[3]
+                return AlbumReference(
+                    MusicProviderName.APPLE_MUSIC,
+                    item_id,
+                    f"https://music.apple.com/{segments[0].lower()}/album/{segments[2]}/{item_id}",
+                )
+        if host.endswith(".bandcamp.com") and len(segments) == 2 and segments[0] == "album":
+            if _PATH_SEGMENT.fullmatch(segments[1]):
+                canonical = f"https://{host}/album/{segments[1]}"
+                return AlbumReference(MusicProviderName.BANDCAMP, canonical, canonical)
+        if host in {"qobuz.com", "www.qobuz.com", "play.qobuz.com", "open.qobuz.com"}:
+            if "album" in segments and _SIMPLE_ID.fullmatch(segments[-1]):
+                item_id = segments[-1]
+                return AlbumReference(
+                    MusicProviderName.QOBUZ,
+                    item_id,
+                    f"https://play.qobuz.com/album/{item_id}",
+                )
+        if host in {"tidal.com", "www.tidal.com", "listen.tidal.com"} and "album" in segments:
+            index = segments.index("album")
+            if index + 1 < len(segments) and _SIMPLE_ID.fullmatch(segments[index + 1]):
+                item_id = segments[index + 1]
+                return AlbumReference(
+                    MusicProviderName.TIDAL,
+                    item_id,
+                    f"https://tidal.com/browse/album/{item_id}",
+                )
+        return None
+
+    @staticmethod
     def _is_known_host(host: str) -> bool:
         return host in {
             "deezer.com",
@@ -330,6 +401,163 @@ class OnTheSpotProvider(MusicProvider):
             "www.tidal.com",
             "listen.tidal.com",
         } or host.endswith(".bandcamp.com")
+
+
+def _validated_url(url: str) -> tuple[str, list[str], str]:
+    if not url or len(url) > 2048:
+        raise InvalidTrackUrl()
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError as exc:
+        raise InvalidTrackUrl() from exc
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise InvalidTrackUrl()
+    if parsed.username is not None or parsed.password is not None or parsed.fragment:
+        raise InvalidTrackUrl()
+    expected_port = 80 if parsed.scheme == "http" else 443
+    if port is not None and port != expected_port:
+        raise InvalidTrackUrl()
+    return (
+        parsed.hostname.lower(),
+        [segment for segment in parsed.path.split("/") if segment],
+        parsed.query,
+    )
+
+
+def _normalized_track_metadata(
+    result: Mapping[str, Any],
+    *,
+    expected_provider: MusicProviderName,
+    expected_track_id: str,
+    source_url: str | None,
+) -> NormalizedTrackMetadata:
+    service = result.get("service")
+    item_type = result.get("item_type")
+    item_id = result.get("item_id")
+    raw = result.get("metadata")
+    if (
+        service != expected_provider.value
+        or item_type != "track"
+        or not isinstance(item_id, str)
+        or not isinstance(raw, Mapping)
+    ):
+        raise MetadataUnavailable()
+    resolved_id = str(raw.get("item_id") or item_id)
+    if resolved_id != expected_track_id and item_id != expected_track_id:
+        raise MetadataUnavailable()
+    resolved_url = source_url or _safe_metadata_url(raw.get("item_url"), expected_provider)
+    return NormalizedTrackMetadata(
+        provider=expected_provider,
+        provider_track_id=resolved_id,
+        source_url=resolved_url,
+        title=_optional_text(raw.get("title")),
+        artist=_optional_text(raw.get("artists")),
+        album=_optional_text(raw.get("album_name")),
+        isrc=_optional_text(raw.get("isrc")),
+        duration_ms=_duration_ms(raw.get("length")),
+        release_date=_release_date(raw),
+        explicit=_optional_bool(raw.get("explicit")),
+        native=NativeMediaInfo(),
+        provider_metadata={
+            key: raw[key] for key in _SAFE_METADATA_KEYS if key in raw and raw[key] is not None
+        },
+    )
+
+
+def _album_snapshot(raw: Mapping[str, Any], reference: AlbumReference) -> AlbumSnapshot:
+    if (
+        raw.get("provider") != reference.provider.value
+        or raw.get("provider_album_id") != reference.provider_album_id
+    ):
+        raise MetadataUnavailable()
+    title = _bounded_album_text(raw.get("title"), required=True)
+    artist = _bounded_album_text(raw.get("artist"), required=True)
+    raw_tracks = raw.get("tracks")
+    if not isinstance(raw_tracks, list) or not raw_tracks:
+        raise MetadataUnavailable()
+    if len(raw_tracks) > MAX_ALBUM_TRACKS:
+        raise AlbumTooLarge()
+    tracks: list[AlbumTrackSnapshot] = []
+    for expected_position, item in enumerate(raw_tracks, start=1):
+        if not isinstance(item, Mapping):
+            raise MetadataUnavailable()
+        provider_track_id = item.get("provider_track_id")
+        position = item.get("position")
+        if (
+            not isinstance(provider_track_id, str)
+            or not provider_track_id
+            or len(provider_track_id) > 2048
+            or position != expected_position
+        ):
+            raise MetadataUnavailable()
+        tracks.append(
+            AlbumTrackSnapshot(
+                provider_track_id=provider_track_id,
+                position=position,
+                title=_bounded_album_text(item.get("title")),
+                artist=_bounded_album_text(item.get("artist")),
+                disc_number=_wire_positive_int(item.get("disc_number")),
+                track_number=_wire_positive_int(item.get("track_number")),
+                duration_ms=_wire_positive_int(item.get("duration_ms")),
+                explicit=_optional_bool(item.get("explicit")),
+            )
+        )
+    return AlbumSnapshot(
+        provider=reference.provider,
+        provider_album_id=reference.provider_album_id,
+        source_url=reference.source_url,
+        title=title or "",
+        artist=artist or "",
+        tracks=tuple(tracks),
+        release_date=_bounded_album_text(raw.get("release_date")),
+        duration_ms=_wire_positive_int(raw.get("duration_ms")),
+    )
+
+
+def _bounded_album_text(value: Any, *, required: bool = False) -> str | None:
+    text = _optional_text(value)
+    if text is None:
+        if required:
+            raise MetadataUnavailable()
+        return None
+    if len(text) > _MAX_ALBUM_TEXT_LENGTH:
+        raise MetadataUnavailable()
+    return text
+
+
+def _wire_positive_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return int(value)
+
+
+def _safe_metadata_url(value: Any, provider: MusicProviderName) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        reference = OnTheSpotProvider.__new__(OnTheSpotProvider).detect_url(value)
+    except (InvalidTrackUrl, UnsupportedProvider, UnsupportedMediaType):
+        return None
+    return reference.source_url if reference.provider is provider else None
+
+
+def _provider_track_url(provider: MusicProviderName, item_id: str) -> str | None:
+    if provider is MusicProviderName.APPLE_MUSIC:
+        return None
+    if provider is MusicProviderName.BANDCAMP:
+        return item_id if item_id.startswith(("https://", "http://")) else None
+    if provider is MusicProviderName.DEEZER:
+        return f"https://www.deezer.com/track/{item_id}"
+    if provider is MusicProviderName.QOBUZ:
+        return f"https://play.qobuz.com/track/{item_id}"
+    if provider is MusicProviderName.SPOTIFY:
+        return f"https://open.spotify.com/track/{item_id}"
+    if provider is MusicProviderName.TIDAL:
+        return f"https://tidal.com/browse/track/{item_id}"
+    if provider is MusicProviderName.YOUTUBE_MUSIC:
+        return f"https://music.youtube.com/watch?v={item_id}"
+    return None
 
 
 def _optional_text(value: Any) -> str | None:

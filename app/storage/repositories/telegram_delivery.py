@@ -37,6 +37,16 @@ class TelegramDeliveryRepository:
             ),
         )
 
+    async def get_by_album_item(self, album_item_id: int) -> TelegramDeliveryRequest | None:
+        return cast(
+            TelegramDeliveryRequest | None,
+            await self._session.scalar(
+                select(TelegramDeliveryRequest).where(
+                    TelegramDeliveryRequest.album_item_id == album_item_id
+                )
+            ),
+        )
+
     async def create(
         self,
         *,
@@ -57,6 +67,35 @@ class TelegramDeliveryRepository:
             track_id=track_id,
             quality_profile=quality_profile,
             status=status,
+            available_at=now,
+        )
+        self._session.add(request)
+        await self._session.flush()
+        return request
+
+    async def create_album_child(
+        self,
+        *,
+        telegram_bot_id: int,
+        user_id: int,
+        telegram_chat_id: int,
+        album_item_id: int,
+        track_id: int,
+        quality_profile: QualityProfile,
+        now: datetime,
+    ) -> TelegramDeliveryRequest:
+        existing = await self.get_by_album_item(album_item_id)
+        if existing is not None:
+            return existing
+        request = TelegramDeliveryRequest(
+            telegram_bot_id=telegram_bot_id,
+            user_id=user_id,
+            telegram_chat_id=telegram_chat_id,
+            source_message_id=None,
+            album_item_id=album_item_id,
+            track_id=track_id,
+            quality_profile=quality_profile,
+            status=TelegramDeliveryStatus.QUEUED,
             available_at=now,
         )
         self._session.add(request)

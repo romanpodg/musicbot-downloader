@@ -1,4 +1,4 @@
-"""Stage 9 production long-polling application entry point."""
+"""Stage 9.3 production long-polling application entry point."""
 
 from __future__ import annotations
 
@@ -100,7 +100,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_logging(settings)
     if args.check:
         asyncio.run(check_runtime(settings))
-        print("Stage 9 runtime configuration is ready.")
+        print("Stage 9.3 runtime configuration is ready.")
         return 0
     try:
         asyncio.run(run_bot(settings))

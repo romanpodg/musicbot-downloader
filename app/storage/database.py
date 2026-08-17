@@ -23,6 +23,7 @@ from app.storage.repositories import (
     DownloadJobRepository,
     RuntimeSettingsRepository,
     SingleFlightRepository,
+    TelegramAlbumRepository,
     TelegramDeliveryRepository,
     TelegramFileCacheRepository,
     TrackRepository,
@@ -43,6 +44,7 @@ class Repositories:
     singleflight: SingleFlightRepository
     telegram_cache: TelegramFileCacheRepository
     telegram_delivery: TelegramDeliveryRepository
+    telegram_album: TelegramAlbumRepository
 
 
 class Database:
@@ -85,6 +87,7 @@ class Database:
             singleflight=SingleFlightRepository(session),
             telegram_cache=TelegramFileCacheRepository(session),
             telegram_delivery=TelegramDeliveryRepository(session),
+            telegram_album=TelegramAlbumRepository(session),
         )
 
     @staticmethod
@@ -112,12 +115,25 @@ class Database:
                 return False
             message = str(exc).lower()
             return (
-                "unique constraint failed: track_sources.provider, track_sources.provider_track_id"
-            ) in message or (
-                "unique constraint failed: telegram_delivery_requests.telegram_bot_id, "
-                "telegram_delivery_requests.telegram_chat_id, "
-                "telegram_delivery_requests.source_message_id"
-            ) in message
+                (
+                    "unique constraint failed: track_sources.provider, "
+                    "track_sources.provider_track_id"
+                )
+                in message
+                or (
+                    "unique constraint failed: telegram_delivery_requests.telegram_bot_id, "
+                    "telegram_delivery_requests.telegram_chat_id, "
+                    "telegram_delivery_requests.source_message_id"
+                )
+                in message
+                or (
+                    "unique constraint failed: telegram_album_requests.telegram_bot_id, "
+                    "telegram_album_requests.telegram_chat_id, "
+                    "telegram_album_requests.source_message_id"
+                )
+                in message
+                or ("unique constraint failed: telegram_delivery_requests.album_item_id") in message
+            )
         if not isinstance(exc, OperationalError):
             return False
         if self.engine.url.get_backend_name() != "sqlite":

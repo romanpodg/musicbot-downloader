@@ -8,6 +8,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.core.enums import QualityProfile
 from app.i18n import LocalizationService
+from app.services.telegram_albums import AlbumCard, AlbumSelectionPage
 from app.services.telegram_requests import TrackCard
 
 QUALITY_CODES = {
@@ -29,6 +30,25 @@ class FirstQualityCallback:
 class TrackQualityCallback:
     request_id: int
     quality_profile: QualityProfile
+
+
+@dataclass(frozen=True, slots=True)
+class AlbumQualityCallback:
+    request_id: int
+    quality_profile: QualityProfile
+
+
+@dataclass(frozen=True, slots=True)
+class AlbumToggleCallback:
+    request_id: int
+    item_id: int
+    page: int
+
+
+@dataclass(frozen=True, slots=True)
+class AlbumPageCallback:
+    request_id: int
+    page: int
 
 
 def encode_first_quality(request_id: int, quality: QualityProfile) -> str:
@@ -94,6 +114,125 @@ def parse_track_back(value: str | None) -> int | None:
     return _parse_request(value, "tb1")
 
 
+def encode_album_first_quality(request_id: int, quality: QualityProfile) -> str:
+    return _encode_quality("af1", request_id, quality)
+
+
+def parse_album_first_quality(value: str | None) -> AlbumQualityCallback | None:
+    return _parse_album_quality(value, "af1")
+
+
+def encode_album_download_all(request_id: int) -> str:
+    return _encode_request("ad1", request_id)
+
+
+def parse_album_download_all(value: str | None) -> int | None:
+    return _parse_request(value, "ad1")
+
+
+def encode_album_select_tracks(request_id: int) -> str:
+    return _encode_request("as1", request_id)
+
+
+def parse_album_select_tracks(value: str | None) -> int | None:
+    return _parse_request(value, "as1")
+
+
+def encode_album_other_quality(request_id: int) -> str:
+    return _encode_request("ao1", request_id)
+
+
+def parse_album_other_quality(value: str | None) -> int | None:
+    return _parse_request(value, "ao1")
+
+
+def encode_album_quality(request_id: int, quality: QualityProfile) -> str:
+    return _encode_quality("aq1", request_id, quality)
+
+
+def parse_album_quality(value: str | None) -> AlbumQualityCallback | None:
+    return _parse_album_quality(value, "aq1")
+
+
+def encode_album_toggle(request_id: int, item_id: int, page: int) -> str:
+    if min(request_id, item_id) <= 0 or page < 0:
+        raise ValueError("invalid album callback")
+    return f"at1:{request_id}:{item_id}:{page}"
+
+
+def parse_album_toggle(value: str | None) -> AlbumToggleCallback | None:
+    if not value:
+        return None
+    parts = value.split(":")
+    if len(parts) != 4 or parts[0] != "at1":
+        return None
+    request_id = _positive_int(parts[1])
+    item_id = _positive_int(parts[2])
+    page = _nonnegative_int(parts[3])
+    if request_id is None or item_id is None or page is None:
+        return None
+    return AlbumToggleCallback(request_id, item_id, page)
+
+
+def encode_album_page(request_id: int, page: int) -> str:
+    if request_id <= 0 or page < 0:
+        raise ValueError("invalid album page")
+    return f"ap1:{request_id}:{page}"
+
+
+def parse_album_page(value: str | None) -> AlbumPageCallback | None:
+    if not value:
+        return None
+    parts = value.split(":")
+    if len(parts) != 3 or parts[0] != "ap1":
+        return None
+    request_id = _positive_int(parts[1])
+    page = _nonnegative_int(parts[2])
+    if request_id is None or page is None:
+        return None
+    return AlbumPageCallback(request_id, page)
+
+
+def encode_album_select_all(request_id: int) -> str:
+    return _encode_request("ax1", request_id)
+
+
+def parse_album_select_all(value: str | None) -> int | None:
+    return _parse_request(value, "ax1")
+
+
+def encode_album_clear_all(request_id: int) -> str:
+    return _encode_request("ac1", request_id)
+
+
+def parse_album_clear_all(value: str | None) -> int | None:
+    return _parse_request(value, "ac1")
+
+
+def encode_album_download_selected(request_id: int) -> str:
+    return _encode_request("aa1", request_id)
+
+
+def parse_album_download_selected(value: str | None) -> int | None:
+    return _parse_request(value, "aa1")
+
+
+def encode_album_selection_back(request_id: int) -> str:
+    return _encode_request("ab1", request_id)
+
+
+def parse_album_selection_back(value: str | None) -> int | None:
+    return _parse_request(value, "ab1")
+
+
+def encode_album_quality_back(request_id: int) -> str:
+    return _encode_request("ak1", request_id)
+
+
+def parse_album_quality_back(value: str | None) -> int | None:
+    return _parse_request(value, "ak1")
+
+
 def encode_setting_quality(quality: QualityProfile) -> str:
     return f"sq1:{QUALITY_CODES[quality]}"
 
@@ -124,15 +263,22 @@ class TelegramPresentation:
         return self.i18n.translate(key, locale, **values)
 
     def quality_keyboard(
-        self, locale: str, *, request_id: int | None = None
+        self,
+        locale: str,
+        *,
+        request_id: int | None = None,
+        album_request_id: int | None = None,
     ) -> InlineKeyboardMarkup:
+        if request_id is not None and album_request_id is not None:
+            raise ValueError("quality picker can target only one request")
         rows = []
         for quality in QualityProfile:
-            callback = (
-                encode_first_quality(request_id, quality)
-                if request_id is not None
-                else encode_setting_quality(quality)
-            )
+            if request_id is not None:
+                callback = encode_first_quality(request_id, quality)
+            elif album_request_id is not None:
+                callback = encode_album_first_quality(album_request_id, quality)
+            else:
+                callback = encode_setting_quality(quality)
             rows.append(
                 [
                     InlineKeyboardButton(
@@ -184,6 +330,171 @@ class TelegramPresentation:
                 ],
             ]
         )
+
+    def album_card_keyboard(
+        self, locale: str, *, request_id: int, quality: QualityProfile
+    ) -> InlineKeyboardMarkup:
+        quality_name = self.quality_name(quality, locale)
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=self.text("bot.album_download_all", locale, quality=quality_name),
+                        callback_data=encode_album_download_all(request_id),
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text=self.text("bot.album_select_tracks", locale),
+                        callback_data=encode_album_select_tracks(request_id),
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text=self.text("bot.album_other_quality", locale),
+                        callback_data=encode_album_other_quality(request_id),
+                    )
+                ],
+            ]
+        )
+
+    def album_quality_keyboard(self, locale: str, *, request_id: int) -> InlineKeyboardMarkup:
+        choices = [
+            InlineKeyboardButton(
+                text=self.quality_name(quality, locale),
+                callback_data=encode_album_quality(request_id, quality),
+            )
+            for quality in QualityProfile
+        ]
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                choices[:2],
+                choices[2:],
+                [
+                    InlineKeyboardButton(
+                        text=self.text("bot.album_back", locale),
+                        callback_data=encode_album_quality_back(request_id),
+                    )
+                ],
+            ]
+        )
+
+    def album_card_text(self, card: AlbumCard, locale: str, *, mode: str = "card") -> str:
+        sections = [f"{card.artist} — {card.title}"]
+        sections.append(self.text("bot.album_tracks", locale, count=card.track_count))
+        if card.duration_ms is not None:
+            sections.append(
+                self.text("bot.album_duration", locale, duration=_format_duration(card.duration_ms))
+            )
+        if card.release_date:
+            sections.append(self.text("bot.album_release_date", locale, date=card.release_date))
+        if mode == "first_quality":
+            sections.append(self.text("bot.album_choose_default_quality", locale))
+        elif mode == "album_quality":
+            sections.append(self.text("bot.album_choose_quality", locale))
+            sections.append(self.text("bot.album_quality_one_off_hint", locale))
+        elif card.quality_profile is not None:
+            sections.append(
+                self.text(
+                    "bot.album_quality",
+                    locale,
+                    quality=self.quality_name(card.quality_profile, locale),
+                )
+            )
+        return _bounded("\n\n".join(sections), 4096)
+
+    def album_selection_text(self, page: AlbumSelectionPage, locale: str) -> str:
+        return _bounded(
+            "\n\n".join(
+                [
+                    f"{page.card.artist} — {page.card.title}",
+                    self.text(
+                        "bot.album_selected_count",
+                        locale,
+                        selected=page.selected_count,
+                        total=page.card.track_count,
+                    ),
+                    self.text(
+                        "bot.album_page",
+                        locale,
+                        page=page.page + 1,
+                        pages=page.page_count,
+                    ),
+                ]
+            ),
+            4096,
+        )
+
+    def album_selection_keyboard(
+        self, page: AlbumSelectionPage, locale: str
+    ) -> InlineKeyboardMarkup:
+        rows: list[list[InlineKeyboardButton]] = []
+        for item in page.items:
+            marker = "☑" if item.selected else "☐"
+            number = (
+                f"D{item.disc_number} · {item.track_number:02d}"
+                if item.disc_number is not None and item.track_number is not None
+                else f"{item.position:02d}"
+            )
+            title = item.title or self.text("bot.track_card_unknown_title", locale)
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=_bounded(f"{marker} {number}. {title}", 48),
+                        callback_data=encode_album_toggle(page.card.request_id, item.id, page.page),
+                    )
+                ]
+            )
+        navigation: list[InlineKeyboardButton] = []
+        if page.page > 0:
+            navigation.append(
+                InlineKeyboardButton(
+                    text=self.text("bot.album_previous_page", locale),
+                    callback_data=encode_album_page(page.card.request_id, page.page - 1),
+                )
+            )
+        if page.page + 1 < page.page_count:
+            navigation.append(
+                InlineKeyboardButton(
+                    text=self.text("bot.album_next_page", locale),
+                    callback_data=encode_album_page(page.card.request_id, page.page + 1),
+                )
+            )
+        if navigation:
+            rows.append(navigation)
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=self.text("bot.album_select_all", locale),
+                    callback_data=encode_album_select_all(page.card.request_id),
+                ),
+                InlineKeyboardButton(
+                    text=self.text("bot.album_clear_all", locale),
+                    callback_data=encode_album_clear_all(page.card.request_id),
+                ),
+            ]
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=self.text(
+                        "bot.album_download_selected",
+                        locale,
+                        count=page.selected_count,
+                    ),
+                    callback_data=encode_album_download_selected(page.card.request_id),
+                )
+            ]
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=self.text("bot.album_back", locale),
+                    callback_data=encode_album_selection_back(page.card.request_id),
+                )
+            ]
+        )
+        return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def track_card_text(self, card: TrackCard, locale: str, *, mode: str = "card") -> str:
         artist = card.artist or self.text("bot.track_card_unknown_artist", locale)
@@ -249,6 +560,32 @@ def _positive_int(value: str) -> int | None:
     except ValueError:
         return None
     return parsed if parsed > 0 else None
+
+
+def _nonnegative_int(value: str) -> int | None:
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _encode_quality(prefix: str, request_id: int, quality: QualityProfile) -> str:
+    if request_id <= 0:
+        raise ValueError("invalid request ID")
+    return f"{prefix}:{request_id}:{QUALITY_CODES[quality]}"
+
+
+def _parse_album_quality(value: str | None, prefix: str) -> AlbumQualityCallback | None:
+    if not value:
+        return None
+    parts = value.split(":")
+    if len(parts) != 3 or parts[0] != prefix or parts[2] not in CODE_QUALITIES:
+        return None
+    request_id = _positive_int(parts[1])
+    if request_id is None:
+        return None
+    return AlbumQualityCallback(request_id, CODE_QUALITIES[parts[2]])
 
 
 def _format_duration(duration_ms: int) -> str:

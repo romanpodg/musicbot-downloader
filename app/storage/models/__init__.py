@@ -8,6 +8,7 @@ from app.storage.models.queue import (
     RuntimeSettings,
     UploadJob,
 )
+from app.storage.models.telegram_album import TelegramAlbumItem, TelegramAlbumRequest
 from app.storage.models.telegram_cache import TelegramFileCache
 from app.storage.models.telegram_delivery import TelegramDeliveryRequest
 from app.storage.models.track import Track
@@ -24,6 +25,8 @@ __all__ = [
     "TrackSource",
     "TelegramFileCache",
     "TelegramDeliveryRequest",
+    "TelegramAlbumItem",
+    "TelegramAlbumRequest",
     "UploadJob",
     "User",
 ]

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from app.core.enums import MusicProviderName, ProviderRuntimeStatus
 from app.core.models import (
+    AlbumSnapshot,
     NormalizedTrackMetadata,
     ProviderCapabilities,
     ProviderMediaCapabilities,
@@ -24,6 +25,16 @@ class TrackReference:
 
 
 @dataclass(frozen=True, slots=True)
+class AlbumReference:
+    provider: MusicProviderName
+    provider_album_id: str
+    source_url: str
+
+
+MediaReference = TrackReference | AlbumReference
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderAvailability:
     available: bool
     version: str | None = None
@@ -38,6 +49,27 @@ class MusicProvider(ABC):
     @abstractmethod
     def detect_url(self, url: str) -> TrackReference:
         """Validate a single-track URL and return its provider identity."""
+
+    async def classify_url(self, url: str) -> MediaReference:
+        """Classify a safe URL as a Track or Album input."""
+
+        return self.detect_url(url)
+
+    async def get_album(self, url: str) -> AlbumSnapshot:
+        """Resolve one provider-release snapshot without canonical album merging."""
+
+        from app.core.exceptions import UnsupportedAlbum
+
+        raise UnsupportedAlbum()
+
+    async def get_track_metadata(
+        self, provider: MusicProviderName, provider_track_id: str
+    ) -> NormalizedTrackMetadata:
+        """Resolve one track from stable provider identity."""
+
+        from app.core.exceptions import UnsupportedProvider
+
+        raise UnsupportedProvider()
 
     @abstractmethod
     async def get_metadata(self, url: str) -> NormalizedTrackMetadata:

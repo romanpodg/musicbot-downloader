@@ -1,6 +1,7 @@
 """Focused repository exports."""
 
 from app.storage.repositories.singleflight import SingleFlightRepository
+from app.storage.repositories.telegram_album import TelegramAlbumRepository
 from app.storage.repositories.telegram_cache import TelegramFileCacheRepository
 from app.storage.repositories.telegram_delivery import TelegramDeliveryRepository
 from app.storage.repositories.track_sources import TrackSourceRepository, UpsertSourceResult
@@ -17,6 +18,7 @@ __all__ = [
     "SingleFlightRepository",
     "TelegramFileCacheRepository",
     "TelegramDeliveryRepository",
+    "TelegramAlbumRepository",
     "UploadJobRepository",
 ]
 from app.storage.repositories.queue import (

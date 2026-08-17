@@ -27,11 +27,14 @@ from app.providers.onthespot.ipc import (
     CHECK_SOURCE_METHOD,
     DOWNLOAD_NATIVE_METHOD,
     GET_METADATA_METHOD,
+    GET_TRACK_METADATA_METHOD,
     INITIALIZE_METHOD,
     LIST_SEARCHABLE_PROVIDERS_METHOD,
+    MATCH_URL_METHOD,
     MAX_MESSAGE_BYTES,
     PREPARE_SOURCE_METHOD,
     PROTOCOL_VERSION,
+    RESOLVE_ALBUM_METHOD,
     SEARCH_TRACKS_METHOD,
     SHUTDOWN_METHOD,
 )
@@ -55,15 +58,19 @@ _DOWNLOAD_SERVICES = frozenset(
 _WIRE_METADATA_KEYS = frozenset(
     {
         "album_name",
+        "album_artists",
         "artists",
+        "disc_number",
         "explicit",
         "is_playable",
         "isrc",
+        "item_url",
         "item_id",
         "length",
         "release_date",
         "release_year",
         "title",
+        "track_number",
     }
 )
 _SEARCHABLE_SERVICES = frozenset(
@@ -79,6 +86,8 @@ _SEARCHABLE_SERVICES = frozenset(
     }
 )
 _MAX_SEARCH_RESULTS = 10
+MAX_ALBUM_TRACKS = 500
+_MAX_ALBUM_TEXT_LENGTH = 1024
 _JOB_ID = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -128,12 +137,124 @@ class OnTheSpotWorker:
         if service == "__handled__" or item_type != "track" or not item_id:
             raise WorkerError("invalid_track_url")
 
+        return self.get_track_metadata(str(service), str(item_id))
+
+    def match_url(self, url: str) -> dict[str, str]:
+        if not self._initialized:
+            self.initialize()
+        if not url or len(url) > 2048:
+            raise WorkerError("invalid_track_url")
+        try:
+            with _silence_upstream():
+                resolved = self._parse.UrlMatcher().match(url)
+        except Exception as exc:
+            raise WorkerError("metadata_unavailable") from exc
+        if resolved is None:
+            raise WorkerError("invalid_track_url")
+        service, item_type, item_id = resolved
+        if service == "__handled__" or not item_type or not item_id:
+            raise WorkerError("invalid_track_url")
+        return {"service": str(service), "item_type": str(item_type), "item_id": str(item_id)}
+
+    def get_track_metadata(self, service: str, item_id: str) -> dict[str, Any]:
+        if not self._initialized:
+            self.initialize()
+        if service not in _DOWNLOAD_SERVICES or not item_id or len(item_id) > 2048:
+            raise WorkerError("unsupported_provider")
+        raw = self._raw_track_metadata(service, item_id)
+        return {
+            "service": service,
+            "item_type": "track",
+            "item_id": str(item_id),
+            "metadata": _wire_metadata(raw),
+        }
+
+    def resolve_album(self, url: str) -> dict[str, Any]:
+        matched = self.match_url(url)
+        service = matched["service"]
+        item_type = matched["item_type"]
+        album_id = matched["item_id"]
+        if item_type != "album":
+            raise WorkerError("unsupported_album")
+        get_track_ids = self._registry.SERVICE_ALBUM_TRACK_ID_FUNCTIONS.get(service)
+        if get_track_ids is None:
+            raise WorkerError("unsupported_album")
         try:
             with _silence_upstream():
                 token = self._accounts.get_account_token(service)
                 if service in _AUTHENTICATED_SERVICES and token is None:
                     raise WorkerError("provider_authentication_error")
-                metadata_function = self._registry.get_metadata_function(service, item_type)
+                raw_ids = get_track_ids(token, album_id)
+        except WorkerError:
+            raise
+        except (KeyError, IndexError) as exc:
+            raise WorkerError("provider_authentication_error") from exc
+        except Exception as exc:
+            raise WorkerError("metadata_unavailable") from exc
+        if not isinstance(raw_ids, list) or not raw_ids:
+            raise WorkerError("metadata_unavailable")
+        if len(raw_ids) > MAX_ALBUM_TRACKS:
+            raise WorkerError("album_too_large")
+
+        tracks: list[dict[str, Any]] = []
+        album_title: str | None = None
+        album_artist: str | None = None
+        release_date: str | None = None
+        durations_complete = True
+        duration_total = 0
+        for position, value in enumerate(raw_ids, start=1):
+            track_id = str(value).strip()
+            if not track_id or len(track_id) > 2048:
+                raise WorkerError("metadata_unavailable")
+            try:
+                raw = self._raw_track_metadata(service, track_id)
+            except WorkerError:
+                raw = {}
+            title = _album_text(raw.get("title"))
+            artist = _album_text(raw.get("artists"))
+            album_title = album_title or _album_text(raw.get("album_name"))
+            album_artist = album_artist or _album_text(raw.get("album_artists")) or artist
+            release_date = release_date or _album_text(
+                raw.get("release_date") or raw.get("release_year")
+            )
+            duration = _album_positive_int(raw.get("length"))
+            if duration is None:
+                durations_complete = False
+            else:
+                duration_total += duration
+            tracks.append(
+                {
+                    "provider_track_id": track_id,
+                    "position": position,
+                    "title": title,
+                    "artist": artist,
+                    "disc_number": _album_positive_int(raw.get("disc_number")),
+                    "track_number": _album_positive_int(raw.get("track_number")),
+                    "duration_ms": duration,
+                    "explicit": raw.get("explicit")
+                    if isinstance(raw.get("explicit"), bool)
+                    else None,
+                }
+            )
+        if album_title is None or album_artist is None:
+            raise WorkerError("metadata_unavailable")
+        return {
+            "provider": service,
+            "provider_album_id": album_id,
+            "title": album_title,
+            "artist": album_artist,
+            "release_date": release_date,
+            "duration_ms": duration_total if durations_complete else None,
+            "tracks": tracks,
+        }
+
+    def _raw_track_metadata(self, service: str, item_id: str) -> Mapping[str, Any]:
+        try:
+            with _silence_upstream():
+                token = self._accounts.get_account_token(service)
+                if service in _AUTHENTICATED_SERVICES and token is None:
+                    raise WorkerError("provider_authentication_error")
+                metadata_function = self._registry.get_metadata_function(service, "track")
                 raw = metadata_function(token, item_id)
         except WorkerError:
             raise
@@ -143,17 +264,7 @@ class OnTheSpotWorker:
             raise WorkerError("metadata_unavailable") from exc
         if not isinstance(raw, Mapping) or not raw:
             raise WorkerError("metadata_unavailable")
-
-        return {
-            "service": str(service),
-            "item_type": str(item_type),
-            "item_id": str(item_id),
-            "metadata": {
-                key: _wire_value(raw[key])
-                for key in _WIRE_METADATA_KEYS
-                if key in raw and _wire_value(raw[key]) is not None
-            },
-        }
+        return raw
 
     def list_searchable_providers(self) -> list[str]:
         if not self._initialized:
@@ -494,6 +605,35 @@ def _wire_value(value: Any) -> str | int | float | bool | None:
     return str(value)
 
 
+def _wire_metadata(raw: Mapping[str, Any]) -> dict[str, str | int | float | bool]:
+    return {
+        key: value
+        for key in _WIRE_METADATA_KEYS
+        if key in raw and (value := _wire_value(raw[key])) is not None
+    }
+
+
+def _album_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if len(text) > _MAX_ALBUM_TEXT_LENGTH:
+        raise WorkerError("metadata_unavailable")
+    return text
+
+
+def _album_positive_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
 def _response(request_id: str | None, *, result: Any = None, error: str | None = None) -> bytes:
     if error is None:
         payload: dict[str, Any] = {"id": request_id, "ok": True, "result": result}
@@ -536,11 +676,27 @@ def main() -> int:
                 raise ValueError
             if method == INITIALIZE_METHOD:
                 result = worker.initialize()
+            elif method == MATCH_URL_METHOD:
+                url = params.get("url")
+                if not isinstance(url, str):
+                    raise WorkerError("invalid_track_url")
+                result = worker.match_url(url)
             elif method == GET_METADATA_METHOD:
                 url = params.get("url")
                 if not isinstance(url, str):
                     raise WorkerError("invalid_track_url")
                 result = worker.get_metadata(url)
+            elif method == GET_TRACK_METADATA_METHOD:
+                provider = params.get("provider")
+                provider_track_id = params.get("provider_track_id")
+                if not isinstance(provider, str) or not isinstance(provider_track_id, str):
+                    raise WorkerError("unsupported_provider")
+                result = worker.get_track_metadata(provider, provider_track_id)
+            elif method == RESOLVE_ALBUM_METHOD:
+                url = params.get("url")
+                if not isinstance(url, str):
+                    raise WorkerError("invalid_track_url")
+                result = worker.resolve_album(url)
             elif method == LIST_SEARCHABLE_PROVIDERS_METHOD:
                 result = worker.list_searchable_providers()
             elif method == SEARCH_TRACKS_METHOD:

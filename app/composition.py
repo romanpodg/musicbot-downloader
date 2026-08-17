@@ -25,8 +25,14 @@ from app.services.queues import (
     WorkerSettingsService,
 )
 from app.services.singleflight import SingleFlightService, SubscriberNotifier
+from app.services.telegram_album_coordinator import (
+    TelegramAlbumCoordinator,
+    TelegramAlbumCoordinatorManager,
+)
+from app.services.telegram_albums import TelegramAlbumRequestService, TelegramAlbumResolver
 from app.services.telegram_cache import TelegramFileCacheService
 from app.services.telegram_delivery import TelegramDeliveryFanoutManager, TelegramDeliveryWorker
+from app.services.telegram_media_requests import TelegramMediaRequestService
 from app.services.telegram_requests import ResolveTrackAdapter, TelegramTrackRequestService
 from app.services.telegram_upload import TelegramCacheUploadExecutor
 from app.services.telegram_users import TelegramUserService
@@ -90,13 +96,16 @@ class Stage9Components:
     dispatcher: Dispatcher
     queue_manager: QueueManager
     delivery_fanout: TelegramDeliveryFanoutManager
+    album_coordinator: TelegramAlbumCoordinatorManager
     provider: MusicProvider
 
     async def start(self) -> None:
         await self.queue_manager.start()
         await self.delivery_fanout.start()
+        await self.album_coordinator.start()
 
     async def stop(self) -> None:
+        await self.album_coordinator.stop()
         await self.delivery_fanout.stop()
         await self.queue_manager.stop()
         await self.provider.close()
@@ -115,6 +124,7 @@ async def compose_stage9(
     download_wake = asyncio.Event()
     upload_wake = asyncio.Event()
     delivery_wake = asyncio.Event()
+    album_wake = asyncio.Event()
     notifier = SubscriberNotifier()
     artifacts = DownloadArtifactManager(settings.temp_dir)
     downloads = DownloadQueueService(
@@ -182,18 +192,30 @@ async def compose_stage9(
     )
     i18n = LocalizationService(settings.supported_locales, settings.default_locale)
     users = TelegramUserService(database, i18n, owner_id=settings.owner_id)
+    track_resolution = ResolveTrackService(database, provider)
     requests = TelegramTrackRequestService(
         database,
-        ResolveTrackAdapter(
-            ResolveTrackService(database, provider), database=database, provider=provider
-        ),
+        ResolveTrackAdapter(track_resolution, database=database, provider=provider),
         telegram_bot_id=stage8.bot_identity.telegram_bot_id,
         wake_event=delivery_wake,
     )
+    albums = TelegramAlbumRequestService(
+        database,
+        TelegramAlbumResolver(provider),
+        telegram_bot_id=stage8.bot_identity.telegram_bot_id,
+        wake_event=album_wake,
+    )
+    media_requests = TelegramMediaRequestService(provider, requests, albums)
     dispatcher = Dispatcher()
     dispatcher.include_router(
         create_stage9_router(
-            TelegramHandlerDependencies(users, requests, TelegramPresentation(i18n))
+            TelegramHandlerDependencies(
+                users,
+                requests,
+                TelegramPresentation(i18n),
+                media_requests,
+                albums,
+            )
         )
     )
     delivery_worker = TelegramDeliveryWorker(
@@ -210,4 +232,15 @@ async def compose_stage9(
         workers=settings.telegram_delivery_workers,
         wake_event=delivery_wake,
     )
-    return Stage9Components(stage8, dispatcher, queue_manager, fanout, provider)
+    album_coordinator = TelegramAlbumCoordinatorManager(
+        TelegramAlbumCoordinator(
+            database,
+            track_resolution,
+            stage8.gateway,
+            i18n,
+            album_wake_event=album_wake,
+            delivery_wake_event=delivery_wake,
+        ),
+        wake_event=album_wake,
+    )
+    return Stage9Components(stage8, dispatcher, queue_manager, fanout, album_coordinator, provider)

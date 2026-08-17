@@ -51,12 +51,18 @@ class TelegramDeliveryRequest(TimestampMixin, Base):
             "(lease_owner IS NULL) = (lease_expires_at IS NULL)",
             name="ck_telegram_delivery_lease_pair",
         ),
+        CheckConstraint(
+            "(source_message_id IS NOT NULL AND album_item_id IS NULL) OR "
+            "(source_message_id IS NULL AND album_item_id IS NOT NULL)",
+            name="ck_telegram_delivery_origin",
+        ),
         UniqueConstraint(
             "telegram_bot_id",
             "telegram_chat_id",
             "source_message_id",
             name="uq_telegram_delivery_message",
         ),
+        UniqueConstraint("album_item_id", name="uq_telegram_delivery_album_item"),
         Index(
             "ix_telegram_delivery_claim",
             "status",
@@ -74,7 +80,10 @@ class TelegramDeliveryRequest(TimestampMixin, Base):
         ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
     telegram_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    source_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    album_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("telegram_album_items.id", ondelete="RESTRICT")
+    )
     track_id: Mapped[int] = mapped_column(
         ForeignKey("tracks.id", ondelete="RESTRICT"), nullable=False
     )
