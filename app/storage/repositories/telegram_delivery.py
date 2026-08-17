@@ -88,6 +88,104 @@ class TelegramDeliveryRepository:
         )
         return result.scalar_one_or_none()
 
+    async def start_default_quality(
+        self, *, request_id: int, user_id: int, now: datetime
+    ) -> TelegramDeliveryRequest | None:
+        return await self._transition(
+            request_id=request_id,
+            user_id=user_id,
+            expected=TelegramDeliveryStatus.AWAITING_ACTION,
+            target=TelegramDeliveryStatus.QUEUED,
+            now=now,
+        )
+
+    async def open_track_quality(
+        self, *, request_id: int, user_id: int, now: datetime
+    ) -> TelegramDeliveryRequest | None:
+        return await self._transition(
+            request_id=request_id,
+            user_id=user_id,
+            expected=TelegramDeliveryStatus.AWAITING_ACTION,
+            target=TelegramDeliveryStatus.AWAITING_TRACK_QUALITY,
+            now=now,
+        )
+
+    async def choose_track_quality(
+        self,
+        *,
+        request_id: int,
+        user_id: int,
+        quality_profile: QualityProfile,
+        now: datetime,
+    ) -> TelegramDeliveryRequest | None:
+        return await self._transition(
+            request_id=request_id,
+            user_id=user_id,
+            expected=TelegramDeliveryStatus.AWAITING_TRACK_QUALITY,
+            target=TelegramDeliveryStatus.QUEUED,
+            now=now,
+            quality_profile=quality_profile,
+        )
+
+    async def back_to_action(
+        self, *, request_id: int, user_id: int, now: datetime
+    ) -> TelegramDeliveryRequest | None:
+        return await self._transition(
+            request_id=request_id,
+            user_id=user_id,
+            expected=TelegramDeliveryStatus.AWAITING_TRACK_QUALITY,
+            target=TelegramDeliveryStatus.AWAITING_ACTION,
+            now=now,
+        )
+
+    async def record_card_message(self, *, request_id: int, user_id: int, message_id: int) -> bool:
+        result = await self._session.execute(
+            update(TelegramDeliveryRequest)
+            .where(
+                TelegramDeliveryRequest.id == request_id,
+                TelegramDeliveryRequest.user_id == user_id,
+                TelegramDeliveryRequest.card_message_id.is_(None),
+                TelegramDeliveryRequest.status.in_(
+                    (
+                        TelegramDeliveryStatus.AWAITING_QUALITY,
+                        TelegramDeliveryStatus.AWAITING_ACTION,
+                        TelegramDeliveryStatus.AWAITING_TRACK_QUALITY,
+                    )
+                ),
+            )
+            .values(card_message_id=message_id)
+        )
+        return _changed(result)
+
+    async def _transition(
+        self,
+        *,
+        request_id: int,
+        user_id: int,
+        expected: TelegramDeliveryStatus,
+        target: TelegramDeliveryStatus,
+        now: datetime,
+        quality_profile: QualityProfile | None = None,
+    ) -> TelegramDeliveryRequest | None:
+        values: dict[str, object] = {
+            "status": target,
+            "available_at": now,
+            "last_error_code": None,
+        }
+        if quality_profile is not None:
+            values["quality_profile"] = quality_profile
+        result = await self._session.execute(
+            update(TelegramDeliveryRequest)
+            .where(
+                TelegramDeliveryRequest.id == request_id,
+                TelegramDeliveryRequest.user_id == user_id,
+                TelegramDeliveryRequest.status == expected,
+            )
+            .values(**values)
+            .returning(TelegramDeliveryRequest)
+        )
+        return result.scalar_one_or_none()
+
     async def recover_expired(self, *, now: datetime, max_attempts: int) -> None:
         await self._session.execute(
             update(TelegramDeliveryRequest)

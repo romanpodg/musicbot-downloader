@@ -94,6 +94,8 @@ class DeliveryPreparationStatus(StrEnum):
 
 class TelegramDeliveryStatus(StrEnum):
     AWAITING_QUALITY = "AWAITING_QUALITY"
+    AWAITING_ACTION = "AWAITING_ACTION"
+    AWAITING_TRACK_QUALITY = "AWAITING_TRACK_QUALITY"
     QUEUED = "QUEUED"
     WAITING = "WAITING"
     SENDING = "SENDING"

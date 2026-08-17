@@ -42,7 +42,8 @@ class TelegramDeliveryRequest(TimestampMixin, Base):
             name="ck_telegram_delivery_quality_profile",
         ),
         CheckConstraint(
-            "status IN ('AWAITING_QUALITY', 'QUEUED', 'WAITING', 'SENDING', "
+            "status IN ('AWAITING_QUALITY', 'AWAITING_ACTION', "
+            "'AWAITING_TRACK_QUALITY', 'QUEUED', 'WAITING', 'SENDING', "
             "'DELIVERED', 'FAILED', 'CANCELLED')",
             name="ck_telegram_delivery_status",
         ),
@@ -99,4 +100,5 @@ class TelegramDeliveryRequest(TimestampMixin, Base):
     lease_owner: Mapped[str | None] = mapped_column(String(64))
     lease_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     delivered_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    card_message_id: Mapped[int | None] = mapped_column(BigInteger)
     delivered_at: Mapped[datetime | None] = mapped_column(UTCDateTime())

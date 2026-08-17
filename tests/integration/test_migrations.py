@@ -250,3 +250,74 @@ def test_stage9_migration_upgrades_0006_and_round_trips(
         command.check(config)
     finally:
         get_settings.cache_clear()
+
+
+def test_stage92_migration_upgrades_0007_and_round_trips(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    database_path = tmp_path / "stage92.db"
+    database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", database_url)  # type: ignore[attr-defined]
+    get_settings.cache_clear()
+    config = Config("alembic.ini")
+    try:
+        command.upgrade(config, "20260818_0007")
+        with sqlite3.connect(database_path) as connection:
+            connection.execute(
+                "INSERT INTO users "
+                "(telegram_id, role, preferred_quality_profile, is_banned, last_seen_at, "
+                "created_at, updated_at) VALUES "
+                "(1, 'USER', 'MP3_320', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, "
+                "CURRENT_TIMESTAMP)"
+            )
+            connection.execute(
+                "INSERT INTO tracks (id, title, artist, normalized_title, normalized_artist, "
+                "created_at, updated_at) VALUES "
+                "(1, 'Song', 'Artist', 'song', 'artist', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+            connection.execute(
+                "INSERT INTO telegram_delivery_requests "
+                "(id, telegram_bot_id, user_id, telegram_chat_id, source_message_id, track_id, "
+                "quality_profile, status, attempt_count, repair_count, available_at, created_at, "
+                "updated_at) VALUES "
+                "(1, 100, 1, 1, 1, 1, NULL, 'AWAITING_QUALITY', 0, 0, CURRENT_TIMESTAMP, "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        command.upgrade(config, "head")
+        with sqlite3.connect(database_path) as connection:
+            columns = {
+                row[1]
+                for row in connection.execute(
+                    "PRAGMA table_info('telegram_delivery_requests')"
+                ).fetchall()
+            }
+            assert "card_message_id" in columns
+            assert connection.execute(
+                "SELECT status FROM telegram_delivery_requests WHERE id = 1"
+            ).fetchone() == ("AWAITING_QUALITY",)
+            connection.execute(
+                "INSERT INTO telegram_delivery_requests "
+                "(id, telegram_bot_id, user_id, telegram_chat_id, source_message_id, track_id, "
+                "quality_profile, status, attempt_count, repair_count, available_at, created_at, "
+                "updated_at, card_message_id) VALUES "
+                "(2, 100, 1, 1, 2, 1, 'MP3_320', 'AWAITING_ACTION', 0, 0, "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 99)"
+            )
+            connection.execute("DELETE FROM telegram_delivery_requests WHERE id = 2")
+        command.check(config)
+        command.downgrade(config, "20260818_0007")
+        with sqlite3.connect(database_path) as connection:
+            columns = {
+                row[1]
+                for row in connection.execute(
+                    "PRAGMA table_info('telegram_delivery_requests')"
+                ).fetchall()
+            }
+            assert "card_message_id" not in columns
+            assert connection.execute(
+                "SELECT status FROM telegram_delivery_requests WHERE id = 1"
+            ).fetchone() == ("AWAITING_QUALITY",)
+        command.upgrade(config, "head")
+        command.check(config)
+    finally:
+        get_settings.cache_clear()
