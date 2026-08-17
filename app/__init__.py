@@ -1,0 +1,1 @@
+"""Music downloader service foundation."""

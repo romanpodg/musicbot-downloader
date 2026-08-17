@@ -1,0 +1,5 @@
+{
+  "errors.invalid_track_url": "Некорректная ссылка на трек.",
+  "errors.metadata_unavailable": "Метаданные трека недоступны.",
+  "status.ready": "Готово"
+}

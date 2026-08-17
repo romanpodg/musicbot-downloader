@@ -1,0 +1,5 @@
+{
+  "errors.invalid_track_url": "This track URL is invalid.",
+  "errors.metadata_unavailable": "Track metadata is unavailable.",
+  "status.ready": "Ready"
+}
