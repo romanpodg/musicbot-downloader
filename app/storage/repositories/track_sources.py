@@ -9,7 +9,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import MusicProviderName
+from app.core.exceptions import TrackSourceOwnershipConflict
 from app.storage.models import TrackSource
+
+_SAFE_PROVIDER_METADATA_KEYS = frozenset({"item_id", "is_playable", "release_year"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,14 +60,29 @@ class TrackSourceRepository:
                 provider=provider,
                 provider_track_id=provider_track_id,
                 url=url,
-                provider_metadata=provider_metadata or {},
+                provider_metadata=self._merge_metadata({}, provider_metadata),
             )
             self._session.add(source)
             await self._session.flush()
             return UpsertSourceResult(source=source, created=True)
 
-        source.track_id = track_id
-        source.url = url
-        source.provider_metadata = provider_metadata or {}
+        if source.track_id != track_id:
+            raise TrackSourceOwnershipConflict()
+        if url is not None:
+            source.url = url
+        source.provider_metadata = self._merge_metadata(source.provider_metadata, provider_metadata)
         await self._session.flush()
         return UpsertSourceResult(source=source, created=False)
+
+    @staticmethod
+    def _merge_metadata(
+        existing: dict[str, Any], incoming: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        merged = dict(existing)
+        if incoming is None:
+            return merged
+        for key in _SAFE_PROVIDER_METADATA_KEYS:
+            value = incoming.get(key)
+            if value is not None:
+                merged[key] = value
+        return merged

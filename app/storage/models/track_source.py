@@ -28,7 +28,13 @@ class TrackSource(TimestampMixin, Base):
         ForeignKey("tracks.id", ondelete="CASCADE"), nullable=False
     )
     provider: Mapped[MusicProviderName] = mapped_column(
-        Enum(MusicProviderName, native_enum=False, length=32), nullable=False
+        Enum(
+            MusicProviderName,
+            values_callable=lambda enum: [member.value for member in enum],
+            name="musicprovidername",
+            native_enum=False,
+            length=32,
+        ),
     )
     provider_track_id: Mapped[str] = mapped_column(String(512), nullable=False)
     url: Mapped[str | None] = mapped_column(String(2048))

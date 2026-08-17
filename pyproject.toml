@@ -7,7 +7,7 @@ name = "musicbot-downloader"
 version = "0.1.0"
 description = "Provider-independent foundation for a Telegram music downloader service"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 license = { text = "Proprietary" }
 dependencies = [
   "aiosqlite>=0.20,<1",
@@ -56,7 +56,3 @@ python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
 exclude = ["alembic/versions"]
-
-[[tool.mypy.overrides]]
-module = ["onthespot.*"]
-ignore_missing_imports = true

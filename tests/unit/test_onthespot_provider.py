@@ -11,16 +11,21 @@ from app.providers.base import ProviderAvailability
 from app.providers.onthespot.provider import OnTheSpotProvider
 
 
-class FakeBridge:
-    def availability(self) -> ProviderAvailability:
+class FakeProcessClient:
+    def __init__(self) -> None:
+        self.requested_url: str | None = None
+        self.was_closed = False
+
+    async def availability(self) -> ProviderAvailability:
         return ProviderAvailability(True, version="test")
 
-    def resolve(self, url: str) -> tuple[str, str, str, Mapping[str, Any]]:
-        return (
-            "spotify",
-            "track",
-            "0123456789012345678901",
-            {
+    async def get_metadata(self, url: str) -> Mapping[str, Any]:
+        self.requested_url = url
+        return {
+            "service": "spotify",
+            "item_type": "track",
+            "item_id": "0123456789012345678901",
+            "metadata": {
                 "item_id": "0123456789012345678901",
                 "title": "Abracadabra",
                 "artists": "Lady Gaga",
@@ -31,48 +36,84 @@ class FakeBridge:
                 "release_year": "2025",
                 "access_token": "must-not-be-persisted",
             },
-        )
+        }
+
+    async def close(self) -> None:
+        self.was_closed = True
 
 
-def test_detects_supported_track_url() -> None:
-    provider = OnTheSpotProvider(FakeBridge())
-    reference = provider.detect_url("https://open.spotify.com/track/0123456789012345678901")
+def _provider(client: FakeProcessClient | None = None) -> OnTheSpotProvider:
+    return OnTheSpotProvider(client)  # type: ignore[arg-type]
+
+
+def test_detects_and_canonicalizes_supported_track_url() -> None:
+    reference = _provider().detect_url(
+        "https://open.spotify.com/track/0123456789012345678901?si=tracking"
+    )
     assert reference.provider is MusicProviderName.SPOTIFY
     assert reference.provider_track_id == "0123456789012345678901"
+    assert reference.source_url == "https://open.spotify.com/track/0123456789012345678901"
 
 
 @pytest.mark.parametrize(
     "url",
     [
+        "https://user:password@open.spotify.com/track/0123456789012345678901",
+        "https://open.spotify.com/track/0123456789012345678901#fragment",
+        "https://open.spotify.com:8443/track/0123456789012345678901",
+        "ftp://open.spotify.com/track/0123456789012345678901",
         "https://open.spotify.com/album/0123456789012345678901",
         "https://www.deezer.com/album/123",
         "javascript:alert(1)",
     ],
 )
-def test_rejects_non_track_or_malformed_urls(url: str) -> None:
+def test_rejects_unsafe_non_track_or_malformed_urls(url: str) -> None:
     with pytest.raises(InvalidTrackUrl):
-        OnTheSpotProvider(FakeBridge()).detect_url(url)
+        _provider().detect_url(url)
 
 
 def test_rejects_unknown_provider() -> None:
     with pytest.raises(UnsupportedProvider):
-        OnTheSpotProvider(FakeBridge()).detect_url("https://example.com/track/123")
+        _provider().detect_url("https://example.com/track/123")
 
 
-def test_rejects_sensitive_query_parameters_before_upstream_logging() -> None:
-    with pytest.raises(InvalidTrackUrl):
-        OnTheSpotProvider(FakeBridge()).detect_url(
-            "https://open.spotify.com/track/0123456789012345678901?access_token=secret"
-        )
+def test_preserves_required_apple_query_and_removes_tracking() -> None:
+    reference = _provider().detect_url(
+        "https://music.apple.com/us/album/name/123?i=456&uo=4&at=secret"
+    )
+    assert reference.provider is MusicProviderName.APPLE_MUSIC
+    assert reference.provider_track_id == "456"
+    assert reference.source_url == "https://music.apple.com/us/album/name/123?i=456"
+
+
+def test_preserves_required_youtube_music_query_and_removes_tracking() -> None:
+    reference = _provider().detect_url(
+        "https://music.youtube.com/watch?v=abc_123-XYZ&list=tracking"
+    )
+    assert reference.provider is MusicProviderName.YOUTUBE_MUSIC
+    assert reference.provider_track_id == "abc_123-XYZ"
+    assert reference.source_url == "https://music.youtube.com/watch?v=abc_123-XYZ"
 
 
 @pytest.mark.asyncio
-async def test_maps_metadata_without_guessing_native_media() -> None:
-    provider = OnTheSpotProvider(FakeBridge())
-    metadata = await provider.get_metadata("https://open.spotify.com/track/0123456789012345678901")
+async def test_passes_only_canonical_url_and_maps_safe_metadata() -> None:
+    client = FakeProcessClient()
+    provider = _provider(client)
+    metadata = await provider.get_metadata(
+        "https://open.spotify.com/track/0123456789012345678901?si=tracking"
+    )
+    assert client.requested_url == "https://open.spotify.com/track/0123456789012345678901"
     assert metadata.title == "Abracadabra"
     assert metadata.duration_ms == 223000
     assert metadata.native.codec is None
     assert metadata.native.container is None
     assert metadata.native.bitrate_kbps is None
     assert "access_token" not in metadata.provider_metadata
+
+
+@pytest.mark.asyncio
+async def test_provider_close_delegates_to_process_client() -> None:
+    client = FakeProcessClient()
+    provider = _provider(client)
+    await provider.close()
+    assert client.was_closed is True

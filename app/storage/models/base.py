@@ -18,7 +18,7 @@ def utc_now() -> datetime:
 class UTCDateTime(TypeDecorator[datetime]):
     """Persist UTC and restore timezone awareness on dialects such as SQLite."""
 
-    impl = DateTime
+    impl = DateTime(timezone=True)
     cache_ok = True
 
     def process_bind_param(self, value: datetime | None, dialect: Dialect) -> Any:

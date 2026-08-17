@@ -40,9 +40,50 @@ def test_default_locale_must_be_supported() -> None:
         make_settings(default_locale="de", supported_locales="en,ru")
 
 
-def test_supported_locales_are_parsed_from_comma_separated_input(
+def test_supported_locales_are_parsed_and_normalized(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SUPPORTED_LOCALES", "en, ru, de")
+    monkeypatch.setenv("SUPPORTED_LOCALES", " en, ru_RU , de-DE ")
     settings = make_settings()
-    assert settings.supported_locales == ("en", "ru", "de")
+    assert settings.supported_locales == ("en", "ru-ru", "de-de")
+
+
+@pytest.mark.parametrize("owner_id", [0, -1, "not-an-id"])
+def test_owner_id_must_be_a_positive_integer(owner_id: object) -> None:
+    with pytest.raises(ValidationError):
+        make_settings(owner_id=owner_id)
+
+
+def test_empty_owner_id_remains_optional() -> None:
+    assert make_settings(owner_id="").owner_id is None
+
+
+@pytest.mark.parametrize("level", ["TRACE", "WARN", "20", ""])
+def test_invalid_application_log_level_is_rejected(level: str) -> None:
+    with pytest.raises(ValidationError):
+        make_settings(app_log_level=level)
+
+
+def test_application_log_level_is_normalized() -> None:
+    assert make_settings(app_log_level=" warning ").app_log_level == "WARNING"
+
+
+@pytest.mark.parametrize(
+    "database_url",
+    [
+        "sqlite:///./data/test.db",
+        "sqlite+pysqlite:///./data/test.db",
+        "not a database url",
+    ],
+)
+def test_sqlite_database_url_requires_async_driver(database_url: str) -> None:
+    with pytest.raises(ValidationError, match="DATABASE_URL"):
+        make_settings(database_url=database_url)
+
+
+def test_parent_application_log_level_does_not_require_generic_log_level(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    monkeypatch.setenv("APP_LOG_LEVEL", "INFO")
+    assert make_settings().app_log_level == "INFO"

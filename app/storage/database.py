@@ -10,7 +10,7 @@ from typing import Any
 
 from sqlalchemy import event, make_url
 from sqlalchemy.engine import Connection
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from app.core.exceptions import DatabaseError
+from app.core.exceptions import DatabaseConcurrencyError, DatabaseError
 from app.storage.repositories import (
     TrackRepository,
     TrackSourceRepository,
@@ -51,6 +51,8 @@ class Database:
                 await session.commit()
             except SQLAlchemyError as exc:
                 await session.rollback()
+                if self._is_concurrency_error(exc):
+                    raise DatabaseConcurrencyError() from exc
                 raise DatabaseError() from exc
             except Exception:
                 await session.rollback()
@@ -85,6 +87,21 @@ class Database:
         if parsed.database == ":memory:":
             return
         Path(parsed.database).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+
+    def _is_concurrency_error(self, exc: SQLAlchemyError) -> bool:
+        if isinstance(exc, IntegrityError):
+            if self.engine.url.get_backend_name() != "sqlite":
+                return False
+            message = str(exc).lower()
+            return (
+                "unique constraint failed: track_sources.provider, track_sources.provider_track_id"
+            ) in message
+        if not isinstance(exc, OperationalError):
+            return False
+        if self.engine.url.get_backend_name() != "sqlite":
+            return False
+        message = str(exc).lower()
+        return "database is locked" in message or "database table is locked" in message
 
 
 async def scalar_pragma(engine: AsyncEngine, pragma: str) -> Any:

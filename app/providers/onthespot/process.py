@@ -1,0 +1,232 @@
+"""Async lifecycle owner for the isolated OnTheSpot interpreter process."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import sys
+import uuid
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+from app.core.exceptions import (
+    InvalidTrackUrl,
+    MetadataUnavailable,
+    ProviderAuthenticationError,
+    ProviderUnavailable,
+    UnsupportedProvider,
+)
+from app.providers.base import ProviderAvailability
+from app.providers.onthespot.ipc import (
+    DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    GET_METADATA_METHOD,
+    INITIALIZE_METHOD,
+    MAX_MESSAGE_BYTES,
+    SHUTDOWN_METHOD,
+)
+
+_ERROR_TYPES: dict[str, type[Exception]] = {
+    "invalid_track_url": InvalidTrackUrl,
+    "metadata_unavailable": MetadataUnavailable,
+    "provider_authentication_error": ProviderAuthenticationError,
+    "provider_unavailable": ProviderUnavailable,
+    "unsupported_provider": UnsupportedProvider,
+}
+
+
+class OnTheSpotProcessClient:
+    """Own exactly one long-lived worker and serialize its Stage-2 operations."""
+
+    def __init__(
+        self,
+        *,
+        request_timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        command: Sequence[str] | None = None,
+        environment: Mapping[str, str] | None = None,
+    ) -> None:
+        self._request_timeout = request_timeout
+        self._command = tuple(command or (sys.executable, "-m", "app.providers.onthespot.worker"))
+        self._environment = dict(environment) if environment is not None else None
+        self._process: asyncio.subprocess.Process | None = None
+        self._request_lock = asyncio.Lock()
+        self._started_once = False
+        self._failed = False
+        self._closed = False
+        self._version: str | None = None
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    @property
+    def process_id(self) -> int | None:
+        return self._process.pid if self._process is not None else None
+
+    async def availability(self) -> ProviderAvailability:
+        try:
+            async with self._request_lock:
+                await self._ensure_started_locked()
+        except ProviderUnavailable:
+            return ProviderAvailability(False, detail="worker_initialization_failed")
+        return ProviderAvailability(True, version=self._version)
+
+    async def get_metadata(self, url: str) -> Mapping[str, Any]:
+        result = await self._request(GET_METADATA_METHOD, {"url": url})
+        if not isinstance(result, dict):
+            raise MetadataUnavailable()
+        return result
+
+    async def close(self) -> None:
+        async with self._request_lock:
+            if self._closed:
+                return
+            self._closed = True
+            process = self._process
+            if process is None:
+                return
+            if process.returncode is None:
+                try:
+                    await self._exchange_locked(SHUTDOWN_METHOD, {})
+                except (ProviderUnavailable, MetadataUnavailable):
+                    pass
+            await self._terminate_locked()
+
+    async def _request(self, method: str, params: Mapping[str, Any]) -> Any:
+        async with self._request_lock:
+            await self._ensure_started_locked()
+            return await self._exchange_locked(method, params)
+
+    async def _ensure_started_locked(self) -> None:
+        if self._closed or self._failed:
+            raise ProviderUnavailable()
+        if self._process is not None:
+            if self._process.returncode is None:
+                return
+            self._failed = True
+            raise ProviderUnavailable()
+        if self._started_once:
+            self._failed = True
+            raise ProviderUnavailable()
+
+        self._started_once = True
+        try:
+            self._process = await asyncio.create_subprocess_exec(
+                *self._command,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                env=self._worker_environment(),
+                limit=MAX_MESSAGE_BYTES + 1,
+            )
+            initialized = await self._exchange_locked(INITIALIZE_METHOD, {})
+        except asyncio.CancelledError:
+            self._failed = True
+            await asyncio.shield(self._terminate_locked())
+            raise
+        except Exception as exc:
+            self._failed = True
+            await self._terminate_locked()
+            if isinstance(exc, ProviderUnavailable):
+                raise
+            raise ProviderUnavailable() from exc
+
+        if not isinstance(initialized, dict) or initialized.get("protocol") != 1:
+            self._failed = True
+            await self._terminate_locked()
+            raise ProviderUnavailable()
+        version = initialized.get("version")
+        self._version = str(version) if version is not None else None
+
+    async def _exchange_locked(self, method: str, params: Mapping[str, Any]) -> Any:
+        process = self._process
+        if process is None or process.stdin is None or process.stdout is None:
+            raise ProviderUnavailable()
+        if process.returncode is not None:
+            self._failed = True
+            raise ProviderUnavailable()
+
+        request_id = uuid.uuid4().hex
+        payload = json.dumps(
+            {"id": request_id, "method": method, "params": dict(params)},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if len(payload) > MAX_MESSAGE_BYTES:
+            raise MetadataUnavailable()
+
+        try:
+            process.stdin.write(payload + b"\n")
+            async with asyncio.timeout(self._request_timeout):
+                await process.stdin.drain()
+                response_line = await process.stdout.readline()
+        except asyncio.CancelledError:
+            self._failed = True
+            await asyncio.shield(self._terminate_locked())
+            raise
+        except (TimeoutError, BrokenPipeError, ConnectionError, OSError, ValueError) as exc:
+            self._failed = True
+            await self._terminate_locked()
+            raise ProviderUnavailable() from exc
+
+        if not response_line or len(response_line) > MAX_MESSAGE_BYTES:
+            self._failed = True
+            await self._terminate_locked()
+            raise ProviderUnavailable()
+        try:
+            response = json.loads(response_line)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self._failed = True
+            await self._terminate_locked()
+            raise ProviderUnavailable() from exc
+        if not isinstance(response, dict) or response.get("id") != request_id:
+            self._failed = True
+            await self._terminate_locked()
+            raise ProviderUnavailable()
+        if response.get("ok") is True:
+            return response.get("result")
+
+        error = response.get("error")
+        code = error.get("code") if isinstance(error, dict) else None
+        error_type = _ERROR_TYPES.get(str(code), MetadataUnavailable)
+        raise error_type()
+
+    async def _terminate_locked(self) -> None:
+        process = self._process
+        self._process = None
+        if process is None:
+            return
+        if process.stdin is not None:
+            process.stdin.close()
+        if process.returncode is None:
+            process.terminate()
+            try:
+                async with asyncio.timeout(5):
+                    await process.wait()
+            except TimeoutError:
+                process.kill()
+                await process.wait()
+
+    def _worker_environment(self) -> dict[str, str]:
+        environment = dict(os.environ if self._environment is None else self._environment)
+        environment["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
+        environment["LOG_LEVEL"] = "20"
+        environment["PYTHONUNBUFFERED"] = "1"
+        return environment
+
+
+_shared_client: OnTheSpotProcessClient | None = None
+
+
+def get_shared_process_client() -> OnTheSpotProcessClient:
+    global _shared_client
+    if _shared_client is None or _shared_client.closed:
+        _shared_client = OnTheSpotProcessClient()
+    return _shared_client
+
+
+async def close_shared_process_client() -> None:
+    global _shared_client
+    client, _shared_client = _shared_client, None
+    if client is not None:
+        await client.close()

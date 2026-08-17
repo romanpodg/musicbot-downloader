@@ -46,4 +46,4 @@ def configure_logging(settings: Settings) -> None:
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler)
-    root.setLevel(settings.log_level.upper())
+    root.setLevel(settings.app_log_level)

@@ -18,9 +18,11 @@ async def _run(url: str) -> ResolveResult:
     settings = get_settings()
     configure_logging(settings)
     database = Database(settings.database_url)
+    provider = OnTheSpotProvider()
     try:
-        return await ResolveTrackService(database, OnTheSpotProvider()).resolve(url)
+        return await ResolveTrackService(database, provider).resolve(url)
     finally:
+        await provider.close()
         await database.dispose()
 
 

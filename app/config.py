@@ -4,17 +4,23 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
-from pydantic import BeforeValidator, Field, SecretStr, model_validator
+from pydantic import BeforeValidator, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from sqlalchemy import make_url
+from sqlalchemy.exc import ArgumentError
 
 from app.core.exceptions import ConfigurationError
 
 
+def _normalize_locale(value: str) -> str:
+    return value.strip().lower().replace("_", "-")
+
+
 def _parse_locales(value: Any) -> Any:
     if isinstance(value, str):
-        return tuple(part.strip().lower() for part in value.split(",") if part.strip())
+        return tuple(_normalize_locale(part) for part in value.split(",") if part.strip())
     return value
 
 
@@ -22,8 +28,16 @@ def _empty_to_none(value: Any) -> Any:
     return None if value == "" else value
 
 
+def _normalize_log_level(value: Any) -> Any:
+    return value.strip().upper() if isinstance(value, str) else value
+
+
 LocaleTuple = Annotated[tuple[str, ...], NoDecode, BeforeValidator(_parse_locales)]
 OptionalOwnerId = Annotated[int | None, BeforeValidator(_empty_to_none)]
+AppLogLevel = Annotated[
+    Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+    BeforeValidator(_normalize_log_level),
+]
 
 
 class Settings(BaseSettings):
@@ -56,7 +70,14 @@ class Settings(BaseSettings):
     internal_api_port: int = Field(default=8080, ge=1, le=65535)
     internal_api_token: SecretStr = SecretStr("")
 
-    log_level: str = "INFO"
+    app_log_level: AppLogLevel = "INFO"
+
+    @field_validator("owner_id")
+    @classmethod
+    def validate_owner_id(cls, value: int | None) -> int | None:
+        if value is not None and value <= 0:
+            raise ValueError("OWNER_ID must be a positive integer")
+        return value
 
     @model_validator(mode="after")
     def validate_cross_field_constraints(self) -> Settings:
@@ -65,11 +86,24 @@ class Settings(BaseSettings):
         if self.upload_workers_max < self.upload_workers_default:
             raise ValueError("UPLOAD_WORKERS_MAX must be >= UPLOAD_WORKERS_DEFAULT")
 
-        self.default_locale = self.default_locale.lower()
-        if not self.supported_locales:
+        self.default_locale = _normalize_locale(self.default_locale)
+        self.supported_locales = tuple(_normalize_locale(item) for item in self.supported_locales)
+        if not self.supported_locales or any(not item for item in self.supported_locales):
             raise ValueError("SUPPORTED_LOCALES must contain at least one locale")
+        if len(set(self.supported_locales)) != len(self.supported_locales):
+            raise ValueError("SUPPORTED_LOCALES must not contain duplicates")
         if self.default_locale not in self.supported_locales:
             raise ValueError("DEFAULT_LOCALE must be present in SUPPORTED_LOCALES")
+
+        try:
+            database_url = make_url(self.database_url)
+        except ArgumentError as exc:
+            raise ValueError("DATABASE_URL must be a valid SQLAlchemy URL") from exc
+        if (
+            database_url.get_backend_name() == "sqlite"
+            and database_url.drivername != "sqlite+aiosqlite"
+        ):
+            raise ValueError("SQLite DATABASE_URL must use the aiosqlite async driver")
         return self
 
 

@@ -35,3 +35,7 @@ class MusicProvider(ABC):
     @abstractmethod
     async def get_metadata(self, url: str) -> NormalizedTrackMetadata:
         """Resolve and normalize metadata for one track URL."""
+
+    async def close(self) -> None:
+        """Release provider-owned resources, if any."""
+        return None

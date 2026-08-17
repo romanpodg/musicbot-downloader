@@ -1,4 +1,6 @@
 .env
+otsconfig.json
+.logs/
 .venv/
 __pycache__/
 *.py[cod]

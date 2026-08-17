@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from datetime import UTC
+
 import pytest
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 
 from app.core.enums import MusicProviderName
-from app.core.exceptions import DatabaseError
+from app.core.exceptions import DatabaseError, TrackSourceOwnershipConflict
 from app.storage import Database
 
 
@@ -20,17 +22,17 @@ async def test_track_without_isrc_is_valid_and_creation_works(database: Database
 
 
 @pytest.mark.asyncio
-async def test_track_lookup_normalizes_isrc(database: Database) -> None:
+async def test_multiple_tracks_may_share_normalized_isrc(database: Database) -> None:
     async with database.transaction() as repositories:
-        await repositories.tracks.create_track(isrc="usabc1234567", title="Track")
+        first = await repositories.tracks.create_track(isrc="usabc1234567", title="One")
+        second = await repositories.tracks.create_track(isrc="USABC1234567", title="Two")
     async with database.transaction() as repositories:
-        found = await repositories.tracks.get_track_by_isrc(" USABC1234567 ")
-        assert found is not None
-        assert found.isrc == "USABC1234567"
+        found = await repositories.tracks.get_tracks_by_isrc(" USABC1234567 ")
+        assert [track.id for track in found] == [first.id, second.id]
 
 
 @pytest.mark.asyncio
-async def test_multiple_provider_sources_and_upsert(database: Database) -> None:
+async def test_multiple_provider_sources_and_non_destructive_upsert(database: Database) -> None:
     async with database.transaction() as repositories:
         track = await repositories.tracks.create_track(title="Track")
         first = await repositories.track_sources.upsert_source(
@@ -38,8 +40,9 @@ async def test_multiple_provider_sources_and_upsert(database: Database) -> None:
             provider=MusicProviderName.SPOTIFY,
             provider_track_id="spotify-id",
             url="https://open.spotify.com/track/spotify-id",
+            provider_metadata={"release_year": "2024", "access_token": "secret"},
         )
-        second = await repositories.track_sources.upsert_source(
+        await repositories.track_sources.upsert_source(
             track_id=track.id,
             provider=MusicProviderName.DEEZER,
             provider_track_id="123",
@@ -49,17 +52,22 @@ async def test_multiple_provider_sources_and_upsert(database: Database) -> None:
             track_id=track.id,
             provider=MusicProviderName.SPOTIFY,
             provider_track_id="spotify-id",
-            url="https://open.spotify.com/track/spotify-id?si=new",
+            url=None,
+            provider_metadata={"release_year": None, "is_playable": True},
         )
         sources = await repositories.track_sources.get_sources_for_track(track.id)
         assert first.created is True
-        assert second.created is True
         assert repeated.created is False
         assert len(sources) == 2
+        assert repeated.source.url == "https://open.spotify.com/track/spotify-id"
+        assert repeated.source.provider_metadata == {
+            "release_year": "2024",
+            "is_playable": True,
+        }
 
 
 @pytest.mark.asyncio
-async def test_provider_track_id_pair_is_unique(database: Database) -> None:
+async def test_provider_identity_cannot_move_to_another_track(database: Database) -> None:
     async with database.transaction() as repositories:
         first = await repositories.tracks.create_track(title="One")
         second = await repositories.tracks.create_track(title="Two")
@@ -69,15 +77,45 @@ async def test_provider_track_id_pair_is_unique(database: Database) -> None:
             provider_track_id="unique",
             url=None,
         )
-        # Repository-level upsert moves the identity instead of duplicating it.
-        result = await repositories.track_sources.upsert_source(
-            track_id=second.id,
-            provider=MusicProviderName.DEEZER,
-            provider_track_id="unique",
+    with pytest.raises(TrackSourceOwnershipConflict):
+        async with database.transaction() as repositories:
+            await repositories.track_sources.upsert_source(
+                track_id=second.id,
+                provider=MusicProviderName.DEEZER,
+                provider_track_id="unique",
+                url=None,
+            )
+    async with database.transaction() as repositories:
+        source = await repositories.track_sources.get_source(MusicProviderName.DEEZER, "unique")
+        assert source is not None
+        assert source.track_id == first.id
+
+
+@pytest.mark.asyncio
+async def test_provider_values_are_stored_as_stable_lowercase(database: Database) -> None:
+    async with database.transaction() as repositories:
+        track = await repositories.tracks.create_track(title="Track")
+        await repositories.track_sources.upsert_source(
+            track_id=track.id,
+            provider=MusicProviderName.APPLE_MUSIC,
+            provider_track_id="456",
             url=None,
         )
-        assert result.created is False
-        assert result.source.track_id == second.id
+    async with database.engine.connect() as connection:
+        stored = await connection.scalar(text("SELECT provider FROM track_sources"))
+    assert stored == "apple_music"
+
+
+@pytest.mark.asyncio
+async def test_timestamp_round_trip_is_utc_aware(database: Database) -> None:
+    async with database.transaction() as repositories:
+        track = await repositories.tracks.create_track(title="Timestamp")
+        track_id = track.id
+    async with database.transaction() as repositories:
+        found = await repositories.tracks.get_track_by_id(track_id)
+        assert found is not None
+        assert found.created_at.tzinfo is UTC
+        assert found.updated_at.tzinfo is UTC
 
 
 @pytest.mark.asyncio
