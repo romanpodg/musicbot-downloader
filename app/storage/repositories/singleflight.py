@@ -62,10 +62,12 @@ class SingleFlightRepository:
         request_key: str | None,
         max_active: int,
         now: datetime,
+        acquire_lock: bool = True,
     ) -> AdmissionRecord:
         # The reserved SQLite write lock serializes lookup, reconciliation, capacity,
         # job/flight creation, and subscriber attachment in one short transaction.
-        await self._session.execute(text("BEGIN IMMEDIATE"))
+        if acquire_lock:
+            await self._session.execute(text("BEGIN IMMEDIATE"))
         if await self._session.get(Track, track_id) is None:
             raise TrackNotFound()
 

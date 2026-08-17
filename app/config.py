@@ -34,6 +34,23 @@ def _normalize_log_level(value: Any) -> Any:
 
 LocaleTuple = Annotated[tuple[str, ...], NoDecode, BeforeValidator(_parse_locales)]
 OptionalOwnerId = Annotated[int | None, BeforeValidator(_empty_to_none)]
+
+
+def _parse_chat_id(value: Any) -> Any:
+    if value == "" or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+    try:
+        return int(normalized)
+    except ValueError:
+        return normalized
+
+
+TelegramChatId = Annotated[int | str | None, BeforeValidator(_parse_chat_id)]
 AppLogLevel = Annotated[
     Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
     BeforeValidator(_normalize_log_level),
@@ -51,6 +68,7 @@ class Settings(BaseSettings):
     )
 
     bot_token: SecretStr = SecretStr("")
+    telegram_cache_chat_id: TelegramChatId = None
     owner_id: OptionalOwnerId = None
 
     database_url: str = "sqlite+aiosqlite:///./data/bot.db"
@@ -83,6 +101,13 @@ class Settings(BaseSettings):
             raise ValueError("OWNER_ID must be a positive integer")
         return value
 
+    @field_validator("telegram_cache_chat_id")
+    @classmethod
+    def validate_telegram_cache_chat_id(cls, value: int | str | None) -> int | str | None:
+        if value == 0:
+            raise ValueError("TELEGRAM_CACHE_CHAT_ID must not be zero")
+        return value
+
     @model_validator(mode="after")
     def validate_cross_field_constraints(self) -> Settings:
         if self.download_workers_max < self.download_workers_default:
@@ -109,6 +134,14 @@ class Settings(BaseSettings):
         ):
             raise ValueError("SQLite DATABASE_URL must use the aiosqlite async driver")
         return self
+
+    def telegram_cache_configuration(self) -> tuple[str, int | str]:
+        """Validate Telegram-only settings at the Stage 8 composition boundary."""
+
+        token = self.bot_token.get_secret_value().strip()
+        if not token or self.telegram_cache_chat_id is None:
+            raise ConfigurationError()
+        return token, self.telegram_cache_chat_id
 
 
 @lru_cache(maxsize=1)

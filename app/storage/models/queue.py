@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Enum,
@@ -16,12 +17,28 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.enums import QualityProfile, QueueJobStatus, SubscriberStatus
+from app.core.enums import (
+    DownloadPlanOperation,
+    MusicProviderName,
+    NativeCodec,
+    NativeContainer,
+    QualityProfile,
+    QueueJobStatus,
+    SubscriberStatus,
+)
 from app.storage.models.base import Base, TimestampMixin, UTCDateTime, utc_now
 
 
 def _enum(
-    enum_type: type[QueueJobStatus] | type[QualityProfile] | type[SubscriberStatus],
+    enum_type: type[
+        QueueJobStatus
+        | QualityProfile
+        | SubscriberStatus
+        | MusicProviderName
+        | DownloadPlanOperation
+        | NativeCodec
+        | NativeContainer
+    ],
     name: str,
     length: int,
 ) -> Enum:
@@ -136,6 +153,33 @@ class UploadJob(TimestampMixin, Base):
     )
     artifact_job_id: Mapped[str] = mapped_column(String(32), nullable=False)
     artifact_path: Mapped[str] = mapped_column(String(2048), nullable=False)
+    source_track_source_id: Mapped[int | None] = mapped_column(
+        ForeignKey("track_sources.id", ondelete="SET NULL")
+    )
+    source_provider: Mapped[MusicProviderName | None] = mapped_column(
+        _enum(MusicProviderName, "musicprovidername", 32)
+    )
+    source_provider_track_id: Mapped[str | None] = mapped_column(String(512))
+    operation: Mapped[DownloadPlanOperation | None] = mapped_column(
+        _enum(DownloadPlanOperation, "downloadplanoperation", 16)
+    )
+    transcoded: Mapped[bool | None] = mapped_column(Boolean)
+    source_codec: Mapped[NativeCodec | None] = mapped_column(_enum(NativeCodec, "nativecodec", 16))
+    source_container: Mapped[NativeContainer | None] = mapped_column(
+        _enum(NativeContainer, "nativecontainer", 16)
+    )
+    source_bitrate_kbps: Mapped[int | None] = mapped_column(Integer)
+    output_codec: Mapped[NativeCodec | None] = mapped_column(_enum(NativeCodec, "nativecodec", 16))
+    output_container: Mapped[NativeContainer | None] = mapped_column(
+        _enum(NativeContainer, "nativecontainer", 16)
+    )
+    output_bitrate_kbps: Mapped[int | None] = mapped_column(Integer)
+    sample_rate_hz: Mapped[int | None] = mapped_column(Integer)
+    bit_depth: Mapped[int | None] = mapped_column(Integer)
+    channels: Mapped[int | None] = mapped_column(Integer)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    file_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    encoder: Mapped[str | None] = mapped_column(String(64))
     attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     queued_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utc_now, nullable=False)
     available_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utc_now, nullable=False)

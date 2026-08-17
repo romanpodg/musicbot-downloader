@@ -107,14 +107,34 @@ class WorkerLimitError(QueueServiceError):
 class UploadRetryableError(MusicBotError):
     """Delivery failed transiently and may be retried by Stage 7."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        code: QueueErrorCode | str = QueueErrorCode.UPLOAD_RETRYABLE,
+        *,
+        retry_after_seconds: float | None = None,
+    ) -> None:
         super().__init__()
-        self.code = QueueErrorCode.UPLOAD_RETRYABLE
+        self.code = QueueErrorCode(code)
+        self.retry_after_seconds = retry_after_seconds
 
 
 class UploadTerminalError(MusicBotError):
     """Delivery failed permanently for this artifact."""
 
-    def __init__(self) -> None:
+    def __init__(self, code: QueueErrorCode | str = QueueErrorCode.UPLOAD_TERMINAL) -> None:
         super().__init__()
-        self.code = QueueErrorCode.UPLOAD_TERMINAL
+        self.code = QueueErrorCode(code)
+
+
+class DeliveryInvariantError(MusicBotError):
+    """A READY subscriber has no matching active completed-result cache entry."""
+
+    code = "READY_CACHE_MISSING"
+
+
+class SubscriberNotReadyError(MusicBotError):
+    code = "SUBSCRIBER_NOT_READY"
+
+
+class TelegramCacheEntryNotFoundError(MusicBotError):
+    code = "TELEGRAM_CACHE_ENTRY_NOT_FOUND"

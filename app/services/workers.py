@@ -18,6 +18,7 @@ from app.core.exceptions import (
     UploadTerminalError,
 )
 from app.core.models import (
+    DownloadArtifactMetadata,
     DownloadResult,
     QueueRuntimeSnapshot,
     UploadRequest,
@@ -130,6 +131,7 @@ class DownloadWorkerBackend:
                         artifact_job_id=result.job_id,
                         artifact_path=stored_path,
                         now=self._clock(),
+                        artifact=_artifact_metadata(result),
                     )
                 if upload is None:
                     self._artifacts.release(result.job_id)
@@ -305,6 +307,7 @@ class UploadWorkerBackend:
                     job.quality_profile,
                     job.artifact_job_id,
                     path,
+                    _artifact_metadata_from_upload(job),
                 )
             )
             async with self._database.transaction() as repositories:
@@ -335,15 +338,18 @@ class UploadWorkerBackend:
             )
             if status in {QueueJobStatus.CANCELLED, QueueJobStatus.FAILED} and valid_path:
                 self._queue.release_owned(job.artifact_job_id, job.artifact_path)
-        except UploadRetryableError:
-            await self._transition_failure(
+        except UploadRetryableError as exc:
+            status = await self._transition_failure(
                 job,
                 worker_id,
-                QueueErrorCode.UPLOAD_RETRYABLE.value,
+                exc.code.value,
                 retryable=True,
+                retry_after_seconds=exc.retry_after_seconds,
             )
-        except UploadTerminalError:
-            await self._terminal(job, worker_id, QueueErrorCode.UPLOAD_TERMINAL.value, valid_path)
+            if status in {QueueJobStatus.CANCELLED, QueueJobStatus.FAILED} and valid_path:
+                self._queue.release_owned(job.artifact_job_id, job.artifact_path)
+        except UploadTerminalError as exc:
+            await self._terminal(job, worker_id, exc.code.value, valid_path)
         except FileNotFoundError:
             await self._terminal(job, worker_id, QueueErrorCode.UPLOAD_ARTIFACT_MISSING.value, True)
         except ArtifactPathError:
@@ -372,6 +378,7 @@ class UploadWorkerBackend:
         code: str,
         *,
         retryable: bool,
+        retry_after_seconds: float | None = None,
     ) -> QueueJobStatus | None:
         now = self._clock()
         async with self._database.transaction() as repositories:
@@ -379,7 +386,8 @@ class UploadWorkerBackend:
                 job_id=job.id,
                 worker_id=worker_id,
                 now=now,
-                available_at=now + _retry_delay(job.attempt_count),
+                available_at=now
+                + _retry_delay(job.attempt_count, retry_after_seconds=retry_after_seconds),
                 error_code=code,
                 max_attempts=self._max_attempts,
                 retryable=retryable,
@@ -651,5 +659,60 @@ class QueueManager:
             await asyncio.sleep(self._reconcile_seconds)
 
 
-def _retry_delay(attempt_count: int) -> timedelta:
-    return timedelta(seconds=min(2 ** max(attempt_count - 1, 0), 30))
+def _retry_delay(attempt_count: int, *, retry_after_seconds: float | None = None) -> timedelta:
+    backoff = min(2 ** max(attempt_count - 1, 0), 30)
+    return timedelta(seconds=max(backoff, retry_after_seconds or 0))
+
+
+def _artifact_metadata(result: DownloadResult) -> DownloadArtifactMetadata:
+    source = result.source_media
+    output = result.output_media
+    return DownloadArtifactMetadata(
+        track_source_id=result.track_source_id,
+        source_provider=result.provider,
+        source_provider_track_id=result.provider_track_id,
+        operation=result.operation,
+        transcoded=result.transcoded,
+        source_codec=source.codec,
+        source_container=source.container,
+        source_bitrate_kbps=source.bitrate_kbps,
+        output_codec=output.codec,
+        output_container=output.container,
+        output_bitrate_kbps=output.bitrate_kbps,
+        sample_rate_hz=output.sample_rate_hz,
+        bit_depth=output.bit_depth,
+        channels=output.channels,
+        duration_ms=output.duration_ms,
+        file_size_bytes=result.file_size,
+        encoder=result.encoder,
+    )
+
+
+def _artifact_metadata_from_upload(job: UploadJob) -> DownloadArtifactMetadata | None:
+    if (
+        job.source_provider is None
+        or job.source_provider_track_id is None
+        or job.operation is None
+        or job.transcoded is None
+        or job.file_size_bytes is None
+    ):
+        return None
+    return DownloadArtifactMetadata(
+        track_source_id=job.source_track_source_id,
+        source_provider=job.source_provider,
+        source_provider_track_id=job.source_provider_track_id,
+        operation=job.operation,
+        transcoded=job.transcoded,
+        source_codec=job.source_codec,
+        source_container=job.source_container,
+        source_bitrate_kbps=job.source_bitrate_kbps,
+        output_codec=job.output_codec,
+        output_container=job.output_container,
+        output_bitrate_kbps=job.output_bitrate_kbps,
+        sample_rate_hz=job.sample_rate_hz,
+        bit_depth=job.bit_depth,
+        channels=job.channels,
+        duration_ms=job.duration_ms,
+        file_size_bytes=job.file_size_bytes,
+        encoder=job.encoder,
+    )

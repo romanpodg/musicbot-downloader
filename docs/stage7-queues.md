@@ -53,9 +53,10 @@ it. Download and upload pools reconcile independently. Excess workers finish the
 retire before claiming again. Idle workers wait on an in-process event with bounded DB polling as a
 restart-safe fallback.
 
-No `UploadExecutor` is configured in production Stage 7, so application startup does not start queue
-processing. Tests inject controlled executors. This avoids silently accumulating artifacts and does
-not pretend that Telegram delivery exists.
+Stage 7 defines the generic `UploadExecutor`; Stage 8 now supplies the production
+`TelegramCacheUploadExecutor`. `app.main` still starts no queue daemon or Telegram update loop.
+An explicit application owner composes the Stage 8 executor and passes it to `UploadWorkerBackend`,
+which lets the existing QueueManager start both pools without coupling queue logic to aiogram.
 
 ## Stage 7.1 SingleFlight admission
 

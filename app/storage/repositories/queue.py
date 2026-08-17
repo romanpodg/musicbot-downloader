@@ -13,7 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import QualityProfile, QueueJobStatus
 from app.core.exceptions import QueueFullError, TrackNotFound
-from app.storage.models import DownloadJob, RuntimeSettings, Track, UploadJob
+from app.core.models import DownloadArtifactMetadata
+from app.storage.models import DownloadJob, RuntimeSettings, Track, TrackSource, UploadJob
 
 TERMINAL_STATUSES = (
     QueueJobStatus.SUCCEEDED,
@@ -163,6 +164,7 @@ class DownloadJobRepository:
         artifact_job_id: str,
         artifact_path: str,
         now: datetime,
+        artifact: DownloadArtifactMetadata | None = None,
     ) -> UploadJob | None:
         result = await self._session.execute(
             update(DownloadJob)
@@ -188,6 +190,12 @@ class DownloadJobRepository:
         job = await self._session.get(DownloadJob, job_id)
         if job is None:
             return None
+        source_track_source_id = artifact.track_source_id if artifact else None
+        if (
+            source_track_source_id is not None
+            and await self._session.get(TrackSource, source_track_source_id) is None
+        ):
+            source_track_source_id = None
         upload = UploadJob(
             download_job_id=job.id,
             track_id=job.track_id,
@@ -195,6 +203,23 @@ class DownloadJobRepository:
             status=QueueJobStatus.QUEUED,
             artifact_job_id=artifact_job_id,
             artifact_path=artifact_path,
+            source_track_source_id=source_track_source_id,
+            source_provider=(artifact.source_provider if artifact else None),
+            source_provider_track_id=(artifact.source_provider_track_id if artifact else None),
+            operation=(artifact.operation if artifact else None),
+            transcoded=(artifact.transcoded if artifact else None),
+            source_codec=(artifact.source_codec if artifact else None),
+            source_container=(artifact.source_container if artifact else None),
+            source_bitrate_kbps=(artifact.source_bitrate_kbps if artifact else None),
+            output_codec=(artifact.output_codec if artifact else None),
+            output_container=(artifact.output_container if artifact else None),
+            output_bitrate_kbps=(artifact.output_bitrate_kbps if artifact else None),
+            sample_rate_hz=(artifact.sample_rate_hz if artifact else None),
+            bit_depth=(artifact.bit_depth if artifact else None),
+            channels=(artifact.channels if artifact else None),
+            duration_ms=(artifact.duration_ms if artifact else None),
+            file_size_bytes=(artifact.file_size_bytes if artifact else None),
+            encoder=(artifact.encoder if artifact else None),
             queued_at=now,
             available_at=now,
         )

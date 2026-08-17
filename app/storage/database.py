@@ -23,6 +23,7 @@ from app.storage.repositories import (
     DownloadJobRepository,
     RuntimeSettingsRepository,
     SingleFlightRepository,
+    TelegramFileCacheRepository,
     TrackRepository,
     TrackSourceRepository,
     UploadJobRepository,
@@ -39,6 +40,7 @@ class Repositories:
     upload_jobs: UploadJobRepository
     runtime_settings: RuntimeSettingsRepository
     singleflight: SingleFlightRepository
+    telegram_cache: TelegramFileCacheRepository
 
 
 class Database:
@@ -79,6 +81,7 @@ class Database:
             upload_jobs=UploadJobRepository(session),
             runtime_settings=RuntimeSettingsRepository(session),
             singleflight=SingleFlightRepository(session),
+            telegram_cache=TelegramFileCacheRepository(session),
         )
 
     @staticmethod

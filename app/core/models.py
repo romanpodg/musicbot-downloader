@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.enums import (
+    DeliveryPreparationStatus,
     DownloadAttemptStatus,
     DownloadFailureCode,
     DownloadPlanOperation,
@@ -25,6 +26,8 @@ from app.core.enums import (
     QueueJobStatus,
     SourceValidationConfidence,
     SubscriberStatus,
+    TelegramCacheStatus,
+    TelegramMediaKind,
     TrackEvidenceCode,
     TrackMatchDecision,
 )
@@ -213,6 +216,7 @@ class DownloadResult:
     fallback_index: int
     attempts: tuple[DownloadAttempt, ...]
     created_at: datetime
+    encoder: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,11 +258,114 @@ class UploadRequest:
     quality_profile: QualityProfile
     artifact_job_id: str
     artifact_path: Path
+    artifact: DownloadArtifactMetadata | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class UploadResult:
     external_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadArtifactMetadata:
+    """Validated Stage 6 facts durably carried by an UploadJob."""
+
+    track_source_id: int | None
+    source_provider: MusicProviderName
+    source_provider_track_id: str
+    operation: DownloadPlanOperation
+    transcoded: bool
+    source_codec: NativeCodec | None
+    source_container: NativeContainer | None
+    source_bitrate_kbps: int | None
+    output_codec: NativeCodec | None
+    output_container: NativeContainer | None
+    output_bitrate_kbps: int | None
+    sample_rate_hz: int | None
+    bit_depth: int | None
+    channels: int | None
+    duration_ms: int | None
+    file_size_bytes: int
+    encoder: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CachedTelegramFile:
+    cache_id: int
+    telegram_bot_id: int
+    track_id: int
+    quality_profile: QualityProfile
+    file_id: str
+    file_unique_id: str
+    media_kind: TelegramMediaKind
+    cache_chat_id: int
+    cache_message_id: int
+    file_size_bytes: int | None
+    source_track_source_id: int | None
+    source_provider: MusicProviderName
+    source_provider_track_id: str
+    operation: DownloadPlanOperation
+    transcoded: bool
+    source_codec: NativeCodec | None
+    source_container: NativeContainer | None
+    source_bitrate_kbps: int | None
+    output_codec: NativeCodec | None
+    output_container: NativeContainer | None
+    output_bitrate_kbps: int | None
+    sample_rate_hz: int | None
+    bit_depth: int | None
+    channels: int | None
+    duration_ms: int | None
+    encoder: str | None
+    status: TelegramCacheStatus
+    created_at: datetime
+    updated_at: datetime
+    last_used_at: datetime | None
+    invalidated_at: datetime | None
+    invalid_reason_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class TelegramCacheStats:
+    active_entries: int
+    invalid_entries: int
+    recorded_media_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class TelegramBotIdentity:
+    telegram_bot_id: int
+    username: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TelegramUploadReceipt:
+    telegram_bot_id: int
+    chat_id: int
+    message_id: int
+    media_kind: TelegramMediaKind
+    file_id: str
+    file_unique_id: str
+    file_size_bytes: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryPreparationResult:
+    status: DeliveryPreparationStatus
+    track_id: int
+    quality_profile: QualityProfile
+    cached_file: CachedTelegramFile | None = None
+    subscriber: JobSubscriberView | None = None
+    download_job_id: int | None = None
+
+    def __post_init__(self) -> None:
+        cache_hit = self.status is DeliveryPreparationStatus.CACHE_HIT
+        if cache_hit != (self.cached_file is not None):
+            raise ValueError("CACHE_HIT requires exactly one cached file")
+        if cache_hit and (self.subscriber is not None or self.download_job_id is not None):
+            raise ValueError("CACHE_HIT cannot contain pending work")
+        if not cache_hit and (self.subscriber is None or self.download_job_id is None):
+            raise ValueError("PENDING requires subscriber and download job")
 
 
 @dataclass(frozen=True, slots=True)

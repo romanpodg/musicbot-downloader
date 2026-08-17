@@ -16,6 +16,7 @@ from app.core.enums import (
     DownloadPlanOperation,
     DownloadPlanReadiness,
     MusicProviderName,
+    NativeCodec,
     NativeContainer,
     ProviderRuntimeStatus,
     QualityProfile,
@@ -210,6 +211,7 @@ class DownloadPipeline:
                         fallback_index=plan_rank - 1,
                         attempts=tuple(attempts),
                         created_at=datetime.now(UTC),
+                        encoder=_encoder_for(plan),
                     )
                     self._log_attempt(job_id, plan, plan_rank, "success")
                     return result
@@ -361,3 +363,13 @@ def _output_extension(plan: DownloadPlan, source_container: NativeContainer | No
     if plan.output_specification.lossless and source_container is NativeContainer.FLAC:
         return "flac"
     raise MediaOperationError(DownloadFailureCode.INVALID_PLAN)
+
+
+def _encoder_for(plan: DownloadPlan) -> str | None:
+    if plan.operation is DownloadPlanOperation.DIRECT:
+        return None
+    if plan.output_specification.codec is NativeCodec.MP3:
+        return "libmp3lame"
+    if plan.output_specification.codec is NativeCodec.AAC:
+        return "aac"
+    return None

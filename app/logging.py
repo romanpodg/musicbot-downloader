@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterable
 
 from app.config import Settings
@@ -19,6 +20,12 @@ class SecretRedactionFilter(logging.Filter):
         message = record.getMessage()
         for secret in self._secrets:
             message = message.replace(secret, "[REDACTED]")
+        message = re.sub(
+            r"https://api\.telegram\.org/bot[^/\s]+",
+            "https://api.telegram.org/bot[REDACTED]",
+            message,
+            flags=re.IGNORECASE,
+        )
         record.msg = message
         record.args = ()
         return True

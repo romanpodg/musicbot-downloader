@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.config import Settings
+from app.core.exceptions import ConfigurationError
 
 
 def make_settings(**values: object) -> Settings:
@@ -87,3 +88,24 @@ def test_parent_application_log_level_does_not_require_generic_log_level(
     monkeypatch.delenv("LOG_LEVEL", raising=False)
     monkeypatch.setenv("APP_LOG_LEVEL", "INFO")
     assert make_settings().app_log_level == "INFO"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("-100123456", -100123456), ("@private_cache", "@private_cache"), (12345, 12345)],
+)
+def test_telegram_cache_chat_id_supports_numeric_and_named_destinations(
+    raw: object, expected: int | str
+) -> None:
+    settings = make_settings(
+        bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456789",
+        telegram_cache_chat_id=raw,
+    )
+    _, chat_id = settings.telegram_cache_configuration()
+    assert chat_id == expected
+
+
+def test_telegram_configuration_is_lazy_but_strict_when_requested() -> None:
+    settings = make_settings()
+    with pytest.raises(ConfigurationError):
+        settings.telegram_cache_configuration()

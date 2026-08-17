@@ -134,3 +134,62 @@ def test_stage71_migration_upgrades_stage7_and_round_trips(
         command.upgrade(config, "head")
     finally:
         get_settings.cache_clear()
+
+
+def test_stage8_migration_upgrades_0005_and_round_trips(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    database_path = tmp_path / "stage8.db"
+    database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", database_url)  # type: ignore[attr-defined]
+    get_settings.cache_clear()
+    config = Config("alembic.ini")
+    try:
+        command.upgrade(config, "20260818_0005")
+        command.upgrade(config, "head")
+        with sqlite3.connect(database_path) as connection:
+            tables = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            assert "telegram_file_cache" in tables
+            cache_columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info('telegram_file_cache')").fetchall()
+            }
+            assert {
+                "telegram_bot_id",
+                "track_id",
+                "quality_profile",
+                "telegram_file_id",
+                "telegram_file_unique_id",
+                "source_provider",
+                "source_provider_track_id",
+                "operation",
+                "output_codec",
+                "output_container",
+                "status",
+            } <= cache_columns
+            upload_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info('upload_jobs')").fetchall()
+            }
+            assert {"source_provider", "operation", "file_size_bytes", "encoder"} <= upload_columns
+            indexes = connection.execute("PRAGMA index_list('telegram_file_cache')").fetchall()
+            assert any(row[2] for row in indexes)
+            assert any(row[1] == "ix_telegram_file_cache_status_created" for row in indexes)
+        command.check(config)
+        command.downgrade(config, "20260818_0005")
+        with sqlite3.connect(database_path) as connection:
+            tables = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            assert "telegram_file_cache" not in tables
+            upload_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info('upload_jobs')").fetchall()
+            }
+            assert "source_provider" not in upload_columns
+        command.upgrade(config, "head")
+        command.check(config)
+    finally:
+        get_settings.cache_clear()

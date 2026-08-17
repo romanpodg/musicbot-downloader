@@ -1,11 +1,18 @@
 # Musicbot Downloader
 
 Production-oriented foundation for a future Telegram music downloader service. This repository
-implements Stage 0 through Stage 7.1: canonical recording identity, ambiguity-safe matching,
+implements Stage 0 through Stage 8: canonical recording identity, ambiguity-safe matching,
 verified cross-provider discovery, runtime provider candidate resolution, quality-dependent
 download planning, safe one-shot execution, persistent asynchronous queue orchestration, and
-durable SingleFlight subscribers. It does not contain a Telegram bot, Telegram upload
-implementation, completed-result cache, or API.
+durable SingleFlight subscribers, and a bot-scoped Telegram completed-result cache. It does not
+contain the Stage 9 user-facing Telegram bot, handlers, polling/webhooks, or an API.
+
+Current delivery roadmap:
+
+- Stage 7: persistent download/upload queues;
+- Stage 7.1: active-work SingleFlight and durable subscribers;
+- Stage 8: Telegram completed-result cache;
+- Stage 9: user Telegram bot — not implemented yet.
 
 ## Architecture
 
@@ -167,6 +174,7 @@ Track
   -> revalidated native acquisition and validated temporary artifact (Stage 6)
   -> persistent UploadJob handoff and injected delivery executor (Stage 7)
   -> shared active flight and persistent caller outcomes (Stage 7.1)
+  -> durable Telegram file_id cache and cache-first delivery preparation (Stage 8)
 ```
 
 In operational terms, Stage 3 answers “what is this recording?”, Stage 4 answers “which verified
@@ -282,14 +290,52 @@ Flight rows represent only currently active work. Completion removes the coordin
 DownloadJob, UploadJob, and subscriber history remain. Submission-time and manager/worker
 reconciliation repair crash windows such as a terminal UploadJob committed before subscriber
 propagation. In-process conditions wake local waiters promptly, with bounded SQLite reloads as the
-restart-safe source of truth. SingleFlight does not retain completed results: the future Telegram
-`file_id` cache will own completed-result reuse. Provider and authentication state are still
-evaluated afresh by the one shared Stage 6 job on every queue attempt.
+restart-safe source of truth. SingleFlight still represents active work only; Stage 8 owns completed
+reuse.
 
-Stage 7 defines only an injected `UploadExecutor`. There is no production default and no destructive
-fake uploader. `QueueManager.start()` starts neither pool when an executor is absent, preventing
-artifact accumulation with no delivery path. `app.main` does not auto-start queue processing until
-a real backend arrives in Stage 8/9.
+## Telegram completed-result cache
+
+`DeliveryPreparationService` is the future Stage 9 caller boundary. In one short
+`BEGIN IMMEDIATE` transaction it checks the current bot's ACTIVE cache row, then joins or creates
+the existing SingleFlight work only on a miss. The completed-cache identity is exactly:
+
+```text
+telegram_bot_id + track_id + QualityProfile
+```
+
+Telegram `file_id` values belong to the bot that obtained them. The numeric bot ID is resolved with
+Telegram `getMe`; it is never derived from or hashed from `BOT_TOKEN`. Token rotation for the same
+bot keeps the namespace, while switching bots cannot accidentally reuse incompatible file IDs.
+
+```text
+Active duplicate requests    -> Stage 7.1 SingleFlight
+Completed duplicate requests -> Stage 8 Telegram file_id cache
+```
+
+`TelegramCacheUploadExecutor` implements the generic Stage 7 `UploadExecutor`. It validates the
+durable Stage 6 facts carried by the UploadJob, skips the network when the exact cache key is already
+ACTIVE, uploads once to the private cache chat, and persists the normalized receipt before returning
+success. Only then can the generic worker mark the UploadJob `SUCCEEDED`, move subscribers to
+`READY`, close the flight, and release the local artifact. Thus `READY` implies an ACTIVE cache row,
+and later cache hits need no local audio.
+
+MP3 and M4A/AAC use Telegram AUDIO transport; FLAC/lossless and other containers use DOCUMENT.
+Telegram never causes a transcode or quality downgrade. Cache rows retain actual output media facts,
+the successful fallback provider/source, DIRECT/TRANSCODE operation, and encoder provenance. An
+optional TrackSource FK becomes NULL if the live source disappears, while denormalized provider
+provenance and the cached file remain valid.
+
+ACTIVE rows can be explicitly changed to INVALID. The next request then uses normal SingleFlight;
+a successful replacement upload reactivates the same logical row. There is no eviction, refresh
+scheduler, negative provider cache, or periodic Telegram validation. A valid hit bypasses music
+provider authentication, provider resolution, downloads, FFmpeg, queues, and Telegram network calls.
+
+The real adapter uses async `aiogram` behind a small `TelegramGateway` (`getMe`, `sendAudio`, and
+`sendDocument`). No Dispatcher, long polling, webhook, commands, callbacks, or user delivery fanout
+is started. `compose_stage8()` builds the gateway, cache service, production upload executor, and
+delivery service for an explicit queue/application lifecycle; `app.main` still starts no daemon.
+Setup and recovery details are in
+[`docs/stage8-telegram-cache.md`](docs/stage8-telegram-cache.md).
 
 Source and output files are probed with direct argv-based `ffprobe` execution. Codec, container,
 bitrate, sample rate, bit depth, channels, audio-stream presence, and duration are normalized.
@@ -325,6 +371,14 @@ ONTHESPOT_TEST_TRACK_URL="<TRACK_URL>" uv run pytest -m external
 
 They do not require private credentials by default; providers that need authentication report a
 typed provider error when no configured account is available.
+
+The real Telegram gateway test is also opt-in and leaves one small synthetic test document in the
+explicitly configured test chat:
+
+```bash
+BOT_TOKEN="..." TELEGRAM_TEST_CACHE_CHAT_ID="..." uv run pytest -m external \
+  tests/integration/test_telegram_external.py
+```
 
 ## Resolve tool
 
@@ -419,6 +473,28 @@ Worker changes use the same persisted service intended for the future admin UI. 
 has no running pool and reports zero actual workers; an executor-enabled QueueManager immediately
 reconciles to the stored desired values.
 
+## Telegram cache tools
+
+Metadata-only cache inspection does not require Telegram credentials:
+
+```bash
+uv run python -m app.tools.telegram_cache status
+uv run python -m app.tools.telegram_cache list --limit 50
+uv run python -m app.tools.telegram_cache get <TRACK_ID> MP3_320 --bot-id <BOT_ID>
+uv run python -m app.tools.telegram_cache invalidate <CACHE_ID> --reason-code MANUAL_INVALIDATION
+```
+
+Resolve the configured bot identity with `getMe`, or exercise cache-first admission, with:
+
+```bash
+uv run python -m app.tools.telegram_cache verify-gateway
+uv run python -m app.tools.delivery prepare <TRACK_ID> MP3_320 --request-key manual-check
+```
+
+The CLIs redact `file_id` by default and never print `BOT_TOKEN`. `get` may resolve the current bot
+when `--bot-id` is omitted, which requires Telegram configuration. Cache status/list/invalidate are
+SQLite-only operations.
+
 ## Current limitations
 
 - OnTheSpot exposes no documented stable Python library API. Only the child worker imports the
@@ -439,7 +515,9 @@ reconciles to the stored desired values.
 - There is no automatic stale-artifact watchdog yet; the immediate caller owns successful release.
 - Stage 7 targets one application instance and one SQLite database; multi-host workers and
   distributed locks are intentionally absent.
-- SingleFlight deduplicates active work only. It intentionally does not reuse a previously completed
-  result.
-- Telegram upload/delivery, the persistent Telegram `file_id` cache, bot/admin UI, albums,
-  playlists, and APIs are intentionally absent.
+- Telegram upload and cache persistence are not one distributed transaction. A process crash after
+  Telegram accepts a file but before SQLite commits can leave an extra cache-chat message on retry.
+- Stage 8 provides the production upload executor and cache-first services, but no long-running
+  queue daemon is started by `app.main`; Stage 9 will own the user-bot lifecycle.
+- User Telegram delivery, handlers, polling/webhooks, bot/admin UI, albums, playlists, cache
+  refresh/eviction, and APIs are intentionally absent.
