@@ -7,7 +7,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from app.config import Settings
 from app.core.enums import DownloadFailureCode, QualityProfile, QueueErrorCode, QueueJobStatus
@@ -26,6 +26,7 @@ from app.core.models import (
 from app.services.artifacts import ArtifactPathError, DownloadArtifactManager
 from app.services.queues import (
     DownloadQueueService,
+    SubscriberLifecycleNotifier,
     UploadExecutor,
     UploadQueueService,
     WorkerSettingsService,
@@ -33,6 +34,9 @@ from app.services.queues import (
 from app.storage import Database
 from app.storage.models import DownloadJob, UploadJob
 from app.storage.models.base import utc_now
+
+if TYPE_CHECKING:
+    from app.services.singleflight import SingleFlightService
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +84,7 @@ class DownloadWorkerBackend:
         max_attempts: int = DOWNLOAD_JOB_MAX_ATTEMPTS,
         lease_seconds: float = DEFAULT_LEASE_SECONDS,
         wake_event: asyncio.Event | None = None,
+        subscriber_notifier: SubscriberLifecycleNotifier | None = None,
     ) -> None:
         self._database = database
         self._pipeline = pipeline
@@ -88,16 +93,20 @@ class DownloadWorkerBackend:
         self._max_attempts = max_attempts
         self._lease = timedelta(seconds=lease_seconds)
         self.wake_event = wake_event or asyncio.Event()
+        self._subscriber_notifier = subscriber_notifier
 
     async def claim(self, worker_id: str) -> DownloadJob | None:
         now = self._clock()
         async with self._database.transaction() as repositories:
             await repositories.download_jobs.recover_expired(now, self._max_attempts)
-            return await repositories.download_jobs.claim(
+            reconciled = await repositories.singleflight.reconcile_all(now)
+            job = await repositories.download_jobs.claim(
                 worker_id=worker_id,
                 now=now,
                 lease_expires_at=now + self._lease,
             )
+        await self._notify_if(reconciled > 0)
+        return job
 
     async def heartbeat(self, job_id: int, worker_id: str) -> bool:
         async with self._database.transaction() as repositories:
@@ -215,6 +224,8 @@ class DownloadWorkerBackend:
                     error_code=code,
                     max_attempts=self._max_attempts,
                 )
+                reconciled = await repositories.singleflight.reconcile_download_job(job.id, now)
+            await self._notify_if(reconciled)
         else:
             await self._fail(job, worker_id, code)
         self.wake_event.set()
@@ -224,6 +235,14 @@ class DownloadWorkerBackend:
             await repositories.download_jobs.fail(
                 job_id=job.id, worker_id=worker_id, now=self._clock(), error_code=code
             )
+            reconciled = await repositories.singleflight.reconcile_download_job(
+                job.id, self._clock()
+            )
+        await self._notify_if(reconciled)
+
+    async def _notify_if(self, changed: bool) -> None:
+        if changed and self._subscriber_notifier is not None:
+            await self._subscriber_notifier.notify_all()
 
 
 class UploadWorkerBackend:
@@ -237,6 +256,7 @@ class UploadWorkerBackend:
         max_attempts: int = UPLOAD_JOB_MAX_ATTEMPTS,
         lease_seconds: float = DEFAULT_LEASE_SECONDS,
         wake_event: asyncio.Event | None = None,
+        subscriber_notifier: SubscriberLifecycleNotifier | None = None,
     ) -> None:
         self._database = database
         self._executor = executor
@@ -245,6 +265,7 @@ class UploadWorkerBackend:
         self._max_attempts = max_attempts
         self._lease = timedelta(seconds=lease_seconds)
         self.wake_event = wake_event or asyncio.Event()
+        self._subscriber_notifier = subscriber_notifier
 
     async def claim(self, worker_id: str) -> UploadJob | None:
         now = self._clock()
@@ -252,6 +273,7 @@ class UploadWorkerBackend:
             terminal_artifacts = await repositories.upload_jobs.recover_expired(
                 now, self._max_attempts
             )
+            reconciled = await repositories.singleflight.reconcile_all(now)
             job = await repositories.upload_jobs.claim(
                 worker_id=worker_id,
                 now=now,
@@ -259,6 +281,7 @@ class UploadWorkerBackend:
             )
         for artifact in terminal_artifacts:
             self._queue.release_owned(*artifact)
+        await self._notify_if(reconciled > 0)
         return job
 
     async def heartbeat(self, job_id: int, worker_id: str) -> bool:
@@ -288,6 +311,10 @@ class UploadWorkerBackend:
                 succeeded = await repositories.upload_jobs.succeed(
                     job_id=job.id, worker_id=worker_id, now=self._clock()
                 )
+                reconciled = await repositories.singleflight.reconcile_download_job(
+                    job.download_job_id, self._clock()
+                )
+            await self._notify_if(reconciled)
             if succeeded:
                 self._queue.release_owned(job.artifact_job_id, job.artifact_path)
             else:
@@ -348,7 +375,7 @@ class UploadWorkerBackend:
     ) -> QueueJobStatus | None:
         now = self._clock()
         async with self._database.transaction() as repositories:
-            return await repositories.upload_jobs.retry_or_fail(
+            status = await repositories.upload_jobs.retry_or_fail(
                 job_id=job.id,
                 worker_id=worker_id,
                 now=now,
@@ -357,6 +384,15 @@ class UploadWorkerBackend:
                 max_attempts=self._max_attempts,
                 retryable=retryable,
             )
+            reconciled = await repositories.singleflight.reconcile_download_job(
+                job.download_job_id, now
+            )
+        await self._notify_if(reconciled)
+        return status
+
+    async def _notify_if(self, changed: bool) -> None:
+        if changed and self._subscriber_notifier is not None:
+            await self._subscriber_notifier.notify_all()
 
 
 @dataclass(slots=True)
@@ -509,6 +545,7 @@ class QueueManager:
         download_backend: DownloadWorkerBackend,
         upload_backend: UploadWorkerBackend | None,
         *,
+        singleflight: SingleFlightService | None = None,
         reconcile_seconds: float = 1.0,
     ) -> None:
         self._settings = settings
@@ -519,13 +556,18 @@ class QueueManager:
         self._upload_pool = (
             AsyncWorkerPool("upload", upload_backend) if upload_backend is not None else None
         )
+        self._singleflight = singleflight
         self._reconcile_seconds = reconcile_seconds
         self._reconciler: asyncio.Task[None] | None = None
         self._started = False
         worker_settings.attach_resizer(self)
+        if singleflight is not None:
+            singleflight.attach_operation_canceller(self)
 
     async def start(self) -> None:
         values = await self._worker_settings.initialize()
+        if self._singleflight is not None:
+            await self._singleflight.reconcile()
         self._started = True
         # Without a delivery backend, neither pool starts: this prevents artifact accumulation.
         if self._upload_pool is None:
@@ -564,6 +606,13 @@ class QueueManager:
             await self._upload_pool.cancel_job(job_id)
         return status
 
+    async def cancel_download_operation(self, job_id: int) -> None:
+        await self._download_pool.cancel_job(job_id)
+
+    async def cancel_upload_operation(self, job_id: int) -> None:
+        if self._upload_pool is not None:
+            await self._upload_pool.cancel_job(job_id)
+
     async def snapshot(self) -> QueueRuntimeSnapshot:
         values = await self._worker_settings.get_values()
         return QueueRuntimeSnapshot(
@@ -581,6 +630,9 @@ class QueueManager:
             ),
             download_jobs=await self._download_queue.counts(),
             upload_jobs=await self._upload_queue.counts(),
+            singleflight=(
+                await self._singleflight.snapshot() if self._singleflight is not None else None
+            ),
         )
 
     async def _reconcile(self) -> None:
@@ -590,6 +642,8 @@ class QueueManager:
                 await self._download_pool.resize(values.download.current)
                 if self._upload_pool is not None:
                     await self._upload_pool.resize(values.upload.current)
+                if self._singleflight is not None:
+                    await self._singleflight.reconcile()
             except asyncio.CancelledError:
                 return
             except Exception:

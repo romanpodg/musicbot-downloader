@@ -89,6 +89,16 @@ class QueueJobNotFoundError(QueueServiceError):
         super().__init__(QueueErrorCode.JOB_NOT_FOUND)
 
 
+class SubscriberNotFoundError(QueueServiceError):
+    def __init__(self) -> None:
+        super().__init__(QueueErrorCode.SUBSCRIBER_NOT_FOUND)
+
+
+class InvalidRequestKeyError(QueueServiceError):
+    def __init__(self) -> None:
+        super().__init__(QueueErrorCode.INVALID_REQUEST_KEY)
+
+
 class WorkerLimitError(QueueServiceError):
     def __init__(self) -> None:
         super().__init__(QueueErrorCode.WORKER_LIMIT_EXCEEDED)

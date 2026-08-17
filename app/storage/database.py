@@ -22,6 +22,7 @@ from app.core.exceptions import DatabaseConcurrencyError, DatabaseError
 from app.storage.repositories import (
     DownloadJobRepository,
     RuntimeSettingsRepository,
+    SingleFlightRepository,
     TrackRepository,
     TrackSourceRepository,
     UploadJobRepository,
@@ -37,6 +38,7 @@ class Repositories:
     download_jobs: DownloadJobRepository
     upload_jobs: UploadJobRepository
     runtime_settings: RuntimeSettingsRepository
+    singleflight: SingleFlightRepository
 
 
 class Database:
@@ -76,6 +78,7 @@ class Database:
             download_jobs=DownloadJobRepository(session),
             upload_jobs=UploadJobRepository(session),
             runtime_settings=RuntimeSettingsRepository(session),
+            singleflight=SingleFlightRepository(session),
         )
 
     @staticmethod

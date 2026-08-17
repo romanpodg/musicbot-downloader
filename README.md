@@ -1,10 +1,11 @@
 # Musicbot Downloader
 
 Production-oriented foundation for a future Telegram music downloader service. This repository
-implements Stage 0 through Stage 7: canonical recording identity, ambiguity-safe matching,
+implements Stage 0 through Stage 7.1: canonical recording identity, ambiguity-safe matching,
 verified cross-provider discovery, runtime provider candidate resolution, quality-dependent
-download planning, safe one-shot execution, and persistent asynchronous queue orchestration. It
-does not contain a Telegram bot, Telegram upload implementation, SingleFlight, or API.
+download planning, safe one-shot execution, persistent asynchronous queue orchestration, and
+durable SingleFlight subscribers. It does not contain a Telegram bot, Telegram upload
+implementation, completed-result cache, or API.
 
 ## Architecture
 
@@ -165,6 +166,7 @@ Track
   -> Quality Resolver plans (Stage 5)
   -> revalidated native acquisition and validated temporary artifact (Stage 6)
   -> persistent UploadJob handoff and injected delivery executor (Stage 7)
+  -> shared active flight and persistent caller outcomes (Stage 7.1)
 ```
 
 In operational terms, Stage 3 answers “what is this recording?”, Stage 4 answers “which verified
@@ -248,6 +250,41 @@ active job and retire without claiming another.
 `QUEUE_MAX_SIZE` limits active non-terminal DownloadJobs accepted through submission. Terminal
 DownloadJobs do not count, and internally created UploadJobs do not use this limit. Job history is
 retained and inspection is bounded and paginated.
+
+Stage 7.1 makes `SingleFlightService.submit()` the normal caller admission path. Its identity is
+exactly `(track_id, QualityProfile)`; provider, source URL, requester, authentication state, and
+the runtime DownloadPlan are deliberately excluded. A short SQLite `BEGIN IMMEDIATE` transaction
+reconciles an existing row, joins it when eligible, or atomically creates one DownloadJob, one
+`download_flights` row, and one UUID `job_subscribers` row. The unique flight key prevents
+concurrent first-request races across asyncio tasks. The raw `DownloadQueueService.submit()` method
+remains an internal maintenance/test primitive and does not deduplicate.
+
+```text
+N requests for Track + QualityProfile
+  -> 1 active download_flights row
+  -> 1 DownloadJob
+  -> N durable WAITING subscribers
+  -> 1 Stage 6 execution stream
+  -> at most 1 UploadJob
+  -> upload terminal outcome
+  -> subscribers READY / FAILED / CANCELLED
+  -> flight row removed
+```
+
+`READY` means the shared UploadJob succeeded; it does not mean a Telegram user received a file.
+Only `WAITING` subscribers receive shared terminal propagation, so an explicitly cancelled
+subscriber stays `CANCELLED`. Cancelling one subscriber leaves shared work running while any other
+subscriber waits. Cancelling the last waiter closes admission to that flight and requests
+best-effort cooperative cancellation of the queued/running DownloadJob or UploadJob. Administrative
+shared-job cancellation terminalizes all remaining waiters.
+
+Flight rows represent only currently active work. Completion removes the coordination row while
+DownloadJob, UploadJob, and subscriber history remain. Submission-time and manager/worker
+reconciliation repair crash windows such as a terminal UploadJob committed before subscriber
+propagation. In-process conditions wake local waiters promptly, with bounded SQLite reloads as the
+restart-safe source of truth. SingleFlight does not retain completed results: the future Telegram
+`file_id` cache will own completed-result reuse. Provider and authentication state are still
+evaluated afresh by the one shared Stage 6 job on every queue attempt.
 
 Stage 7 defines only an injected `UploadExecutor`. There is no production default and no destructive
 fake uploader. `QueueManager.start()` starts neither pool when an executor is absent, preventing
@@ -365,6 +402,11 @@ Apply migrations first. Queue inspection never starts workers or pretends to upl
 
 ```bash
 uv run python -m app.tools.queue submit <TRACK_ID> MP3_320
+uv run python -m app.tools.queue submit <TRACK_ID> MP3_320 --request-key test-123
+uv run python -m app.tools.queue subscriber <SUBSCRIBER_ID>
+uv run python -m app.tools.queue subscribers <DOWNLOAD_JOB_ID> --limit 50
+uv run python -m app.tools.queue cancel-subscriber <SUBSCRIBER_ID>
+uv run python -m app.tools.queue wait <SUBSCRIBER_ID> --timeout 30
 uv run python -m app.tools.queue status
 uv run python -m app.tools.queue jobs download --limit 50
 uv run python -m app.tools.queue jobs upload --limit 50
@@ -397,6 +439,7 @@ reconciles to the stored desired values.
 - There is no automatic stale-artifact watchdog yet; the immediate caller owns successful release.
 - Stage 7 targets one application instance and one SQLite database; multi-host workers and
   distributed locks are intentionally absent.
-- Stage 7.1 SingleFlight and job subscribers are not implemented, so identical submissions create
-  independent DownloadJobs.
-- Telegram upload, `file_id` cache, bot/admin UI, albums, playlists, and APIs are intentionally absent.
+- SingleFlight deduplicates active work only. It intentionally does not reuse a previously completed
+  result.
+- Telegram upload/delivery, the persistent Telegram `file_id` cache, bot/admin UI, albums,
+  playlists, and APIs are intentionally absent.

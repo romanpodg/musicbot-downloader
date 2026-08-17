@@ -88,3 +88,49 @@ def test_stage7_migration_creates_clean_queue_schema(tmp_path: Path, monkeypatch
         command.upgrade(config, "head")
     finally:
         get_settings.cache_clear()
+
+
+def test_stage71_migration_upgrades_stage7_and_round_trips(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    database_path = tmp_path / "stage71.db"
+    database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", database_url)  # type: ignore[attr-defined]
+    get_settings.cache_clear()
+    config = Config("alembic.ini")
+    try:
+        command.upgrade(config, "20260818_0004")
+        command.upgrade(config, "head")
+        with sqlite3.connect(database_path) as connection:
+            tables = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            assert {"download_flights", "job_subscribers"} <= tables
+            flight_indexes = connection.execute("PRAGMA index_list('download_flights')").fetchall()
+            subscriber_indexes = {
+                row[1]
+                for row in connection.execute("PRAGMA index_list('job_subscribers')").fetchall()
+            }
+            assert sum(bool(row[2]) for row in flight_indexes) == 2
+            assert "ix_job_subscribers_job_status" in subscriber_indexes
+            assert "ix_job_subscribers_status_created" in subscriber_indexes
+            subscriber_columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info('job_subscribers')").fetchall()
+            }
+            assert "artifact_path" not in subscriber_columns
+            assert "artifact_job_id" not in subscriber_columns
+        command.check(config)
+        command.downgrade(config, "20260818_0004")
+        with sqlite3.connect(database_path) as connection:
+            tables = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            assert "download_flights" not in tables
+            assert "job_subscribers" not in tables
+            assert "download_jobs" in tables
+        command.upgrade(config, "head")
+    finally:
+        get_settings.cache_clear()

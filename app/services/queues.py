@@ -38,6 +38,10 @@ class WorkerPoolResizer(Protocol):
     async def resize_upload(self, workers: int) -> None: ...
 
 
+class SubscriberLifecycleNotifier(Protocol):
+    async def notify_all(self) -> None: ...
+
+
 class DownloadQueueService:
     def __init__(
         self,
@@ -46,11 +50,13 @@ class DownloadQueueService:
         max_size: int,
         clock: Callable[[], datetime] = utc_now,
         wake_event: asyncio.Event | None = None,
+        subscriber_notifier: SubscriberLifecycleNotifier | None = None,
     ) -> None:
         self._database = database
         self._max_size = max_size
         self._clock = clock
         self._wake_event = wake_event
+        self._subscriber_notifier = subscriber_notifier
 
     async def submit(self, *, track_id: int, quality_profile: QualityProfile) -> DownloadJobView:
         if not isinstance(quality_profile, QualityProfile):
@@ -62,7 +68,7 @@ class DownloadQueueService:
                 max_active=self._max_size,
                 now=self._clock(),
             )
-            view = _download_view(job)
+            view = download_job_view(job)
         self._wake()
         return view
 
@@ -71,7 +77,7 @@ class DownloadQueueService:
             job = await repositories.download_jobs.get(job_id)
             if job is None:
                 raise QueueJobNotFoundError()
-            return _download_view(job)
+            return download_job_view(job)
 
     async def list_download_jobs(
         self, *, offset: int = 0, limit: int = 50
@@ -79,18 +85,24 @@ class DownloadQueueService:
         _validate_page(offset, limit)
         async with self._database.transaction() as repositories:
             jobs = await repositories.download_jobs.list(offset=offset, limit=limit)
-            return tuple(_download_view(job) for job in jobs)
+            return tuple(download_job_view(job) for job in jobs)
 
     async def counts(self) -> QueueStatusCounts:
         async with self._database.transaction() as repositories:
             return _counts(await repositories.download_jobs.counts())
 
     async def cancel(self, job_id: int) -> QueueJobStatus:
+        reconciled = False
         async with self._database.transaction() as repositories:
             status = await repositories.download_jobs.cancel(job_id, self._clock())
             if status is None:
                 raise QueueJobNotFoundError()
+            reconciled = await repositories.singleflight.reconcile_download_job(
+                job_id, self._clock()
+            )
         self._wake()
+        if reconciled and self._subscriber_notifier is not None:
+            await self._subscriber_notifier.notify_all()
         return status
 
     def _wake(self) -> None:
@@ -106,11 +118,13 @@ class UploadQueueService:
         *,
         clock: Callable[[], datetime] = utc_now,
         wake_event: asyncio.Event | None = None,
+        subscriber_notifier: SubscriberLifecycleNotifier | None = None,
     ) -> None:
         self._database = database
         self._artifacts = artifacts
         self._clock = clock
         self._wake_event = wake_event
+        self._subscriber_notifier = subscriber_notifier
 
     async def get_upload_job(self, job_id: int) -> UploadJobView:
         async with self._database.transaction() as repositories:
@@ -133,6 +147,7 @@ class UploadQueueService:
 
     async def cancel(self, job_id: int) -> QueueJobStatus:
         artifact: tuple[str, str] | None = None
+        reconciled = False
         async with self._database.transaction() as repositories:
             job = await repositories.upload_jobs.get(job_id)
             if job is None:
@@ -142,9 +157,14 @@ class UploadQueueService:
             status = await repositories.upload_jobs.cancel(job_id, self._clock())
             if status is None:
                 raise QueueJobNotFoundError()
+            reconciled = await repositories.singleflight.reconcile_download_job(
+                job.download_job_id, self._clock()
+            )
         if previous is QueueJobStatus.QUEUED and status is QueueJobStatus.CANCELLED:
             self.release_owned(*artifact)
         self._wake()
+        if reconciled and self._subscriber_notifier is not None:
+            await self._subscriber_notifier.notify_all()
         return status
 
     def release_owned(self, artifact_job_id: str, stored_path: str) -> bool:
@@ -254,7 +274,7 @@ class WorkerSettingsService:
         )
 
 
-def _download_view(job: DownloadJob) -> DownloadJobView:
+def download_job_view(job: DownloadJob) -> DownloadJobView:
     return DownloadJobView(
         job.id,
         job.track_id,

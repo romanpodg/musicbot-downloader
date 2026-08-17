@@ -70,6 +70,13 @@ class QueueJobStatus(StrEnum):
     CANCELLED = "CANCELLED"
 
 
+class SubscriberStatus(StrEnum):
+    WAITING = "WAITING"
+    READY = "READY"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
 class QueueErrorCode(StrEnum):
     QUEUE_FULL = "QUEUE_FULL"
     JOB_NOT_FOUND = "JOB_NOT_FOUND"
@@ -83,6 +90,8 @@ class QueueErrorCode(StrEnum):
     UPLOAD_ARTIFACT_MISSING = "UPLOAD_ARTIFACT_MISSING"
     UPLOAD_ARTIFACT_INVALID = "UPLOAD_ARTIFACT_INVALID"
     UPLOAD_WORKER_ERROR = "UPLOAD_WORKER_ERROR"
+    SUBSCRIBER_NOT_FOUND = "SUBSCRIBER_NOT_FOUND"
+    INVALID_REQUEST_KEY = "INVALID_REQUEST_KEY"
 
 
 class SourceValidationConfidence(StrEnum):

@@ -4,14 +4,27 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, Enum, ForeignKey, Index, Integer, String
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.enums import QualityProfile, QueueJobStatus
+from app.core.enums import QualityProfile, QueueJobStatus, SubscriberStatus
 from app.storage.models.base import Base, TimestampMixin, UTCDateTime, utc_now
 
 
-def _enum(enum_type: type[QueueJobStatus] | type[QualityProfile], name: str, length: int) -> Enum:
+def _enum(
+    enum_type: type[QueueJobStatus] | type[QualityProfile] | type[SubscriberStatus],
+    name: str,
+    length: int,
+) -> Enum:
     return Enum(
         enum_type,
         values_callable=lambda values: [member.value for member in values],
@@ -133,6 +146,57 @@ class UploadJob(TimestampMixin, Base):
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     lease_owner: Mapped[str | None] = mapped_column(String(64))
     lease_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class DownloadFlight(TimestampMixin, Base):
+    """Ephemeral durable ownership of one active Track + QualityProfile pipeline."""
+
+    __tablename__ = "download_flights"
+    __table_args__ = (
+        CheckConstraint(
+            "quality_profile IN ('MP3_128', 'MP3_320', 'AAC_256', 'LOSSLESS')",
+            name="ck_download_flights_quality_profile",
+        ),
+        UniqueConstraint("track_id", "quality_profile", name="uq_download_flights_key"),
+        UniqueConstraint("download_job_id", name="uq_download_flights_download_job_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    track_id: Mapped[int] = mapped_column(
+        ForeignKey("tracks.id", ondelete="RESTRICT"), nullable=False
+    )
+    quality_profile: Mapped[QualityProfile] = mapped_column(
+        _enum(QualityProfile, "qualityprofile", 16), nullable=False
+    )
+    download_job_id: Mapped[int] = mapped_column(
+        ForeignKey("download_jobs.id", ondelete="CASCADE"), nullable=False
+    )
+
+
+class JobSubscriber(TimestampMixin, Base):
+    """Durable caller attached to a shared download/upload pipeline."""
+
+    __tablename__ = "job_subscribers"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('WAITING', 'READY', 'FAILED', 'CANCELLED')",
+            name="ck_job_subscribers_status",
+        ),
+        UniqueConstraint("download_job_id", "request_key", name="uq_job_subscribers_request_key"),
+        Index("ix_job_subscribers_job_status", "download_job_id", "status"),
+        Index("ix_job_subscribers_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    download_job_id: Mapped[int] = mapped_column(
+        ForeignKey("download_jobs.id", ondelete="RESTRICT"), nullable=False
+    )
+    status: Mapped[SubscriberStatus] = mapped_column(
+        _enum(SubscriberStatus, "subscriberstatus", 16), nullable=False
+    )
+    request_key: Mapped[str | None] = mapped_column(String(128))
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
 
 
 class RuntimeSettings(TimestampMixin, Base):

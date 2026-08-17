@@ -1,5 +1,6 @@
 """Focused repository exports."""
 
+from app.storage.repositories.singleflight import SingleFlightRepository
 from app.storage.repositories.track_sources import TrackSourceRepository, UpsertSourceResult
 from app.storage.repositories.tracks import TrackRepository
 from app.storage.repositories.users import UserRepository
@@ -11,6 +12,7 @@ __all__ = [
     "UserRepository",
     "DownloadJobRepository",
     "RuntimeSettingsRepository",
+    "SingleFlightRepository",
     "UploadJobRepository",
 ]
 from app.storage.repositories.queue import (

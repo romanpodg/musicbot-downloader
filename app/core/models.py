@@ -24,6 +24,7 @@ from app.core.enums import (
     QualityResolutionStatus,
     QueueJobStatus,
     SourceValidationConfidence,
+    SubscriberStatus,
     TrackEvidenceCode,
     TrackMatchDecision,
 )
@@ -296,6 +297,44 @@ class QueueRuntimeSnapshot:
     upload: WorkerPoolSnapshot
     download_jobs: QueueStatusCounts
     upload_jobs: QueueStatusCounts
+    singleflight: SingleFlightSnapshot | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class JobSubscriberView:
+    id: str
+    download_job_id: int
+    track_id: int
+    quality_profile: QualityProfile
+    status: SubscriberStatus
+    request_key: str | None
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None
+    last_error_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class SingleFlightSubmission:
+    subscriber: JobSubscriberView
+    download_job: DownloadJobView
+    created_new_job: bool
+    joined_existing_flight: bool
+    returned_existing_subscriber: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SubscriberStatusCounts:
+    waiting: int = 0
+    ready: int = 0
+    failed: int = 0
+    cancelled: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class SingleFlightSnapshot:
+    active_flights: int
+    subscribers: SubscriberStatusCounts
 
 
 @dataclass(frozen=True, slots=True)
