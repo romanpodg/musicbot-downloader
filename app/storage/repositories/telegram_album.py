@@ -45,6 +45,24 @@ class TelegramAlbumRepository:
             await self._session.get(TelegramAlbumRequest, request_id),
         )
 
+    async def count_active(self) -> int:
+        active_statuses = (
+            AlbumRequestStatus.AWAITING_QUALITY,
+            AlbumRequestStatus.AWAITING_ACTION,
+            AlbumRequestStatus.AWAITING_ALBUM_QUALITY,
+            AlbumRequestStatus.SELECTING_TRACKS,
+            AlbumRequestStatus.QUEUED,
+            AlbumRequestStatus.PROCESSING,
+        )
+        return int(
+            await self._session.scalar(
+                select(func.count(TelegramAlbumRequest.id)).where(
+                    TelegramAlbumRequest.status.in_(active_statuses)
+                )
+            )
+            or 0
+        )
+
     async def get_by_message(
         self, *, telegram_bot_id: int, telegram_chat_id: int, source_message_id: int
     ) -> TelegramAlbumRequest | None:

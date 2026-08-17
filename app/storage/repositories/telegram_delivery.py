@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import and_, case, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +22,14 @@ class TelegramDeliveryRepository:
             TelegramDeliveryRequest | None,
             await self._session.get(TelegramDeliveryRequest, request_id),
         )
+
+    async def status_counts(self) -> dict[TelegramDeliveryStatus, int]:
+        rows = await self._session.execute(
+            select(TelegramDeliveryRequest.status, func.count(TelegramDeliveryRequest.id)).group_by(
+                TelegramDeliveryRequest.status
+            )
+        )
+        return {status: int(count) for status, count in rows}
 
     async def get_by_message(
         self, *, telegram_bot_id: int, telegram_chat_id: int, source_message_id: int

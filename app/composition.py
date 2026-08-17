@@ -12,7 +12,9 @@ from app.config import Settings
 from app.core.models import TelegramBotIdentity
 from app.i18n import LocalizationService
 from app.providers.base import MusicProvider
+from app.services.admin_overview import AdminOverviewService
 from app.services.artifacts import DownloadArtifactManager
+from app.services.authorization import TelegramAuthorizationService
 from app.services.delivery import DeliveryPreparationService
 from app.services.download_pipeline import DownloadPipeline, NativeDownloadBoundary
 from app.services.media import MediaProbe, Transcoder
@@ -40,6 +42,8 @@ from app.services.track_resolution import ResolveTrackService
 from app.services.workers import DownloadWorkerBackend, QueueManager, UploadWorkerBackend
 from app.storage import Database
 from app.telegram import AiogramTelegramGateway, TelegramGateway
+from app.telegram.admin_handlers import AdminHandlerDependencies, create_admin_router
+from app.telegram.admin_presentation import AdminPresentation
 from app.telegram.handlers import TelegramHandlerDependencies, create_stage9_router
 from app.telegram.presentation import TelegramPresentation
 
@@ -98,6 +102,8 @@ class Stage9Components:
     delivery_fanout: TelegramDeliveryFanoutManager
     album_coordinator: TelegramAlbumCoordinatorManager
     provider: MusicProvider
+    authorization: TelegramAuthorizationService
+    admin_overview: AdminOverviewService
 
     async def start(self) -> None:
         await self.queue_manager.start()
@@ -206,7 +212,20 @@ async def compose_stage9(
         wake_event=album_wake,
     )
     media_requests = TelegramMediaRequestService(provider, requests, albums)
+    authorization = TelegramAuthorizationService(database, owner_id=settings.owner_id)
+    admin_overview = AdminOverviewService(
+        database,
+        authorization,
+        queue_manager,
+        stage8.telegram_cache,
+        telegram_bot_id=stage8.bot_identity.telegram_bot_id,
+    )
     dispatcher = Dispatcher()
+    dispatcher.include_router(
+        create_admin_router(
+            AdminHandlerDependencies(users, admin_overview, AdminPresentation(i18n))
+        )
+    )
     dispatcher.include_router(
         create_stage9_router(
             TelegramHandlerDependencies(
@@ -243,4 +262,13 @@ async def compose_stage9(
         ),
         wake_event=album_wake,
     )
-    return Stage9Components(stage8, dispatcher, queue_manager, fanout, album_coordinator, provider)
+    return Stage9Components(
+        stage8=stage8,
+        dispatcher=dispatcher,
+        queue_manager=queue_manager,
+        delivery_fanout=fanout,
+        album_coordinator=album_coordinator,
+        provider=provider,
+        authorization=authorization,
+        admin_overview=admin_overview,
+    )
