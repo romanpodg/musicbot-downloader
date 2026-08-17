@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import importlib
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from app.providers.onthespot.worker import OnTheSpotWorker
+from app.providers.onthespot.worker import OnTheSpotWorker, WorkerError
 
 
 class FakeAccounts:
@@ -122,3 +124,50 @@ def test_http_auth_failure_is_normalized(status_code: int) -> None:
         "status": "AUTH_REQUIRED",
         "error_code": "authentication_required",
     }
+
+
+def test_native_download_bypasses_upstream_conversion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worker = _worker("bandcamp", {"is_playable": True}, token=object(), account_type="public")
+    job_id = "a" * 32
+    source = tmp_path / job_id / "attempt-001" / "source"
+    source.mkdir(parents=True)
+    monkeypatch.setenv("MUSICBOT_TEMP_DIR", str(tmp_path))
+
+    class FakeDownloadWorker:
+        def __init__(self, gui: bool) -> None:
+            assert gui is False
+
+        def _download(self, *args: Any) -> tuple[str, str, list[object]]:
+            Path(args[6]).write_bytes(b"provider native audio")
+            return ".mp3", "128k", []
+
+    real_import = importlib.import_module
+
+    def fake_import(name: str) -> Any:
+        if name == "onthespot.downloader":
+            return SimpleNamespace(DownloadWorker=FakeDownloadWorker)
+        if name == "onthespot.constants":
+            return SimpleNamespace(ItemStatus=SimpleNamespace(DOWNLOADING="downloading"))
+        return real_import(name)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import)
+
+    result = worker.download_native("bandcamp", "track-id", job_id, 1)
+
+    assert result["native_encoded"] is True
+    assert result["upstream_quality_transcoded"] is False
+    assert result["provider_decrypted"] is False
+    assert Path(result["file_path"]).name == "native.mp3"
+    assert Path(result["file_path"]).read_bytes() == b"provider native audio"
+
+
+def test_worker_rejects_download_path_escape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worker = _worker("bandcamp", {"is_playable": True})
+    monkeypatch.setenv("MUSICBOT_TEMP_DIR", str(tmp_path))
+
+    with pytest.raises(WorkerError):
+        worker._download_destination("../outside", 1)

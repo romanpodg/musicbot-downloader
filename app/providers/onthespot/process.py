@@ -8,12 +8,14 @@ import os
 import sys
 import uuid
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 from app.core.exceptions import (
     InvalidTrackUrl,
     MetadataUnavailable,
     ProviderAuthenticationError,
+    ProviderOperationTimeout,
     ProviderUnavailable,
     UnsupportedProvider,
 )
@@ -21,10 +23,12 @@ from app.providers.base import ProviderAvailability
 from app.providers.onthespot.ipc import (
     CHECK_SOURCE_METHOD,
     DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    DOWNLOAD_NATIVE_METHOD,
     GET_METADATA_METHOD,
     INITIALIZE_METHOD,
     LIST_SEARCHABLE_PROVIDERS_METHOD,
     MAX_MESSAGE_BYTES,
+    PREPARE_SOURCE_METHOD,
     SEARCH_TRACKS_METHOD,
     SHUTDOWN_METHOD,
 )
@@ -47,10 +51,12 @@ class OnTheSpotProcessClient:
         request_timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
         command: Sequence[str] | None = None,
         environment: Mapping[str, str] | None = None,
+        temp_dir: Path | None = None,
     ) -> None:
         self._request_timeout = request_timeout
         self._command = tuple(command or (sys.executable, "-m", "app.providers.onthespot.worker"))
         self._environment = dict(environment) if environment is not None else None
+        self._temp_dir = (temp_dir or Path("./temp")).expanduser().resolve()
         self._process: asyncio.subprocess.Process | None = None
         self._request_lock = asyncio.Lock()
         self._started_once = False
@@ -65,6 +71,10 @@ class OnTheSpotProcessClient:
     @property
     def process_id(self) -> int | None:
         return self._process.pid if self._process is not None else None
+
+    @property
+    def temp_dir(self) -> Path:
+        return self._temp_dir
 
     async def availability(self) -> ProviderAvailability:
         try:
@@ -104,6 +114,38 @@ class OnTheSpotProcessClient:
             raise ProviderUnavailable()
         return result
 
+    async def prepare_source(self, provider: str, provider_track_id: str) -> Mapping[str, Any]:
+        result = await self._request(
+            PREPARE_SOURCE_METHOD,
+            {"provider": provider, "provider_track_id": provider_track_id},
+        )
+        if not isinstance(result, dict):
+            raise ProviderUnavailable()
+        return result
+
+    async def download_native(
+        self,
+        provider: str,
+        provider_track_id: str,
+        job_id: str,
+        plan_rank: int,
+        *,
+        timeout_seconds: float,
+    ) -> Mapping[str, Any]:
+        result = await self._request(
+            DOWNLOAD_NATIVE_METHOD,
+            {
+                "provider": provider,
+                "provider_track_id": provider_track_id,
+                "job_id": job_id,
+                "plan_rank": plan_rank,
+            },
+            timeout_seconds=timeout_seconds,
+        )
+        if not isinstance(result, dict):
+            raise ProviderUnavailable()
+        return result
+
     async def close(self) -> None:
         async with self._request_lock:
             if self._closed:
@@ -119,10 +161,22 @@ class OnTheSpotProcessClient:
                     pass
             await self._terminate_locked()
 
-    async def _request(self, method: str, params: Mapping[str, Any]) -> Any:
+    async def _request(
+        self,
+        method: str,
+        params: Mapping[str, Any],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> Any:
         async with self._request_lock:
             await self._ensure_started_locked()
-            return await self._exchange_locked(method, params)
+            try:
+                return await self._exchange_locked(method, params, timeout_seconds=timeout_seconds)
+            except ProviderOperationTimeout:
+                if method == DOWNLOAD_NATIVE_METHOD and not self._closed:
+                    self._failed = False
+                    self._started_once = False
+                raise
 
     async def _ensure_started_locked(self) -> None:
         if self._closed or self._failed:
@@ -165,7 +219,13 @@ class OnTheSpotProcessClient:
         version = initialized.get("version")
         self._version = str(version) if version is not None else None
 
-    async def _exchange_locked(self, method: str, params: Mapping[str, Any]) -> Any:
+    async def _exchange_locked(
+        self,
+        method: str,
+        params: Mapping[str, Any],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> Any:
         process = self._process
         if process is None or process.stdin is None or process.stdout is None:
             raise ProviderUnavailable()
@@ -184,14 +244,18 @@ class OnTheSpotProcessClient:
 
         try:
             process.stdin.write(payload + b"\n")
-            async with asyncio.timeout(self._request_timeout):
+            async with asyncio.timeout(timeout_seconds or self._request_timeout):
                 await process.stdin.drain()
                 response_line = await process.stdout.readline()
         except asyncio.CancelledError:
             self._failed = True
             await asyncio.shield(self._terminate_locked())
             raise
-        except (TimeoutError, BrokenPipeError, ConnectionError, OSError, ValueError) as exc:
+        except TimeoutError as exc:
+            self._failed = True
+            await self._terminate_locked()
+            raise ProviderOperationTimeout() from exc
+        except (BrokenPipeError, ConnectionError, OSError, ValueError) as exc:
             self._failed = True
             await self._terminate_locked()
             raise ProviderUnavailable() from exc
@@ -239,6 +303,7 @@ class OnTheSpotProcessClient:
         environment["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
         environment["LOG_LEVEL"] = "20"
         environment["PYTHONUNBUFFERED"] = "1"
+        environment["MUSICBOT_TEMP_DIR"] = os.fspath(self._temp_dir)
         return environment
 
 
@@ -248,7 +313,9 @@ _shared_client: OnTheSpotProcessClient | None = None
 def get_shared_process_client() -> OnTheSpotProcessClient:
     global _shared_client
     if _shared_client is None or _shared_client.closed:
-        _shared_client = OnTheSpotProcessClient()
+        from app.config import get_settings
+
+        _shared_client = OnTheSpotProcessClient(temp_dir=get_settings().temp_dir)
     return _shared_client
 
 

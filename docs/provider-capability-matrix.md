@@ -33,3 +33,28 @@ For Stage 5, the normalized capability model also lists only bounded potential n
 representations supported by the pinned implementation. These possibilities are never treated as
 confirmed media: they can create only `REQUIRES_PREFLIGHT` plans whose codec, bitrate, or genuine
 lossless constraint must be checked by Stage 6.
+
+## Stage 6 native-download audit
+
+Stage 6 uses the pinned `DownloadWorker._download` service dispatcher inside the isolated child
+and deliberately does not call `_finalize_audio`. Consequently `raw_media_download`,
+`track_file_format`, `file_bitrate`, `convert_audio_format`, metadata embedding, artwork fetching,
+and M3U behavior cannot post-convert the source. The worker writes a controlled `native.partial`
+inside the current job, completes required provider-native decryption, atomically renames it, and
+returns only normalized media hints and the controlled path. The application then probes the real
+file; hints never prove quality by themselves.
+
+| Provider | Pinned native acquisition | Preflight before full audio | Native/decryption facts | Stage 6 limitations |
+| --- | --- | --- | --- | --- |
+| Apple Music | Web-playback flavor `28:ctrp256`, yt-dlp transport fetch | Fixed account/flavor facts only; file is probed after download | AAC/M4A 256; FFmpeg decrypts with provider key using `-c copy` | Requires premium account and upstream FFmpeg for provider-native decryption |
+| Bandcamp | Direct HTTP from metadata `file_url` | Catalog metadata fixes MP3 128; no separate stream probe | Public MP3 128; no decryption | Missing/expired URL is recoverable only at download time |
+| Deezer | Media endpoint chooses FLAC/MP3, then native Blowfish decrypt | Yes: source file-size fields select the intended native representation | FLAC or MP3 128/256/320; provider-native decryption | Media URL selection can fall back to MP3 128 after preflight, so the downloaded file is always reprobed |
+| Qobuz | `getFileUrl` format id 27, direct HTTP | Capability/account state fixes the FLAC path; URL resolution happens during download | FLAC; no application transform or decryption | Sample rate and bit depth are known only after probe |
+| SoundCloud | yt-dlp direct audio selection | Public path is fixed MP3 128; OAuth-dependent selection requires download-before-probe | Public MP3 128; OAuth can select M4A/MP3 | OAuth exact media is not claimed by preflight |
+| Spotify | librespot `VorbisOnlyAudioQuality` and account-tier quality | Account tier determines HIGH 160 or VERY_HIGH 320 before download | Native Ogg Vorbis; librespot handles provider transport | Alternative-track/session failures remain recoverable; no approved MP3/AAC conversion from Vorbis |
+| Tidal | LOSSLESS/HIGH/LOW manifest selection; direct URL or local MPD through yt-dlp | Yes: Stage 6 inspects the selected manifest for FLAC versus MP4/AAC before full audio | FLAC or AAC/M4A; token headers remain inside child | Upstream can fall back between qualities and manifests can expire/change, so actual media is always reprobed |
+| YouTube Music | yt-dlp `bestaudio[ext=m4a]` | Fixed implementation expectation only; download-before-probe | AAC/M4A nominal 128 | Extractor availability and actual bitrate can change upstream |
+
+“Preflight” here means media facts can be established without fetching the complete audio. Every
+provider still receives final application-owned ffprobe validation. No stream URL, manifest,
+account token, cookie, or raw upstream dictionary crosses JSONL IPC.

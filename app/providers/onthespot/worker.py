@@ -16,6 +16,7 @@ os.environ["LOG_LEVEL"] = "20"
 import importlib
 import importlib.metadata
 import json
+import re
 import sys
 from collections.abc import Mapping
 from contextlib import redirect_stderr, redirect_stdout
@@ -24,10 +25,12 @@ from typing import Any, TextIO
 
 from app.providers.onthespot.ipc import (
     CHECK_SOURCE_METHOD,
+    DOWNLOAD_NATIVE_METHOD,
     GET_METADATA_METHOD,
     INITIALIZE_METHOD,
     LIST_SEARCHABLE_PROVIDERS_METHOD,
     MAX_MESSAGE_BYTES,
+    PREPARE_SOURCE_METHOD,
     PROTOCOL_VERSION,
     SEARCH_TRACKS_METHOD,
     SHUTDOWN_METHOD,
@@ -76,6 +79,7 @@ _SEARCHABLE_SERVICES = frozenset(
     }
 )
 _MAX_SEARCH_RESULTS = 10
+_JOB_ID = re.compile(r"^[0-9a-f]{32}$")
 
 
 class WorkerError(Exception):
@@ -284,6 +288,157 @@ class OnTheSpotWorker:
             return _source_result("AUTH_REQUIRED", "authentication_required")
         return _source_result("AVAILABLE", native=_native_media(provider, selected_account))
 
+    def prepare_source(self, provider: str, provider_track_id: str) -> dict[str, Any]:
+        """Inspect selected native media without returning URLs, manifests, or credentials."""
+
+        status = self.check_source(provider, provider_track_id)
+        if status.get("status") != "AVAILABLE":
+            return status
+        native = status.get("native")
+        if isinstance(native, dict):
+            return {"status": "AVAILABLE", "native": native}
+        try:
+            with _silence_upstream():
+                token = self._accounts.get_account_token(provider)
+                if token is None:
+                    raise WorkerError("provider_authentication_error")
+                if provider == "deezer":
+                    native = self._prepare_deezer(token, provider_track_id)
+                elif provider == "tidal":
+                    native = self._prepare_tidal(token, provider_track_id)
+                elif provider == "soundcloud":
+                    native = self._prepare_soundcloud(token, provider_track_id)
+                else:
+                    native = None
+        except WorkerError:
+            raise
+        except Exception:
+            return _source_result("ERROR", "preflight_failed")
+        return _source_result("AVAILABLE", native=native)
+
+    def download_native(
+        self, provider: str, provider_track_id: str, job_id: str, plan_rank: int
+    ) -> dict[str, Any]:
+        """Run only pinned service download/decryption code; skip all quality post-processing."""
+
+        status = self.check_source(provider, provider_track_id)
+        if status.get("status") != "AVAILABLE":
+            return status
+        partial = self._download_destination(job_id, plan_rank)
+        try:
+            with _silence_upstream():
+                token = self._accounts.get_account_token(provider)
+                if token is None and provider in _AUTHENTICATED_SERVICES:
+                    raise WorkerError("provider_authentication_error")
+                metadata_function = self._registry.get_metadata_function(provider, "track")
+                metadata = metadata_function(token, provider_track_id)
+                if not isinstance(metadata, Mapping) or metadata.get("is_playable") is False:
+                    raise WorkerError("metadata_unavailable")
+                downloader_module = importlib.import_module("onthespot.downloader")
+                constants = importlib.import_module("onthespot.constants")
+                item = {
+                    "local_id": f"stage6-{job_id}-{plan_rank}",
+                    "item_service": provider,
+                    "item_type": "track",
+                    "item_id": provider_track_id,
+                    "item_status": constants.ItemStatus.DOWNLOADING,
+                }
+                worker = downloader_module.DownloadWorker(gui=False)
+                default_format, bitrate, _ = worker._download(
+                    item,
+                    metadata,
+                    provider,
+                    "track",
+                    provider_track_id,
+                    token,
+                    os.fspath(partial),
+                    os.fspath(partial.with_suffix("")),
+                )
+            if not partial.is_file() or partial.stat().st_size <= 0:
+                raise WorkerError("metadata_unavailable")
+            extension = _safe_native_extension(provider, default_format)
+            final = partial.with_name(f"native.{extension}")
+            os.replace(partial, final)
+            declared = _download_media(provider, extension, bitrate)
+            return {
+                "status": "AVAILABLE",
+                "file_path": os.fspath(final),
+                **declared,
+                "native_encoded": True,
+                "provider_decrypted": provider in {"apple_music", "deezer"},
+                "upstream_quality_transcoded": False,
+            }
+        except WorkerError:
+            partial.unlink(missing_ok=True)
+            raise
+        except (KeyError, IndexError) as exc:
+            partial.unlink(missing_ok=True)
+            raise WorkerError("provider_authentication_error") from exc
+        except Exception as exc:
+            partial.unlink(missing_ok=True)
+            raise WorkerError("metadata_unavailable") from exc
+
+    def _download_destination(self, job_id: str, plan_rank: int) -> Path:
+        raw_root = os.environ.get("MUSICBOT_TEMP_DIR")
+        if not raw_root or not _JOB_ID.fullmatch(job_id) or not 1 <= plan_rank <= 999:
+            raise WorkerError("provider_unavailable")
+        root = Path(raw_root).expanduser().resolve()
+        job = (root / job_id).resolve()
+        source = (job / f"attempt-{plan_rank:03d}" / "source").resolve()
+        if job.parent != root or job not in source.parents or not source.is_dir():
+            raise WorkerError("provider_unavailable")
+        partial = (source / "native.partial").resolve()
+        if source not in partial.parents:
+            raise WorkerError("provider_unavailable")
+        return partial
+
+    @staticmethod
+    def _prepare_deezer(token: Any, provider_track_id: str) -> dict[str, Any]:
+        api = importlib.import_module("onthespot.api.deezer")
+        song = api.get_song_info_from_deezer_website(token, provider_track_id)
+        if int(song.get("FILESIZE_FLAC", 0)) > 0:
+            return {
+                "codec": "flac",
+                "container": "flac",
+                "lossless": True,
+                "provider_decrypted": True,
+            }
+        if int(song.get("FILESIZE_MP3_320", 0)) > 0:
+            return {
+                "codec": "mp3",
+                "container": "mp3",
+                "bitrate_kbps": 320,
+                "lossless": False,
+                "provider_decrypted": True,
+            }
+        bitrate = 256 if int(song.get("FILESIZE_MP3_256", 0)) > 0 else 128
+        return {
+            "codec": "mp3",
+            "container": "mp3",
+            "bitrate_kbps": bitrate,
+            "lossless": False,
+            "provider_decrypted": True,
+        }
+
+    @staticmethod
+    def _prepare_tidal(token: Any, provider_track_id: str) -> dict[str, Any] | None:
+        api = importlib.import_module("onthespot.api.tidal")
+        manifest = api.tidal_get_mpd_data(token, provider_track_id)
+        if not isinstance(manifest, str) or not manifest:
+            return None
+        lowered = manifest.lower()
+        if "flac" in lowered or "audio/flac" in lowered:
+            return {"codec": "flac", "container": "flac", "lossless": True}
+        if "mp4a" in lowered or "audio/mp4" in lowered or "audio/m4a" in lowered:
+            return {"codec": "aac", "container": "m4a", "lossless": False}
+        return None
+
+    @staticmethod
+    def _prepare_soundcloud(token: Any, provider_track_id: str) -> dict[str, Any] | None:
+        if not isinstance(token, Mapping) or not token.get("oauth_token"):
+            return {"codec": "mp3", "container": "mp3", "bitrate_kbps": 128, "lossless": False}
+        return None
+
     @staticmethod
     def _source_exception_result(provider: str, exc: Exception) -> dict[str, Any]:
         response = getattr(exc, "response", None)
@@ -405,6 +560,26 @@ def main() -> int:
                 if not isinstance(provider, str) or not isinstance(provider_track_id, str):
                     raise WorkerError("unsupported_provider")
                 result = worker.check_source(provider, provider_track_id)
+            elif method == PREPARE_SOURCE_METHOD:
+                provider = params.get("provider")
+                provider_track_id = params.get("provider_track_id")
+                if not isinstance(provider, str) or not isinstance(provider_track_id, str):
+                    raise WorkerError("unsupported_provider")
+                result = worker.prepare_source(provider, provider_track_id)
+            elif method == DOWNLOAD_NATIVE_METHOD:
+                provider = params.get("provider")
+                provider_track_id = params.get("provider_track_id")
+                job_id = params.get("job_id")
+                plan_rank = params.get("plan_rank")
+                if (
+                    not isinstance(provider, str)
+                    or not isinstance(provider_track_id, str)
+                    or not isinstance(job_id, str)
+                    or isinstance(plan_rank, bool)
+                    or not isinstance(plan_rank, int)
+                ):
+                    raise WorkerError("unsupported_provider")
+                result = worker.download_native(provider, provider_track_id, job_id, plan_rank)
             elif method == SHUTDOWN_METHOD:
                 protocol_stdout.write(_response(request_id, result={"stopped": True}))
                 protocol_stdout.flush()
@@ -455,6 +630,47 @@ def _native_media(provider: str, account: Mapping[str, Any]) -> dict[str, Any] |
     if provider == "soundcloud" and account.get("account_type") == "public":
         return {"codec": "mp3", "container": "mp3", "bitrate_kbps": 128}
     return None
+
+
+def _safe_native_extension(provider: str, default_format: object) -> str:
+    extension = str(default_format).lower().lstrip(".")
+    if extension in {"mp3", "m4a", "flac", "ogg", "webm", "opus"}:
+        return extension
+    if provider == "spotify":
+        return "ogg"
+    raise WorkerError("metadata_unavailable")
+
+
+def _download_media(provider: str, extension: str, bitrate: object) -> dict[str, Any]:
+    codec = {
+        "mp3": "mp3",
+        "m4a": "aac",
+        "flac": "flac",
+        "ogg": "vorbis",
+        "webm": "opus",
+        "opus": "opus",
+    }.get(extension, "unknown")
+    container = {
+        "mp3": "mp3",
+        "m4a": "m4a",
+        "flac": "flac",
+        "ogg": "ogg",
+        "webm": "webm",
+        "opus": "ogg",
+    }.get(extension, "unknown")
+    raw_bitrate = str(bitrate).lower().removesuffix("k")
+    try:
+        bitrate_kbps = int(raw_bitrate)
+    except ValueError:
+        bitrate_kbps = None
+    result: dict[str, Any] = {
+        "codec": codec,
+        "container": container,
+        "lossless": codec == "flac",
+    }
+    if bitrate_kbps is not None and bitrate_kbps > 0 and codec != "flac":
+        result["bitrate_kbps"] = bitrate_kbps
+    return result
 
 
 def _account_bitrate(account: Mapping[str, Any]) -> int | None:

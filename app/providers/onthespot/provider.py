@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from datetime import date
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -23,6 +24,7 @@ from app.core.exceptions import (
 from app.core.models import (
     NativeMediaInfo,
     NormalizedTrackMetadata,
+    PreparedSourceMedia,
     ProviderCapabilities,
     ProviderSourceCheck,
     TrackSearchCandidate,
@@ -177,6 +179,64 @@ class OnTheSpotProvider(MusicProvider):
             raise ProviderUnavailable()
         return ProviderSourceCheck(status, native_info, error_code)
 
+    async def prepare_source(
+        self, provider: MusicProviderName, provider_track_id: str
+    ) -> PreparedSourceMedia | None:
+        raw = await self._process_client.prepare_source(provider.value, provider_track_id)
+        _raise_runtime_result(raw)
+        native = raw.get("native")
+        if native is None:
+            return None
+        if not isinstance(native, Mapping):
+            raise ProviderUnavailable()
+        return PreparedSourceMedia(
+            provider=provider,
+            provider_track_id=provider_track_id,
+            codec=_wire_enum(NativeCodec, native.get("codec")),
+            container=_wire_enum(NativeContainer, native.get("container")),
+            bitrate_kbps=_positive_int(native.get("bitrate_kbps")),
+            lossless=_optional_bool(native.get("lossless")),
+            native_encoded=True,
+            provider_decrypted=bool(native.get("provider_decrypted", False)),
+            upstream_quality_transcoded=False,
+        )
+
+    async def download_source(
+        self,
+        provider: MusicProviderName,
+        provider_track_id: str,
+        job_id: str,
+        plan_rank: int,
+        *,
+        timeout_seconds: float,
+    ) -> PreparedSourceMedia:
+        raw = await self._process_client.download_native(
+            provider.value,
+            provider_track_id,
+            job_id,
+            plan_rank,
+            timeout_seconds=timeout_seconds,
+        )
+        _raise_runtime_result(raw)
+        path_value = raw.get("file_path")
+        if not isinstance(path_value, str):
+            raise ProviderUnavailable()
+        path = _validated_download_path(
+            Path(path_value), self._process_client.temp_dir, job_id, plan_rank
+        )
+        return PreparedSourceMedia(
+            provider=provider,
+            provider_track_id=provider_track_id,
+            codec=_wire_enum(NativeCodec, raw.get("codec")),
+            container=_wire_enum(NativeContainer, raw.get("container")),
+            bitrate_kbps=_positive_int(raw.get("bitrate_kbps")),
+            lossless=_optional_bool(raw.get("lossless")),
+            file_path=path,
+            native_encoded=raw.get("native_encoded") is True,
+            provider_decrypted=raw.get("provider_decrypted") is True,
+            upstream_quality_transcoded=raw.get("upstream_quality_transcoded") is True,
+        )
+
     @staticmethod
     def _detect_known_track(host: str, segments: list[str], query: str) -> TrackReference | None:
         if host == "open.spotify.com":
@@ -313,6 +373,31 @@ def _wire_enum(enum_type: type[NativeCodec] | type[NativeContainer], value: Any)
 
 def _optional_bool(value: Any) -> bool | None:
     return value if isinstance(value, bool) else None
+
+
+def _raise_runtime_result(raw: Mapping[str, Any]) -> None:
+    status = raw.get("status")
+    if status in {None, ProviderRuntimeStatus.AVAILABLE.value}:
+        return
+    if status == ProviderRuntimeStatus.AUTH_REQUIRED.value:
+        from app.core.exceptions import ProviderAuthenticationError
+
+        raise ProviderAuthenticationError()
+    if status == ProviderRuntimeStatus.SOURCE_UNAVAILABLE.value:
+        raise MetadataUnavailable()
+    raise ProviderUnavailable()
+
+
+def _validated_download_path(path: Path, root: Path, job_id: str, plan_rank: int) -> Path:
+    resolved = path.resolve()
+    expected = (root / job_id / f"attempt-{plan_rank:03d}" / "source").resolve()
+    if (
+        expected not in resolved.parents
+        or resolved.name.startswith(".")
+        or resolved.suffix in {".part", ".partial", ".tmp"}
+    ):
+        raise ProviderUnavailable()
+    return resolved
 
 
 def _release_date(raw: Mapping[str, Any]) -> date | None:

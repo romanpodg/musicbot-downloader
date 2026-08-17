@@ -55,6 +55,10 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite+aiosqlite:///./data/bot.db"
     temp_dir: Path = Path("./temp")
+    download_timeout_seconds: float = Field(default=600.0, gt=0)
+    transcode_timeout_seconds: float = Field(default=300.0, gt=0)
+    ffmpeg_binary: str | None = None
+    ffprobe_binary: str | None = None
 
     download_workers_default: int = Field(default=2, ge=1)
     download_workers_max: int = Field(default=8, ge=1)

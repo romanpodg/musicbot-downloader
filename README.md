@@ -1,9 +1,10 @@
 # Musicbot Downloader
 
 Production-oriented foundation for a future Telegram music downloader service. This repository
-implements Stage 0 through Stage 5: canonical recording identity, ambiguity-safe matching,
+implements Stage 0 through Stage 6: canonical recording identity, ambiguity-safe matching,
 verified cross-provider discovery, runtime provider candidate resolution, and quality-dependent
-download planning. It does not contain a Telegram bot, downloader, queue, worker pool, or API.
+download planning plus safe one-shot execution. It does not contain a Telegram bot, queue, worker
+pool, or API.
 
 ## Architecture
 
@@ -38,8 +39,8 @@ python -m app.providers.onthespot.worker
 ```
 
 The child owns OnTheSpot's global accounts/configuration, logging handlers, exception hook, and
-Protobuf compatibility setting. Current metadata, search, and provider source-check requests are
-serialized by the process client.
+Protobuf compatibility setting. Current metadata, search, provider source-check, preflight, and
+native-download requests are serialized by the process client.
 This is a dependency-isolation boundary, not a download worker pool.
 
 ## Internationalization
@@ -61,6 +62,7 @@ do not contain translated presentation text.
 - `uv`
 - SQLite (included with Python)
 - Git for the pinned optional OnTheSpot dependency
+- `ffprobe` for media validation; `ffmpeg` for transcode plans and optional stream-copy tags
 
 ```bash
 cp .env.example .env
@@ -78,6 +80,9 @@ It remains optional because its package installs GUI and media dependencies even
 use. Configure accounts using OnTheSpot's own supported configuration. The child process forces
 `PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python` before importing Protobuf/OnTheSpot and gives
 upstream the numeric `LOG_LEVEL=20`; neither value is changed in the application process.
+
+`FFMPEG_BINARY` and `FFPROBE_BINARY` may name explicit cross-platform binaries. Blank values use
+normal PATH discovery. `DOWNLOAD_TIMEOUT_SECONDS` and `TRANSCODE_TIMEOUT_SECONDS` must be positive.
 
 OnTheSpot stores configuration in its platform config directory (normally
 `%APPDATA%/onthespot/otsconfig.json` on Windows or `~/.config/onthespot/otsconfig.json` on Linux)
@@ -149,7 +154,7 @@ Stage 5.
 
 Provider availability is evaluated at request time from current authentication/session state. A
 provider that is supported but not currently authenticated is not eligible for download planning.
-Stage 6 must revalidate the selected provider immediately before execution.
+Stage 6 revalidates every selected provider immediately before execution.
 
 The flow is deliberately split:
 
@@ -158,8 +163,42 @@ Track
   -> verified TrackSources (Stage 3)
   -> Provider Resolver candidates (Stage 4)
   -> Quality Resolver plans (Stage 5)
-  -> Download Pipeline (Stage 6, not implemented)
+  -> revalidated native acquisition and validated temporary artifact (Stage 6)
 ```
+
+In operational terms, Stage 3 answers “what is this recording?”, Stage 4 answers “which verified
+providers are currently usable?”, Stage 5 answers “which source/transformation safely satisfies
+the requested quality?”, and Stage 6 revalidates and executes that ordered plan set. Provider
+authorization is checked dynamically. Stage 6 revalidates provider/source availability
+immediately before every plan attempt, skips newly unauthenticated sources, and preserves Stage 5
+fallback order.
+
+Stage 6 calls only OnTheSpot's pinned provider-native download dispatcher in the isolated child.
+It bypasses the upstream finalizer that converts to `track_file_format`, applies `file_bitrate`, and
+tags media. Provider-native transport decryption remains allowed: Apple Music uses FFmpeg stream
+copy with its provider decryption key and Deezer uses its native Blowfish decryptor. Both yield the
+native encoded stream; neither is application-quality transcoding.
+
+The execution policy is intentionally narrow:
+
+- native exact media is delivered directly after probing;
+- genuine provider-native FLAC may be transcoded to requested MP3 128, MP3 320, or AAC 256;
+- lossy-to-lossy, lossy-to-lossless, and bitrate upscaling are never executed;
+- genuine lossless is preserved directly rather than re-encoded.
+
+Every request owns `TEMP_DIR/<uuid>/`, with isolated attempt source directories and one output
+directory. Rejected attempts are removed before fallback. A successful `DownloadResult` retains
+only its validated final artifact until `DownloadArtifactManager.release(job_id)` is called;
+release is containment-checked and idempotent. Audio is stored only temporarily. Stage 6 does not
+introduce a permanent local music cache.
+
+Source and output files are probed with direct argv-based `ffprobe` execution. Codec, container,
+bitrate, sample rate, bit depth, channels, audio-stream presence, and duration are normalized.
+Known canonical duration uses a 3000 ms tolerance. Transcoding uses direct argv-based FFmpeg:
+`libmp3lame -b:a 128k`, `libmp3lame -b:a 320k`, or the built-in `aac -b:a 256k` in an M4A/IPOD
+muxer. Output bitrate validation allows 20 percent for encoder/muxer reporting. Canonical title,
+artist, album, and ISRC are added during transcode; direct files use best-effort stream-copy tagging
+without audio re-encoding and otherwise retain provider-native tags.
 
 Stage 5 ranks confirmed native exact delivery, preflight native exact delivery, confirmed
 lossless-to-lossy transcoding, then preflight lossless-to-lossy transcoding. For `LOSSLESS`, only
@@ -236,6 +275,28 @@ uv run python -m app.tools.quality <TRACK_ID> LOSSLESS
 The command shows current provider statuses, ordered plans, preflight requirements, and typed
 rejections. It performs no download, manifest fetch, transcoding, or FFmpeg invocation.
 
+## Download tool
+
+Execute fresh Stage 5 planning and the Stage 6 pipeline for any supported profile:
+
+```bash
+uv run python -m app.tools.download <TRACK_ID> MP3_128
+uv run python -m app.tools.download <TRACK_ID> MP3_320
+uv run python -m app.tools.download <TRACK_ID> AAC_256
+uv run python -m app.tools.download <TRACK_ID> LOSSLESS
+```
+
+Without `--output`, the command prints the structured result and releases all temporary audio
+before exit. To copy the validated artifact to an explicit developer-owned destination first:
+
+```bash
+uv run python -m app.tools.download <TRACK_ID> MP3_320 --output ./verified-track.mp3
+```
+
+The destination parent must exist and an existing file is never overwritten. Account-backed
+providers use already configured OnTheSpot accounts; credentials are neither accepted by this CLI
+nor printed.
+
 ## Current limitations
 
 - OnTheSpot exposes no documented stable Python library API. Only the child worker imports the
@@ -244,11 +305,14 @@ rejections. It performs no download, manifest fetch, transcoding, or FFmpeg invo
   it does not affect the application process.
 - The worker deliberately does not auto-respawn after a crash. Its owner must close and replace
   the failed process client during controlled application lifecycle recovery.
-- Exact native codec, container, bitrate, sample rate, and bit depth remain unknown where the
-  pinned implementation does not expose them before its later stream/download flow.
+- Exact native facts remain unknown before download for provider paths that expose no reliable
+  manifest/selection preflight; Stage 6 downloads then probes and rejects mismatches.
 - Stage 4 source checks use the pinned provider metadata functions. They cannot guarantee that a
   later expiring or region-dependent stream URL will remain available.
 - Search is serialized through one OnTheSpot worker and can be slow across several providers.
 - Incomplete metadata intentionally produces ambiguity or no match rather than fuzzy guessing.
-- Stage 6 execution is absent: plans are not revalidated, downloaded, transcoded, or validated.
+- `ffprobe` is the current mandatory application media-validation implementation. Direct delivery
+  cannot succeed safely when it is unavailable. FFmpeg absence affects transcode plans and optional
+  direct stream-copy tagging; a later direct fallback can still succeed when ffprobe is available.
+- There is no automatic stale-artifact watchdog yet; the immediate caller owns successful release.
 - Albums, playlists, Telegram upload/cache, queues, and APIs are intentionally absent.

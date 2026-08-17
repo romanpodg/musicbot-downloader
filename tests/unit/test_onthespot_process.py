@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core.exceptions import ProviderUnavailable
+from app.core.exceptions import ProviderOperationTimeout, ProviderUnavailable
 from app.providers.onthespot.process import (
     OnTheSpotProcessClient,
     close_shared_process_client,
@@ -27,7 +27,7 @@ for line in sys.stdin.buffer:
     method = request["method"]
     if mode == "crash" and method == "get_metadata":
         os._exit(7)
-    if mode == "hang" and method in {"get_metadata", "check_source"}:
+    if mode == "hang" and method in {"get_metadata", "check_source", "download_native"}:
         time.sleep(10)
     if mode == "init_fail" and method == "initialize":
         response = {
@@ -77,6 +77,12 @@ for line in sys.stdin.buffer:
             "id": request_id,
             "ok": True,
             "result": [] if mode == "malformed_source" else result,
+        }
+    elif method == "download_native":
+        response = {
+            "id": request_id,
+            "ok": True,
+            "result": {"status": "AVAILABLE", "file_path": "unused"},
         }
     elif method == "shutdown":
         if sentinel:
@@ -223,6 +229,16 @@ async def test_source_check_timeout_terminates_worker(tmp_path: Path) -> None:
     with pytest.raises(ProviderUnavailable):
         await client.check_source("bandcamp", "track-id")
     assert client.process_id is None
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_native_download_timeout_allows_controlled_worker_restart(tmp_path: Path) -> None:
+    client = _client(tmp_path, FAKE_WORKER_MODE="hang")
+    with pytest.raises(ProviderOperationTimeout):
+        await client.download_native("bandcamp", "track-id", "a" * 32, 1, timeout_seconds=0.05)
+    assert client.process_id is None
+    assert (await client.availability()).available is True
     await client.close()
 
 

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
 from app.core.enums import (
+    DownloadAttemptStatus,
+    DownloadFailureCode,
     DownloadPlanOperation,
     DownloadPlanReadiness,
     DownloadPlanReason,
@@ -19,6 +22,7 @@ from app.core.enums import (
     QualityCandidateRejectionReason,
     QualityProfile,
     QualityResolutionStatus,
+    SourceValidationConfidence,
     TrackEvidenceCode,
     TrackMatchDecision,
 )
@@ -157,6 +161,56 @@ class QualityResolutionResult:
     @property
     def fallback_plans(self) -> tuple[DownloadPlan, ...]:
         return self.plans[1:]
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedSourceMedia:
+    """Normalized facts about provider-native media owned by one Stage 6 job."""
+
+    provider: MusicProviderName
+    provider_track_id: str
+    codec: NativeCodec | None = None
+    container: NativeContainer | None = None
+    bitrate_kbps: int | None = None
+    sample_rate_hz: int | None = None
+    bit_depth: int | None = None
+    channels: int | None = None
+    duration_ms: int | None = None
+    lossless: bool | None = None
+    file_path: Path | None = None
+    native_encoded: bool = True
+    provider_decrypted: bool = False
+    upstream_quality_transcoded: bool = False
+    validation_confidence: SourceValidationConfidence | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadAttempt:
+    provider: MusicProviderName
+    track_source_id: int
+    plan_rank: int
+    status: DownloadAttemptStatus
+    failure_code: DownloadFailureCode | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadResult:
+    job_id: str
+    track_id: int
+    requested_profile: QualityProfile
+    track_source_id: int
+    provider: MusicProviderName
+    provider_track_id: str
+    operation: DownloadPlanOperation
+    plan_readiness: DownloadPlanReadiness
+    source_media: PreparedSourceMedia
+    output_media: PreparedSourceMedia
+    file_path: Path
+    file_size: int
+    transcoded: bool
+    fallback_index: int
+    attempts: tuple[DownloadAttempt, ...]
+    created_at: datetime
 
 
 @dataclass(frozen=True, slots=True)

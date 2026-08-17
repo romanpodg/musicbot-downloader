@@ -1,5 +1,8 @@
 """Stable application error contract; errors intentionally contain no UI text."""
 
+from app.core.enums import DownloadFailureCode
+from app.core.models import DownloadAttempt
+
 
 class MusicBotError(Exception):
     """Base error for failures callers may handle."""
@@ -15,6 +18,10 @@ class InvalidTrackUrl(MusicBotError):
 
 class ProviderUnavailable(MusicBotError):
     pass
+
+
+class ProviderOperationTimeout(ProviderUnavailable):
+    """A bounded provider operation exceeded its execution timeout."""
 
 
 class MetadataUnavailable(MusicBotError):
@@ -51,3 +58,14 @@ class LocalizationError(MusicBotError):
 
 class LocalizationFormatError(LocalizationError):
     """A translation could not be formatted with the supplied values."""
+
+
+class DownloadPipelineError(MusicBotError):
+    """Typed terminal Stage 6 failure with safe structured attempt diagnostics."""
+
+    def __init__(
+        self, code: DownloadFailureCode, attempts: tuple[DownloadAttempt, ...] = ()
+    ) -> None:
+        super().__init__()
+        self.code = code
+        self.attempts = attempts
