@@ -5,8 +5,15 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from app.core.enums import MusicProviderName
-from app.core.models import NormalizedTrackMetadata, TrackSearchCandidate, TrackSearchRequest
+from app.core.enums import MusicProviderName, ProviderRuntimeStatus
+from app.core.models import (
+    NormalizedTrackMetadata,
+    ProviderCapabilities,
+    ProviderMediaCapabilities,
+    ProviderSourceCheck,
+    TrackSearchCandidate,
+    TrackSearchRequest,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +50,27 @@ class MusicProvider(ABC):
     @abstractmethod
     async def search_tracks(self, request: TrackSearchRequest) -> list[TrackSearchCandidate]:
         """Return a bounded set of lightweight track candidates."""
+
+    def provider_capabilities(self, provider: MusicProviderName) -> ProviderCapabilities:
+        """Return implementation capabilities without implying runtime readiness."""
+
+        return ProviderCapabilities(
+            metadata_supported=False,
+            search_supported=False,
+            download_supported=False,
+            requires_auth=None,
+            media=ProviderMediaCapabilities(known=False),
+        )
+
+    async def check_source(
+        self, provider: MusicProviderName, provider_track_id: str
+    ) -> ProviderSourceCheck:
+        """Check future download readiness without downloading media."""
+
+        return ProviderSourceCheck(
+            ProviderRuntimeStatus.UNSUPPORTED,
+            error_code="provider_not_downloadable",
+        )
 
     async def close(self) -> None:
         """Release provider-owned resources, if any."""

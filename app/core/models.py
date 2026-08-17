@@ -11,6 +11,8 @@ from app.core.enums import (
     NativeCodec,
     NativeContainer,
     ProviderDiscoveryStatus,
+    ProviderResolutionStatus,
+    ProviderRuntimeStatus,
     TrackEvidenceCode,
     TrackMatchDecision,
 )
@@ -23,6 +25,66 @@ class NativeMediaInfo:
     codec: NativeCodec | None = None
     container: NativeContainer | None = None
     bitrate_kbps: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderMediaCapabilities:
+    """Provider implementation facts; unknown and unsupported stay distinct."""
+
+    known: bool
+    supports_lossy: bool | None = None
+    supports_lossless: bool | None = None
+    native_codecs: frozenset[NativeCodec] = field(default_factory=frozenset)
+    native_containers: frozenset[NativeContainer] = field(default_factory=frozenset)
+    bitrate_options_kbps: frozenset[int] = field(default_factory=frozenset)
+    max_sample_rate_hz: int | None = None
+    max_bit_depth: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderCapabilities:
+    metadata_supported: bool
+    search_supported: bool
+    download_supported: bool
+    requires_auth: bool | None
+    media: ProviderMediaCapabilities
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderSourceCheck:
+    status: ProviderRuntimeStatus
+    native_media_info: NativeMediaInfo | None = None
+    error_code: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadProviderCandidate:
+    track_id: int
+    track_source_id: int
+    provider: MusicProviderName
+    provider_track_id: str
+    runtime_status: ProviderRuntimeStatus
+    capabilities: ProviderCapabilities
+    native_media_info: NativeMediaInfo | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderCandidateFailure:
+    track_id: int
+    track_source_id: int
+    provider: MusicProviderName
+    provider_track_id: str
+    runtime_status: ProviderRuntimeStatus
+    capabilities: ProviderCapabilities
+    error_code: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderResolutionResult:
+    track_id: int
+    status: ProviderResolutionStatus
+    candidates: tuple[DownloadProviderCandidate, ...]
+    failures: tuple[ProviderCandidateFailure, ...]
 
 
 @dataclass(frozen=True, slots=True)

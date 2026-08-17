@@ -41,6 +41,10 @@ class TrackSourceOwnershipConflict(DatabaseError):
     """A provider identity is already owned by a different canonical Track."""
 
 
+class TrackNotFound(DatabaseError):
+    """The requested canonical Track does not exist."""
+
+
 class LocalizationError(MusicBotError):
     """A locale catalog or translation template is invalid."""
 

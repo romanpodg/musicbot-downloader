@@ -8,15 +8,28 @@ from datetime import date
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from app.core.enums import MusicProviderName
-from app.core.exceptions import InvalidTrackUrl, MetadataUnavailable, UnsupportedProvider
+from app.core.enums import (
+    MusicProviderName,
+    NativeCodec,
+    NativeContainer,
+    ProviderRuntimeStatus,
+)
+from app.core.exceptions import (
+    InvalidTrackUrl,
+    MetadataUnavailable,
+    ProviderUnavailable,
+    UnsupportedProvider,
+)
 from app.core.models import (
     NativeMediaInfo,
     NormalizedTrackMetadata,
+    ProviderCapabilities,
+    ProviderSourceCheck,
     TrackSearchCandidate,
     TrackSearchRequest,
 )
 from app.providers.base import MusicProvider, ProviderAvailability, TrackReference
+from app.providers.onthespot.capabilities import ONTHESPOT_CAPABILITIES
 from app.providers.onthespot.process import OnTheSpotProcessClient, get_shared_process_client
 
 _SPOTIFY_ID = re.compile(r"^[A-Za-z0-9]{22}$")
@@ -132,6 +145,38 @@ class OnTheSpotProvider(MusicProvider):
             )
         return candidates[: request.limit]
 
+    def provider_capabilities(self, provider: MusicProviderName) -> ProviderCapabilities:
+        return ONTHESPOT_CAPABILITIES[provider]
+
+    async def check_source(
+        self, provider: MusicProviderName, provider_track_id: str
+    ) -> ProviderSourceCheck:
+        if not provider_track_id or len(provider_track_id) > 2048:
+            raise MetadataUnavailable()
+        raw = await self._process_client.check_source(provider.value, provider_track_id)
+        raw_status = raw.get("status")
+        if not isinstance(raw_status, str):
+            raise ProviderUnavailable()
+        try:
+            status = ProviderRuntimeStatus(raw_status)
+        except ValueError as exc:
+            raise ProviderUnavailable() from exc
+
+        native = raw.get("native")
+        native_info: NativeMediaInfo | None = None
+        if native is not None:
+            if not isinstance(native, Mapping):
+                raise ProviderUnavailable()
+            native_info = NativeMediaInfo(
+                codec=_wire_enum(NativeCodec, native.get("codec")),
+                container=_wire_enum(NativeContainer, native.get("container")),
+                bitrate_kbps=_positive_int(native.get("bitrate_kbps")),
+            )
+        error_code = raw.get("error_code")
+        if error_code is not None and not isinstance(error_code, str):
+            raise ProviderUnavailable()
+        return ProviderSourceCheck(status, native_info, error_code)
+
     @staticmethod
     def _detect_known_track(host: str, segments: list[str], query: str) -> TrackReference | None:
         if host == "open.spotify.com":
@@ -241,6 +286,29 @@ def _duration_ms(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return duration if duration > 0 else None
+
+
+def _positive_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise ProviderUnavailable() from None
+    if number <= 0:
+        raise ProviderUnavailable()
+    return number
+
+
+def _wire_enum(enum_type: type[NativeCodec] | type[NativeContainer], value: Any) -> Any:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ProviderUnavailable()
+    try:
+        return enum_type(value)
+    except ValueError as exc:
+        raise ProviderUnavailable() from exc
 
 
 def _optional_bool(value: Any) -> bool | None:

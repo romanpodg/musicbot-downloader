@@ -32,6 +32,8 @@ class NativeCodec(StrEnum):
     AAC = "aac"
     FLAC = "flac"
     VORBIS = "vorbis"
+    OPUS = "opus"
+    UNKNOWN = "unknown"
     OTHER = "other"
 
 
@@ -40,7 +42,23 @@ class NativeContainer(StrEnum):
     M4A = "m4a"
     FLAC = "flac"
     OGG = "ogg"
+    WEBM = "webm"
+    UNKNOWN = "unknown"
     OTHER = "other"
+
+
+class ProviderRuntimeStatus(StrEnum):
+    AVAILABLE = "AVAILABLE"
+    AUTH_REQUIRED = "AUTH_REQUIRED"
+    UNAVAILABLE = "UNAVAILABLE"
+    UNSUPPORTED = "UNSUPPORTED"
+    SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
+    ERROR = "ERROR"
+
+
+class ProviderResolutionStatus(StrEnum):
+    AVAILABLE = "AVAILABLE"
+    NO_AVAILABLE_PROVIDER = "NO_AVAILABLE_PROVIDER"
 
 
 class TrackMatchDecision(StrEnum):

@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from app.core.enums import MusicProviderName
+from app.core.enums import MusicProviderName, ProviderRuntimeStatus
 from app.core.models import TrackSearchRequest
 from app.providers.onthespot import OnTheSpotProvider
 
@@ -44,5 +44,26 @@ async def test_real_onthespot_search_when_explicitly_enabled() -> None:
         if candidates:
             metadata = await provider.get_metadata(candidates[0].url)
             assert metadata.provider is target
+    finally:
+        await provider.close()
+
+
+@pytest.mark.external
+@pytest.mark.asyncio
+async def test_public_source_readiness_when_explicitly_enabled() -> None:
+    url = os.getenv("ONTHESPOT_TEST_PUBLIC_TRACK_URL")
+    if not url:
+        pytest.skip("Set ONTHESPOT_TEST_PUBLIC_TRACK_URL to a Bandcamp or YouTube Music track")
+    provider = OnTheSpotProvider()
+    try:
+        reference = provider.detect_url(url)
+        if reference.provider not in {
+            MusicProviderName.BANDCAMP,
+            MusicProviderName.YOUTUBE_MUSIC,
+        }:
+            pytest.skip("ONTHESPOT_TEST_PUBLIC_TRACK_URL must use a tokenless provider")
+        metadata = await provider.get_metadata(url)
+        check = await provider.check_source(metadata.provider, metadata.provider_track_id)
+        assert check.status is ProviderRuntimeStatus.AVAILABLE
     finally:
         await provider.close()

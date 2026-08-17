@@ -1,9 +1,9 @@
 # Musicbot Downloader
 
 Production-oriented foundation for a future Telegram music downloader service. This repository
-implements Stage 0 through Stage 3: canonical recording identity, ambiguity-safe matching, and
-verified cross-provider discovery. It does not contain a Telegram bot, Provider Resolver, Quality
-Resolver, downloader, queue, worker pool, or API.
+implements Stage 0 through Stage 4: canonical recording identity, ambiguity-safe matching,
+verified cross-provider discovery, and runtime provider candidate resolution. It does not contain
+a Telegram bot, Quality Resolver, downloader, queue, worker pool, or API.
 
 ## Architecture
 
@@ -38,7 +38,8 @@ python -m app.providers.onthespot.worker
 ```
 
 The child owns OnTheSpot's global accounts/configuration, logging handlers, exception hook, and
-Protobuf compatibility setting. Current metadata and search requests are serialized by the process client.
+Protobuf compatibility setting. Current metadata, search, and provider source-check requests are
+serialized by the process client.
 This is a dependency-isolation boundary, not a download worker pool.
 
 ## Internationalization
@@ -117,6 +118,27 @@ search result text alone is never trusted. Provider failures are reported indepe
 roll back successful canonical input resolution. Searchability is identity discovery only—it does
 not choose a future download provider.
 
+Stage 4 starts only from the canonical Track's persisted, verified `TrackSource` rows. It does not
+perform fresh fuzzy discovery. `ProviderResolver` reports each source's separate metadata, search,
+download, authentication, runtime, and known native-media capabilities. Runtime states are
+`AVAILABLE`, `AUTH_REQUIRED`, `UNAVAILABLE`, `UNSUPPORTED`, `SOURCE_UNAVAILABLE`, and `ERROR`.
+One provider failure remains local to that source, and no usable sources produce the structured
+`NO_AVAILABLE_PROVIDER` outcome.
+
+The flow is deliberately split:
+
+```text
+Track
+  -> verified TrackSources (Stage 3)
+  -> Provider Resolver candidates (Stage 4)
+  -> Quality Resolver (Stage 5, not implemented)
+```
+
+Candidates use stable alphabetical provider ordering for reproducibility. This is not preference,
+scoring, or a quality ranking, and the provider from the original input URL receives no special
+status. The pinned implementation matrix is documented in
+[`docs/provider-capability-matrix.md`](docs/provider-capability-matrix.md).
+
 ## Development checks
 
 ```bash
@@ -158,6 +180,18 @@ tokenless; the other providers require an active OnTheSpot account/session. Upst
 dedicated cross-provider ISRC-search contract, so Stage 3 uses the recording's artist and full
 title (including version text) as its bounded query and verifies full metadata afterward.
 
+## Provider candidate tool
+
+After Stage 3 has persisted a canonical Track and its verified sources, inspect Stage 4 runtime
+candidates with:
+
+```bash
+uv run python -m app.tools.providers <TRACK_ID>
+```
+
+The command reports usable candidates and normalized failures. It does not select a provider for
+`MP3_128`, `MP3_320`, `AAC_256`, or `LOSSLESS`, and it does not download audio.
+
 ## Current limitations
 
 - OnTheSpot exposes no documented stable Python library API. Only the child worker imports the
@@ -166,9 +200,11 @@ title (including version text) as its bounded query and verifies full metadata a
   it does not affect the application process.
 - The worker deliberately does not auto-respawn after a crash. Its owner must close and replace
   the failed process client during controlled application lifecycle recovery.
-- Native codec, container, and bitrate remain unknown when upstream metadata does not expose them
-  without entering later stream/download flows.
+- Exact native codec, container, bitrate, sample rate, and bit depth remain unknown where the
+  pinned implementation does not expose them before its later stream/download flow.
+- Stage 4 source checks use the pinned provider metadata functions. They cannot guarantee that a
+  later expiring or region-dependent stream URL will remain available.
 - Search is serialized through one OnTheSpot worker and can be slow across several providers.
 - Incomplete metadata intentionally produces ambiguity or no match rather than fuzzy guessing.
-- Albums, playlists, Provider/Quality Resolver behavior, downloads, conversion, Telegram
+- Albums, playlists, quality-dependent provider selection, downloads, conversion, Telegram
   upload/cache, queues, and APIs are intentionally absent.

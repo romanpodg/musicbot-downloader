@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from app.providers.onthespot.ipc import (
+    CHECK_SOURCE_METHOD,
     GET_METADATA_METHOD,
     INITIALIZE_METHOD,
     LIST_SEARCHABLE_PROVIDERS_METHOD,
@@ -34,6 +35,19 @@ from app.providers.onthespot.ipc import (
 
 _AUTHENTICATED_SERVICES = frozenset(
     {"apple_music", "deezer", "qobuz", "soundcloud", "spotify", "tidal"}
+)
+_USER_AUTH_SERVICES = frozenset({"apple_music", "deezer", "qobuz", "spotify", "tidal"})
+_DOWNLOAD_SERVICES = frozenset(
+    {
+        "apple_music",
+        "bandcamp",
+        "deezer",
+        "qobuz",
+        "soundcloud",
+        "spotify",
+        "tidal",
+        "youtube_music",
+    }
 )
 _WIRE_METADATA_KEYS = frozenset(
     {
@@ -215,6 +229,71 @@ class OnTheSpotWorker:
                 break
         return candidates
 
+    def check_source(self, provider: str, provider_track_id: str) -> dict[str, Any]:
+        """Return only normalized readiness facts; never return account or token data."""
+
+        if not self._initialized:
+            self.initialize()
+        if (
+            provider not in _DOWNLOAD_SERVICES
+            or not provider_track_id
+            or len(provider_track_id) > 2048
+        ):
+            return _source_result("UNSUPPORTED", "provider_not_downloadable")
+
+        active_accounts = [
+            account
+            for account in self._runtime.account_pool
+            if isinstance(account, Mapping)
+            and account.get("service") == provider
+            and account.get("status") == "active"
+        ]
+        if not active_accounts:
+            status = "AUTH_REQUIRED" if provider in _USER_AUTH_SERVICES else "UNAVAILABLE"
+            code = (
+                "authentication_required" if status == "AUTH_REQUIRED" else "provider_unavailable"
+            )
+            return _source_result(status, code)
+
+        try:
+            with _silence_upstream():
+                token = self._accounts.get_account_token(provider)
+                if provider in _AUTHENTICATED_SERVICES and token is None:
+                    status = "AUTH_REQUIRED" if provider in _USER_AUTH_SERVICES else "UNAVAILABLE"
+                    code = (
+                        "authentication_required"
+                        if status == "AUTH_REQUIRED"
+                        else "provider_unavailable"
+                    )
+                    return _source_result(status, code)
+                metadata_function = self._registry.get_metadata_function(provider, "track")
+                raw = metadata_function(token, provider_track_id)
+        except (KeyError, IndexError):
+            status = "AUTH_REQUIRED" if provider in _USER_AUTH_SERVICES else "ERROR"
+            code = "authentication_required" if status == "AUTH_REQUIRED" else "provider_error"
+            return _source_result(status, code)
+        except Exception as exc:
+            return self._source_exception_result(provider, exc)
+
+        if not isinstance(raw, Mapping) or not raw:
+            return _source_result("ERROR", "source_check_failed")
+        if raw.get("is_playable") is False:
+            return _source_result("SOURCE_UNAVAILABLE", "source_unavailable")
+        selected_account = _selected_account(active_accounts, token)
+        if provider == "apple_music" and selected_account.get("account_type") != "premium":
+            return _source_result("AUTH_REQUIRED", "authentication_required")
+        return _source_result("AVAILABLE", native=_native_media(provider, selected_account))
+
+    @staticmethod
+    def _source_exception_result(provider: str, exc: Exception) -> dict[str, Any]:
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+        if status_code == 404:
+            return _source_result("SOURCE_UNAVAILABLE", "source_unavailable")
+        if status_code in {401, 403} and provider in _USER_AUTH_SERVICES:
+            return _source_result("AUTH_REQUIRED", "authentication_required")
+        return _source_result("ERROR", "provider_error")
+
     @staticmethod
     def _validate_config_location() -> None:
         configured = os.environ.get("ONTHESPOTDIR")
@@ -320,6 +399,12 @@ def main() -> int:
                 ):
                     raise WorkerError("unsupported_provider")
                 result = worker.search_tracks(provider, query, limit)
+            elif method == CHECK_SOURCE_METHOD:
+                provider = params.get("provider")
+                provider_track_id = params.get("provider_track_id")
+                if not isinstance(provider, str) or not isinstance(provider_track_id, str):
+                    raise WorkerError("unsupported_provider")
+                result = worker.check_source(provider, provider_track_id)
             elif method == SHUTDOWN_METHOD:
                 protocol_stdout.write(_response(request_id, result={"stopped": True}))
                 protocol_stdout.flush()
@@ -335,6 +420,62 @@ def main() -> int:
             response = _response(request_id, error="provider_unavailable")
         protocol_stdout.write(response)
         protocol_stdout.flush()
+
+
+def _source_result(
+    status: str,
+    error_code: str | None = None,
+    *,
+    native: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {"status": status}
+    if error_code is not None:
+        result["error_code"] = error_code
+    if native is not None:
+        result["native"] = native
+    return result
+
+
+def _native_media(provider: str, account: Mapping[str, Any]) -> dict[str, Any] | None:
+    if provider == "apple_music":
+        return {"codec": "aac", "container": "m4a", "bitrate_kbps": 256}
+    if provider == "bandcamp":
+        return {"codec": "mp3", "container": "mp3", "bitrate_kbps": 128}
+    if provider == "qobuz":
+        return {"codec": "flac", "container": "flac"}
+    if provider == "spotify":
+        bitrate = _account_bitrate(account)
+        return {
+            "codec": "vorbis",
+            "container": "ogg",
+            **({"bitrate_kbps": bitrate} if bitrate in {160, 320} else {}),
+        }
+    if provider == "youtube_music":
+        return {"codec": "aac", "container": "m4a", "bitrate_kbps": 128}
+    if provider == "soundcloud" and account.get("account_type") == "public":
+        return {"codec": "mp3", "container": "mp3", "bitrate_kbps": 128}
+    return None
+
+
+def _account_bitrate(account: Mapping[str, Any]) -> int | None:
+    value = account.get("bitrate")
+    if not isinstance(value, str) or not value.endswith("k"):
+        return None
+    try:
+        bitrate = int(value[:-1])
+    except ValueError:
+        return None
+    return bitrate if bitrate > 0 else None
+
+
+def _selected_account(accounts: list[Mapping[str, Any]], token: Any) -> Mapping[str, Any]:
+    for account in accounts:
+        login = account.get("login")
+        if login is token:
+            return account
+        if isinstance(login, Mapping) and login.get("session") is token:
+            return account
+    return min(accounts, key=lambda account: str(account.get("uuid", "")))
 
 
 if __name__ == "__main__":

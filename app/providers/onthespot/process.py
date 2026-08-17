@@ -19,6 +19,7 @@ from app.core.exceptions import (
 )
 from app.providers.base import ProviderAvailability
 from app.providers.onthespot.ipc import (
+    CHECK_SOURCE_METHOD,
     DEFAULT_REQUEST_TIMEOUT_SECONDS,
     GET_METADATA_METHOD,
     INITIALIZE_METHOD,
@@ -92,6 +93,15 @@ class OnTheSpotProcessClient:
         )
         if not isinstance(result, list) or not all(isinstance(value, dict) for value in result):
             raise MetadataUnavailable()
+        return result
+
+    async def check_source(self, provider: str, provider_track_id: str) -> Mapping[str, Any]:
+        result = await self._request(
+            CHECK_SOURCE_METHOD,
+            {"provider": provider, "provider_track_id": provider_track_id},
+        )
+        if not isinstance(result, dict):
+            raise ProviderUnavailable()
         return result
 
     async def close(self) -> None:

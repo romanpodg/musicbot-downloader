@@ -27,7 +27,7 @@ for line in sys.stdin.buffer:
     method = request["method"]
     if mode == "crash" and method == "get_metadata":
         os._exit(7)
-    if mode == "hang" and method == "get_metadata":
+    if mode == "hang" and method in {"get_metadata", "check_source"}:
         time.sleep(10)
     if mode == "init_fail" and method == "initialize":
         response = {
@@ -66,6 +66,17 @@ for line in sys.stdin.buffer:
                 "provider_track_id": "candidate",
                 "url": "https://artist.bandcamp.com/track/candidate",
             }],
+        }
+    elif method == "check_source":
+        result = {
+            "status": "AVAILABLE",
+            "native": {"codec": "mp3", "container": "mp3", "bitrate_kbps": 128},
+            "access_token": "must-not-be-used",
+        }
+        response = {
+            "id": request_id,
+            "ok": True,
+            "result": [] if mode == "malformed_source" else result,
         }
     elif method == "shutdown":
         if sentinel:
@@ -179,6 +190,40 @@ async def test_search_operations_share_the_serialized_worker(tmp_path: Path) -> 
         await client.close()
     assert providers == ["bandcamp", "youtube_music"]
     assert candidates[0]["provider_track_id"] == "candidate"
+
+
+@pytest.mark.asyncio
+async def test_source_check_uses_normalized_ipc_response(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    try:
+        result = await client.check_source("bandcamp", "track-id")
+    finally:
+        await client.close()
+    assert result["status"] == "AVAILABLE"
+    assert result["native"] == {
+        "codec": "mp3",
+        "container": "mp3",
+        "bitrate_kbps": 128,
+    }
+
+
+@pytest.mark.asyncio
+async def test_malformed_source_response_is_rejected(tmp_path: Path) -> None:
+    client = _client(tmp_path, FAKE_WORKER_MODE="malformed_source")
+    try:
+        with pytest.raises(ProviderUnavailable):
+            await client.check_source("bandcamp", "track-id")
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_source_check_timeout_terminates_worker(tmp_path: Path) -> None:
+    client = _client(tmp_path, request_timeout=1, FAKE_WORKER_MODE="hang")
+    with pytest.raises(ProviderUnavailable):
+        await client.check_source("bandcamp", "track-id")
+    assert client.process_id is None
+    await client.close()
 
 
 @pytest.mark.asyncio

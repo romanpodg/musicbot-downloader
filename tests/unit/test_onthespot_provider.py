@@ -5,7 +5,12 @@ from typing import Any
 
 import pytest
 
-from app.core.enums import MusicProviderName
+from app.core.enums import (
+    MusicProviderName,
+    NativeCodec,
+    NativeContainer,
+    ProviderRuntimeStatus,
+)
 from app.core.exceptions import InvalidTrackUrl, UnsupportedProvider
 from app.core.models import TrackSearchRequest
 from app.providers.base import ProviderAvailability
@@ -55,6 +60,13 @@ class FakeProcessClient:
             },
             {"provider": "deezer", "provider_track_id": "bad", "url": "https://bad.invalid"},
         ]
+
+    async def check_source(self, provider: str, provider_track_id: str) -> Mapping[str, Any]:
+        return {
+            "status": "AVAILABLE",
+            "native": {"codec": "vorbis", "container": "ogg", "bitrate_kbps": 320},
+            "token": "must-not-escape",
+        }
 
     async def close(self) -> None:
         self.was_closed = True
@@ -150,3 +162,25 @@ async def test_search_capabilities_and_candidates_are_normalized() -> None:
     assert len(candidates) == 1
     assert candidates[0].provider_track_id == "123"
     assert candidates[0].url == "https://www.deezer.com/track/123"
+
+
+@pytest.mark.asyncio
+async def test_source_check_is_strictly_normalized() -> None:
+    provider = _provider(FakeProcessClient())
+    result = await provider.check_source(MusicProviderName.SPOTIFY, "provider-id")
+    assert result.status is ProviderRuntimeStatus.AVAILABLE
+    assert result.native_media_info is not None
+    assert result.native_media_info.codec is NativeCodec.VORBIS
+    assert result.native_media_info.container is NativeContainer.OGG
+    assert result.native_media_info.bitrate_kbps == 320
+    assert not hasattr(result, "token")
+
+
+def test_search_and_download_capabilities_are_distinct() -> None:
+    provider = _provider()
+    capability = provider.provider_capabilities(MusicProviderName.DEEZER)
+    assert capability.metadata_supported is True
+    assert capability.search_supported is True
+    assert capability.download_supported is True
+    assert capability.requires_auth is True
+    assert capability.media.supports_lossless is True
