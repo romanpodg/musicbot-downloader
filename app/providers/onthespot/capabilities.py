@@ -6,7 +6,7 @@ from types import MappingProxyType
 from typing import Final
 
 from app.core.enums import MusicProviderName, NativeCodec, NativeContainer
-from app.core.models import ProviderCapabilities, ProviderMediaCapabilities
+from app.core.models import NativeMediaInfo, ProviderCapabilities, ProviderMediaCapabilities
 
 
 def _media(
@@ -16,6 +16,7 @@ def _media(
     codecs: tuple[NativeCodec, ...] = (),
     containers: tuple[NativeContainer, ...] = (),
     bitrates: tuple[int, ...] = (),
+    potential_media: tuple[NativeMediaInfo, ...] = (),
 ) -> ProviderMediaCapabilities:
     return ProviderMediaCapabilities(
         known=True,
@@ -24,6 +25,7 @@ def _media(
         native_codecs=frozenset(codecs),
         native_containers=frozenset(containers),
         bitrate_options_kbps=frozenset(bitrates),
+        potential_media=potential_media,
     )
 
 
@@ -39,6 +41,7 @@ _CAPABILITIES = {
             codecs=(NativeCodec.AAC,),
             containers=(NativeContainer.M4A,),
             bitrates=(256,),
+            potential_media=(NativeMediaInfo(NativeCodec.AAC, NativeContainer.M4A, 256),),
         ),
     ),
     MusicProviderName.BANDCAMP: ProviderCapabilities(
@@ -52,6 +55,7 @@ _CAPABILITIES = {
             codecs=(NativeCodec.MP3,),
             containers=(NativeContainer.MP3,),
             bitrates=(128,),
+            potential_media=(NativeMediaInfo(NativeCodec.MP3, NativeContainer.MP3, 128),),
         ),
     ),
     MusicProviderName.DEEZER: ProviderCapabilities(
@@ -65,6 +69,12 @@ _CAPABILITIES = {
             codecs=(NativeCodec.MP3, NativeCodec.FLAC),
             containers=(NativeContainer.MP3, NativeContainer.FLAC),
             bitrates=(128, 256, 320),
+            potential_media=(
+                NativeMediaInfo(NativeCodec.MP3, NativeContainer.MP3, 128),
+                NativeMediaInfo(NativeCodec.MP3, NativeContainer.MP3, 256),
+                NativeMediaInfo(NativeCodec.MP3, NativeContainer.MP3, 320),
+                NativeMediaInfo(NativeCodec.FLAC, NativeContainer.FLAC),
+            ),
         ),
     ),
     MusicProviderName.QOBUZ: ProviderCapabilities(
@@ -77,6 +87,7 @@ _CAPABILITIES = {
             lossless=True,
             codecs=(NativeCodec.FLAC,),
             containers=(NativeContainer.FLAC,),
+            potential_media=(NativeMediaInfo(NativeCodec.FLAC, NativeContainer.FLAC),),
         ),
     ),
     MusicProviderName.SOUNDCLOUD: ProviderCapabilities(
@@ -90,6 +101,7 @@ _CAPABILITIES = {
             codecs=(NativeCodec.MP3, NativeCodec.AAC),
             containers=(NativeContainer.MP3, NativeContainer.M4A),
             bitrates=(128, 256),
+            potential_media=(NativeMediaInfo(NativeCodec.MP3, NativeContainer.MP3, 128),),
         ),
     ),
     MusicProviderName.SPOTIFY: ProviderCapabilities(
@@ -103,6 +115,10 @@ _CAPABILITIES = {
             codecs=(NativeCodec.VORBIS,),
             containers=(NativeContainer.OGG,),
             bitrates=(160, 320),
+            potential_media=(
+                NativeMediaInfo(NativeCodec.VORBIS, NativeContainer.OGG, 160),
+                NativeMediaInfo(NativeCodec.VORBIS, NativeContainer.OGG, 320),
+            ),
         ),
     ),
     MusicProviderName.TIDAL: ProviderCapabilities(
@@ -115,6 +131,10 @@ _CAPABILITIES = {
             lossless=True,
             codecs=(NativeCodec.AAC, NativeCodec.FLAC),
             containers=(NativeContainer.M4A, NativeContainer.FLAC),
+            potential_media=(
+                NativeMediaInfo(NativeCodec.AAC, NativeContainer.M4A),
+                NativeMediaInfo(NativeCodec.FLAC, NativeContainer.FLAC),
+            ),
         ),
     ),
     MusicProviderName.YOUTUBE_MUSIC: ProviderCapabilities(
@@ -128,6 +148,7 @@ _CAPABILITIES = {
             codecs=(NativeCodec.AAC,),
             containers=(NativeContainer.M4A,),
             bitrates=(128,),
+            potential_media=(NativeMediaInfo(NativeCodec.AAC, NativeContainer.M4A, 128),),
         ),
     ),
 }

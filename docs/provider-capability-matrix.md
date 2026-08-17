@@ -29,3 +29,7 @@ The source check cannot prove that a later stream request will succeed. In parti
 tier, regional catalog rules, expiring sessions, and provider-specific stream endpoints can change
 between Stage 4 and a future download. Stage 4 therefore reports current observable facts and
 keeps unknown values as `None`; it does not rank providers or satisfy a delivery quality profile.
+For Stage 5, the normalized capability model also lists only bounded potential native
+representations supported by the pinned implementation. These possibilities are never treated as
+confirmed media: they can create only `REQUIRES_PREFLIGHT` plans whose codec, bitrate, or genuine
+lossless constraint must be checked by Stage 6.

@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from app.core.enums import (
+    DownloadPlanOperation,
+    DownloadPlanReadiness,
+    DownloadPlanReason,
     MusicProviderName,
     NativeCodec,
     NativeContainer,
     ProviderDiscoveryStatus,
     ProviderResolutionStatus,
     ProviderRuntimeStatus,
+    QualityCandidateRejectionReason,
+    QualityProfile,
+    QualityResolutionStatus,
     TrackEvidenceCode,
     TrackMatchDecision,
 )
@@ -37,6 +43,7 @@ class ProviderMediaCapabilities:
     native_codecs: frozenset[NativeCodec] = field(default_factory=frozenset)
     native_containers: frozenset[NativeContainer] = field(default_factory=frozenset)
     bitrate_options_kbps: frozenset[int] = field(default_factory=frozenset)
+    potential_media: tuple[NativeMediaInfo, ...] = ()
     max_sample_rate_hz: int | None = None
     max_bit_depth: int | None = None
 
@@ -85,6 +92,71 @@ class ProviderResolutionResult:
     status: ProviderResolutionStatus
     candidates: tuple[DownloadProviderCandidate, ...]
     failures: tuple[ProviderCandidateFailure, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SourceMediaRequirement:
+    """Facts Stage 6 must verify before executing one quality strategy."""
+
+    required_codec: NativeCodec | None = None
+    required_lossless: bool | None = None
+    required_bitrate_kbps: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OutputSpecification:
+    """Exact delivery contract represented by a user QualityProfile."""
+
+    codec: NativeCodec | None
+    container: NativeContainer | None
+    bitrate_kbps: int | None
+    lossless: bool
+    preserve_source: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadPlan:
+    """A quality-safe future execution strategy; it never performs media work."""
+
+    track_id: int
+    track_source_id: int
+    provider: MusicProviderName
+    provider_track_id: str
+    requested_profile: QualityProfile
+    source_expectation: SourceMediaRequirement
+    output_specification: OutputSpecification
+    operation: DownloadPlanOperation
+    readiness: DownloadPlanReadiness
+    reason: DownloadPlanReason
+
+
+@dataclass(frozen=True, slots=True)
+class QualityProviderDiagnostic:
+    track_id: int
+    track_source_id: int
+    provider: MusicProviderName
+    provider_track_id: str
+    runtime_status: ProviderRuntimeStatus
+    rejection_reason: QualityCandidateRejectionReason | None = None
+    provider_error_code: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class QualityResolutionResult:
+    track_id: int
+    requested_profile: QualityProfile
+    status: QualityResolutionStatus
+    plans: tuple[DownloadPlan, ...]
+    provider_diagnostics: tuple[QualityProviderDiagnostic, ...]
+    resolved_at: datetime
+
+    @property
+    def primary_plan(self) -> DownloadPlan | None:
+        return self.plans[0] if self.plans else None
+
+    @property
+    def fallback_plans(self) -> tuple[DownloadPlan, ...]:
+        return self.plans[1:]
 
 
 @dataclass(frozen=True, slots=True)

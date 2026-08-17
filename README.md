@@ -1,9 +1,9 @@
 # Musicbot Downloader
 
 Production-oriented foundation for a future Telegram music downloader service. This repository
-implements Stage 0 through Stage 4: canonical recording identity, ambiguity-safe matching,
-verified cross-provider discovery, and runtime provider candidate resolution. It does not contain
-a Telegram bot, Quality Resolver, downloader, queue, worker pool, or API.
+implements Stage 0 through Stage 5: canonical recording identity, ambiguity-safe matching,
+verified cross-provider discovery, runtime provider candidate resolution, and quality-dependent
+download planning. It does not contain a Telegram bot, downloader, queue, worker pool, or API.
 
 ## Architecture
 
@@ -125,18 +125,48 @@ download, authentication, runtime, and known native-media capabilities. Runtime 
 One provider failure remains local to that source, and no usable sources produce the structured
 `NO_AVAILABLE_PROVIDER` outcome.
 
+Stage 5 accepts only a canonical `track_id` and one of the four `QualityProfile` values. Its
+`QualityResolver` asks `ProviderResolver` for a new runtime snapshot on every call, filters out
+every status except `AVAILABLE`, and returns deterministic ordered `DownloadPlan` strategies.
+Each plan carries stable provider/source identity, a source-media requirement, the requested
+output contract, an operation, readiness, and a machine-readable reason. The first plan is the
+primary strategy and the remaining plans are fallbacks; Stage 5 does not execute any of them.
+
+The quality policy is deliberately strict:
+
+- a confirmed native codec and nominal bitrate exact match is preferred;
+- genuine lossless to requested MP3 or AAC is an allowed future transcode;
+- lossy-to-lossy transcoding is forbidden, including down-conversion;
+- lossy-to-lossless conversion and bitrate upscaling are forbidden;
+- `LOSSLESS` preserves a genuine lossless source instead of re-encoding it;
+- unknown media never becomes a confirmed plan.
+
+When a normalized provider capability describes a bounded future path but the exact stream is not
+known yet, the plan is marked `REQUIRES_PREFLIGHT` and includes the facts Stage 6 must verify.
+For example, Tidal may conditionally require a genuine lossless stream; Deezer may expose separate
+conditional native-MP3 and lossless-transcode strategies. No manifest or media is fetched in
+Stage 5.
+
+Provider availability is evaluated at request time from current authentication/session state. A
+provider that is supported but not currently authenticated is not eligible for download planning.
+Stage 6 must revalidate the selected provider immediately before execution.
+
 The flow is deliberately split:
 
 ```text
 Track
   -> verified TrackSources (Stage 3)
   -> Provider Resolver candidates (Stage 4)
-  -> Quality Resolver (Stage 5, not implemented)
+  -> Quality Resolver plans (Stage 5)
+  -> Download Pipeline (Stage 6, not implemented)
 ```
 
-Candidates use stable alphabetical provider ordering for reproducibility. This is not preference,
-scoring, or a quality ranking, and the provider from the original input URL receives no special
-status. The pinned implementation matrix is documented in
+Stage 5 ranks confirmed native exact delivery, preflight native exact delivery, confirmed
+lossless-to-lossy transcoding, then preflight lossless-to-lossy transcoding. For `LOSSLESS`, only
+confirmed then preflight genuine-lossless preservation qualifies. Equal strategies use stable
+provider value, provider track identity, and TrackSource identity as neutral tie-breakers. The
+provider from the original input URL receives no special status. The pinned implementation matrix
+is documented in
 [`docs/provider-capability-matrix.md`](docs/provider-capability-matrix.md).
 
 ## Development checks
@@ -192,6 +222,20 @@ uv run python -m app.tools.providers <TRACK_ID>
 The command reports usable candidates and normalized failures. It does not select a provider for
 `MP3_128`, `MP3_320`, `AAC_256`, or `LOSSLESS`, and it does not download audio.
 
+## Quality planning tool
+
+Obtain a fresh Stage 4 snapshot and inspect Stage 5 primary and fallback plans with:
+
+```bash
+uv run python -m app.tools.quality <TRACK_ID> MP3_128
+uv run python -m app.tools.quality <TRACK_ID> MP3_320
+uv run python -m app.tools.quality <TRACK_ID> AAC_256
+uv run python -m app.tools.quality <TRACK_ID> LOSSLESS
+```
+
+The command shows current provider statuses, ordered plans, preflight requirements, and typed
+rejections. It performs no download, manifest fetch, transcoding, or FFmpeg invocation.
+
 ## Current limitations
 
 - OnTheSpot exposes no documented stable Python library API. Only the child worker imports the
@@ -206,5 +250,5 @@ The command reports usable candidates and normalized failures. It does not selec
   later expiring or region-dependent stream URL will remain available.
 - Search is serialized through one OnTheSpot worker and can be slow across several providers.
 - Incomplete metadata intentionally produces ambiguity or no match rather than fuzzy guessing.
-- Albums, playlists, quality-dependent provider selection, downloads, conversion, Telegram
-  upload/cache, queues, and APIs are intentionally absent.
+- Stage 6 execution is absent: plans are not revalidated, downloaded, transcoded, or validated.
+- Albums, playlists, Telegram upload/cache, queues, and APIs are intentionally absent.
