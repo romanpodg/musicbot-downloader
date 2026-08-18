@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from string import Formatter
 from typing import Any
 
 from app.core.exceptions import LocalizationError, LocalizationFormatError
@@ -73,10 +74,29 @@ class LocalizationService:
         return data
 
     def _validate_catalog_parity(self) -> None:
-        baseline = set(self._catalogs[self.default_locale])
+        baseline_catalog = self._catalogs[self.default_locale]
+        baseline = set(baseline_catalog)
         if any(set(catalog) != baseline for catalog in self._catalogs.values()):
             raise LocalizationError()
+        try:
+            baseline_fields = {
+                key: _format_fields(value) for key, value in baseline_catalog.items()
+            }
+            if any(
+                _format_fields(catalog[key]) != baseline_fields[key]
+                for catalog in self._catalogs.values()
+                for key in baseline
+            ):
+                raise LocalizationError()
+        except ValueError as exc:
+            raise LocalizationError() from exc
 
     @staticmethod
     def _normalize(locale: str) -> str:
         return locale.strip().lower().replace("_", "-")
+
+
+def _format_fields(value: str) -> frozenset[str]:
+    return frozenset(
+        field_name for _, field_name, _, _ in Formatter().parse(value) if field_name is not None
+    )

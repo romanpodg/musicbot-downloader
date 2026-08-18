@@ -77,6 +77,12 @@ def test_admin_presentation_renders_zero_normal_and_large_values_in_both_locales
     assert callbacks == ["adm1:refresh", "adm1:close"]
     assert all(callback is not None and len(callback.encode()) <= 64 for callback in callbacks)
 
+    owner_keyboard = presentation.keyboard("en", authoritative_owner=True)
+    owner_callbacks = [
+        button.callback_data for row in owner_keyboard.inline_keyboard for button in row
+    ]
+    assert owner_callbacks == ["adm2:l:0", "adm1:refresh", "adm1:close"]
+
 
 def test_admin_callback_codec_rejects_malformed_and_unknown_values() -> None:
     assert (

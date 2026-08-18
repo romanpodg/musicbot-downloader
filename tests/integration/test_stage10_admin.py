@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ChatType, MessageEntityType
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.methods import AnswerCallbackQuery, EditMessageText, SendMessage
 from aiogram.types import CallbackQuery, Chat, Message, MessageEntity, Update
 from aiogram.types import User as TgUser
@@ -28,6 +29,7 @@ from app.core.models import (
     WorkerPoolSnapshot,
 )
 from app.i18n import LocalizationService
+from app.services.admin_management import AdministratorManagementService
 from app.services.admin_overview import AdminOverviewService
 from app.services.authorization import (
     AdminPermission,
@@ -40,6 +42,7 @@ from app.services.telegram_users import TelegramUserProfile, TelegramUserService
 from app.storage import Database
 from app.storage.models.base import utc_now
 from app.telegram.admin_handlers import AdminHandlerDependencies, create_admin_router
+from app.telegram.admin_management_presentation import AdminManagementPresentation
 from app.telegram.admin_presentation import AdminPresentation
 
 
@@ -248,22 +251,32 @@ async def test_admin_overview_uses_bounded_local_statistics_without_mutation_or_
 async def test_admin_router_denial_access_forgery_and_fresh_role_changes(
     database: Database,
 ) -> None:
-    await _create_user(database, 301, UserRole.USER)
-    await _create_user(database, 302, UserRole.ADMIN)
+    user_id = await _create_user(database, 301, UserRole.USER)
+    admin_id = await _create_user(database, 302, UserRole.ADMIN)
     await _create_user(database, 303, UserRole.OWNER)
+    fallback_target_id = await _create_user(database, 304, UserRole.USER)
     i18n = LocalizationService(("en", "ru"), "en")
     users = TelegramUserService(database, i18n, owner_id=303)
     queues = QueueSnapshotFake(_runtime_snapshot())
+    authorization = TelegramAuthorizationService(database, owner_id=303)
     overview = AdminOverviewService(
         database,
-        TelegramAuthorizationService(database, owner_id=303),
+        authorization,
         queues,
         CacheStatsFake(TelegramCacheStats(10, 1, 123)),
         telegram_bot_id=900,
     )
     dispatcher = Dispatcher()
     dispatcher.include_router(
-        create_admin_router(AdminHandlerDependencies(users, overview, AdminPresentation(i18n)))
+        create_admin_router(
+            AdminHandlerDependencies(
+                users,
+                overview,
+                AdminPresentation(i18n),
+                AdministratorManagementService(database, authorization, owner_id=303),
+                AdminManagementPresentation(i18n),
+            )
+        )
     )
     bot = Bot("123456:TEST_TOKEN")
 
@@ -287,7 +300,13 @@ async def test_admin_router_denial_access_forgery_and_fresh_role_changes(
             ),
         )
 
-    def callback_update(update_id: int, telegram_id: int, data: str) -> Update:
+    def callback_update(
+        update_id: int,
+        telegram_id: int,
+        data: str,
+        *,
+        chat_type: ChatType = ChatType.PRIVATE,
+    ) -> Update:
         user = TgUser(id=telegram_id, is_bot=False, first_name="User", language_code="en")
         return Update(
             update_id=update_id,
@@ -298,7 +317,7 @@ async def test_admin_router_denial_access_forgery_and_fresh_role_changes(
                 message=Message(
                     message_id=50,
                     date=datetime.now(UTC),
-                    chat=Chat(id=telegram_id, type=ChatType.PRIVATE),
+                    chat=Chat(id=telegram_id, type=chat_type),
                     from_user=user,
                     text="panel",
                 ),
@@ -331,18 +350,114 @@ async def test_admin_router_denial_access_forgery_and_fresh_role_changes(
             await dispatcher.feed_update(bot, message_update(5, 303))
             assert isinstance(api.await_args.args[0], SendMessage)
             assert "Role: Owner" in api.await_args.args[0].text
+            owner_markup = api.await_args.args[0].reply_markup
+            assert owner_markup is not None
+            owner_callbacks = [
+                button.callback_data for row in owner_markup.inline_keyboard for button in row
+            ]
+            assert "adm2:l:0" in owner_callbacks
             assert queues.calls == 2
 
-            await _set_role(database, 302, UserRole.USER)
-            await dispatcher.feed_update(bot, callback_update(6, 302, "adm1:refresh"))
+            await dispatcher.feed_update(bot, callback_update(6, 302, "adm2:l:0"))
             assert isinstance(api.await_args.args[0], AnswerCallbackQuery)
             assert api.await_args.args[0].show_alert
             assert queues.calls == 2
 
-            await _set_role(database, 301, UserRole.ADMIN)
-            await dispatcher.feed_update(bot, message_update(7, 301))
+            await dispatcher.feed_update(bot, callback_update(7, 302, f"adm2:pc:{user_id}:0"))
+            assert isinstance(api.await_args.args[0], AnswerCallbackQuery)
+            async with database.transaction() as repositories:
+                target = await repositories.users.get(user_id)
+                assert target is not None
+                assert target.role is UserRole.USER
+
+            await dispatcher.feed_update(bot, callback_update(8, 301, "adm2:l:0"))
+            assert isinstance(api.await_args.args[0], AnswerCallbackQuery)
+            assert api.await_args.args[0].show_alert
+
+            await dispatcher.feed_update(
+                bot,
+                callback_update(9, 303, "adm2:l:0", chat_type=ChatType.GROUP),
+            )
+            assert isinstance(api.await_args.args[0], AnswerCallbackQuery)
+            assert api.await_args.args[0].show_alert
+
+            await dispatcher.feed_update(bot, callback_update(10, 303, "adm2:l:0"))
+            edits = [
+                call.args[0]
+                for call in api.await_args_list
+                if call.args and isinstance(call.args[0], EditMessageText)
+            ]
+            assert "Administrators" in edits[-1].text
+            assert edits[-1].reply_markup is not None
+            assert any(
+                "302" in button.text
+                for row in edits[-1].reply_markup.inline_keyboard
+                for button in row
+            )
+
+            await dispatcher.feed_update(bot, callback_update(11, 303, "adm2:a:0"))
+            edits = [
+                call.args[0]
+                for call in api.await_args_list
+                if call.args and isinstance(call.args[0], EditMessageText)
+            ]
+            assert "Add administrator" in edits[-1].text
+
+            await dispatcher.feed_update(bot, callback_update(12, 303, f"adm2:p:{user_id}:0"))
+            async with database.transaction() as repositories:
+                target = await repositories.users.get(user_id)
+                assert target is not None
+                assert target.role is UserRole.USER
+            edits = [
+                call.args[0]
+                for call in api.await_args_list
+                if call.args and isinstance(call.args[0], EditMessageText)
+            ]
+            assert "Promote administrator?" in edits[-1].text
+
+            calls_before_promotion = len(api.await_args_list)
+            await dispatcher.feed_update(bot, callback_update(13, 303, f"adm2:pc:{user_id}:0"))
+            assert not any(
+                call.args and isinstance(call.args[0], SendMessage)
+                for call in api.await_args_list[calls_before_promotion:]
+            )
+            async with database.transaction() as repositories:
+                target = await repositories.users.get(user_id)
+                assert target is not None
+                assert target.role is UserRole.ADMIN
+
+            await dispatcher.feed_update(bot, message_update(14, 301))
             assert isinstance(api.await_args.args[0], SendMessage)
             assert "Role: Administrator" in api.await_args.args[0].text
+            assert queues.calls == 3
+
+            await dispatcher.feed_update(bot, callback_update(15, 303, f"adm2:u:{admin_id}:0"))
+            await dispatcher.feed_update(bot, callback_update(16, 303, f"adm2:r:{admin_id}:0"))
+            async with database.transaction() as repositories:
+                target = await repositories.users.get(admin_id)
+                assert target is not None
+                assert target.role is UserRole.ADMIN
+            edits = [
+                call.args[0]
+                for call in api.await_args_list
+                if call.args and isinstance(call.args[0], EditMessageText)
+            ]
+            assert "Remove administrator?" in edits[-1].text
+
+            calls_before_demotion = len(api.await_args_list)
+            await dispatcher.feed_update(bot, callback_update(17, 303, f"adm2:rc:{admin_id}:0"))
+            assert not any(
+                call.args and isinstance(call.args[0], SendMessage)
+                for call in api.await_args_list[calls_before_demotion:]
+            )
+            async with database.transaction() as repositories:
+                target = await repositories.users.get(admin_id)
+                assert target is not None
+                assert target.role is UserRole.USER
+
+            await dispatcher.feed_update(bot, callback_update(18, 302, "adm1:refresh"))
+            assert isinstance(api.await_args.args[0], AnswerCallbackQuery)
+            assert api.await_args.args[0].show_alert
             assert queues.calls == 3
 
             queues.value = QueueRuntimeSnapshot(
@@ -352,7 +467,7 @@ async def test_admin_router_denial_access_forgery_and_fresh_role_changes(
                 upload_jobs=QueueStatusCounts(),
                 singleflight=SingleFlightSnapshot(0, SubscriberStatusCounts()),
             )
-            await dispatcher.feed_update(bot, callback_update(8, 301, "adm1:refresh"))
+            await dispatcher.feed_update(bot, callback_update(19, 301, "adm1:refresh"))
             edit_calls = [
                 call.args[0]
                 for call in api.await_args_list
@@ -362,13 +477,33 @@ async def test_admin_router_denial_access_forgery_and_fresh_role_changes(
             assert "99 queued" in edit_calls[-1].text
             assert queues.calls == 4
 
-            await dispatcher.feed_update(bot, callback_update(9, 301, "adm1:close"))
+            await dispatcher.feed_update(bot, callback_update(20, 301, "adm1:close"))
             assert isinstance(api.await_args.args[0], AnswerCallbackQuery)
             assert queues.calls == 4
 
-            await dispatcher.feed_update(bot, callback_update(10, 301, "adm1:unknown"))
+            await dispatcher.feed_update(bot, callback_update(21, 301, "adm1:unknown"))
             assert isinstance(api.await_args.args[0], AnswerCallbackQuery)
             assert api.await_args.args[0].show_alert
             assert queues.calls == 4
+
+            async def fail_edit(method: object) -> bool:
+                if isinstance(method, EditMessageText):
+                    raise TelegramBadRequest(method, "edit failed")
+                return True
+
+            api.side_effect = fail_edit
+            calls_before_fallback = len(api.await_args_list)
+            await dispatcher.feed_update(
+                bot,
+                callback_update(22, 303, f"adm2:pc:{fallback_target_id}:0"),
+            )
+            async with database.transaction() as repositories:
+                target = await repositories.users.get(fallback_target_id)
+                assert target is not None
+                assert target.role is UserRole.ADMIN
+            assert any(
+                call.args and isinstance(call.args[0], SendMessage)
+                for call in api.await_args_list[calls_before_fallback:]
+            )
     finally:
         await bot.session.close()

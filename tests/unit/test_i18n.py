@@ -50,6 +50,15 @@ def test_catalog_parity_is_validated(tmp_path: Path) -> None:
         LocalizationService(("en", "ru"), "en", tmp_path)
 
 
+def test_catalog_placeholder_parity_is_validated(tmp_path: Path) -> None:
+    _write_catalogs(
+        tmp_path,
+        {"en": {"hello": "Hello {name}"}, "ru": {"hello": "Привет {user}"}},
+    )
+    with pytest.raises(LocalizationError):
+        LocalizationService(("en", "ru"), "en", tmp_path)
+
+
 def test_default_locale_must_be_supported() -> None:
     with pytest.raises(LocalizationError):
         LocalizationService(("en", "ru"), "de")

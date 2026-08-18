@@ -1,4 +1,4 @@
-"""Stage 10.1 production long-polling application entry point."""
+"""Stage 10.2 production long-polling application entry point."""
 
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ async def run_bot(settings: Settings) -> None:
             gateway=gateway,
         )
         await components.start()
-        logger.info("Stage 10.1 Telegram long polling started")
+        logger.info("Stage 10.2 Telegram long polling started")
         await components.dispatcher.start_polling(gateway.bot, close_bot_session=False)
     finally:
         if components is not None:
@@ -85,7 +85,7 @@ async def check_runtime(settings: Settings) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the Stage 10.1 Telegram downloader bot.")
+    parser = argparse.ArgumentParser(description="Run the Stage 10.2 Telegram downloader bot.")
     parser.add_argument(
         "--check",
         action="store_true",
@@ -100,7 +100,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_logging(settings)
     if args.check:
         asyncio.run(check_runtime(settings))
-        print("Stage 10.1 runtime configuration is ready.")
+        print("Stage 10.2 runtime configuration is ready.")
         return 0
     try:
         asyncio.run(run_bot(settings))

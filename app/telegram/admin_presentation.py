@@ -8,6 +8,10 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.i18n import LocalizationService
 from app.services.admin_overview import AuthorizedAdminOverview
+from app.telegram.admin_management_presentation import (
+    AdminManagementCallbackAction,
+    encode_admin_management_callback,
+)
 
 
 class AdminCallbackAction(StrEnum):
@@ -144,9 +148,21 @@ class AdminPresentation:
             raise ValueError("admin overview exceeds Telegram message limit")
         return rendered
 
-    def keyboard(self, locale: str) -> InlineKeyboardMarkup:
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
+    def keyboard(self, locale: str, *, authoritative_owner: bool = False) -> InlineKeyboardMarkup:
+        rows: list[list[InlineKeyboardButton]] = []
+        if authoritative_owner:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=self.text("admin.administrators", locale),
+                        callback_data=encode_admin_management_callback(
+                            AdminManagementCallbackAction.LIST, page=0
+                        ),
+                    )
+                ]
+            )
+        rows.extend(
+            [
                 [
                     InlineKeyboardButton(
                         text=self.text("admin.refresh", locale),
@@ -161,6 +177,7 @@ class AdminPresentation:
                 ],
             ]
         )
+        return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _count(value: int) -> str:

@@ -1,13 +1,13 @@
 # Musicbot Downloader
 
 Production-oriented foundation for a future Telegram music downloader service. This repository
-implements Stage 0 through Stage 10.1: canonical recording identity, ambiguity-safe matching,
+implements Stage 0 through Stage 10.2: canonical recording identity, ambiguity-safe matching,
 verified cross-provider discovery, runtime provider candidate resolution, quality-dependent
 download planning, safe one-shot execution, persistent asynchronous queue orchestration, and
 durable SingleFlight subscribers, a bot-scoped Telegram completed-result cache, and the
 long-polling user downloader bot with persistent cached-file delivery, explicit Track Cards,
 durable provider-specific Album Cards with selective track fan-out, and a centralized,
-OWNER-hardened read-only Telegram administration panel.
+OWNER-hardened Telegram administration panel with owner-only administrator management.
 
 Current delivery roadmap:
 
@@ -19,10 +19,11 @@ Current delivery roadmap:
 - Stage 9.2: Track Card, explicit Download, and per-track quality choice;
 - Stage 9.3: provider-specific album snapshots, durable track selection, and per-track delivery.
 - Stage 10: Telegram Admin UI presentation foundation;
-- Stage 10.1: centralized authorization and authoritative OWNER enforcement.
+- Stage 10.1: centralized authorization and authoritative OWNER enforcement;
+- Stage 10.2: owner-only promotion and removal of database-backed administrators.
 
-The next boundaries are intentionally not implemented: Stage 10.2 administrator management,
-Stage 10.3 runtime worker controls, and Stage 10.4 Provider Health history/UI.
+The next boundaries are intentionally not implemented: Stage 10.3 runtime worker controls and
+Stage 10.4 Provider Health history/UI.
 
 ## Architecture
 
@@ -140,7 +141,7 @@ match with `OWNER_ID`; writing `OWNER` into the database alone never grants owne
 stale `OWNER` row whose Telegram ID does not match the configured owner is treated as a privileged
 role invariant violation and receives no admin-panel or owner-only permission. It is not
 automatically guessed to be an ADMIN or USER, deleted, or demoted. Owner transfer and stale-row
-demotion semantics remain outside Stage 10.1.
+demotion semantics remain outside Stage 10.2.
 
 ## Database migrations
 
@@ -443,7 +444,7 @@ Telegram album URL
   -> one localized terminal album summary
 ```
 
-## Telegram administration (Stage 10-10.1)
+## Telegram administration (Stage 10-10.2)
 
 `/admin` opens a compact read-only operational dashboard for a database `ADMIN` or the configured
 authoritative `OWNER`. It is deliberately absent from the global command menu and works only in a
@@ -459,11 +460,35 @@ action changes queue, cache, worker, delivery, or album state.
 
 `TelegramAuthorizationService` resolves each privileged request from current persistent user state
 and immutable `OWNER_ID`; no in-memory admin-ID authority or persistent panel session exists. The
-small capability set is currently `ADMIN_PANEL_VIEW` and `OWNER_ONLY`. `AdminOverviewService`
+capability set is `ADMIN_PANEL_VIEW` and `OWNER_ONLY`. `AdminOverviewService`
 requires a fresh `ADMIN_PANEL_VIEW` check before collecting bounded aggregates, so a forged
 `adm1:refresh` callback is harmless and an open panel stops working immediately after an ADMIN is
-demoted. The reusable `require_authoritative_owner` guard is the boundary that Stage 10.2 must use
-for adding or removing administrators; those mutations are not implemented here.
+demoted. A database `OWNER` role is not sufficient by itself: authoritative OWNER access also
+requires that user's Telegram ID to match `OWNER_ID`. Mismatched stale OWNER rows receive no
+privileged access and are not exposed as owners, administrators, or promotion candidates.
+
+The authoritative OWNER sees an `Administrators` action on `/admin`; ordinary ADMIN users retain
+the read-only dashboard with only `Refresh` and `Close`. The owner-only flow is:
+
+```text
+/admin -> Administrators -> Add administrator -> existing USER -> Confirm
+Administrators -> existing ADMIN -> Remove administrator -> Confirm removal
+```
+
+`AdministratorManagementService` re-applies authoritative-owner authorization for every list,
+detail, confirmation, and mutation. Administrator and eligible-user lists use SQL `COUNT` plus
+bounded pages of eight rows ordered by internal user ID ascending. Promotion uses only existing
+`USER` rows and performs an atomic conditional `USER -> ADMIN` transition; removal performs only
+`ADMIN -> USER`. Duplicate or stale confirmations produce a safe stale result. OWNER assignment,
+OWNER removal, and a generic role setter are not exposed by the Telegram UI. The configured owner
+identity is also excluded by the conditional SQL predicates as defense in depth.
+
+A user must interact with the downloader bot at least once before the OWNER can promote them to
+ADMIN; the management UI never fabricates a Telegram profile or performs a global Contacts lookup.
+Promotion grants the existing read-only `/admin` access immediately, and demotion revokes it on the
+former ADMIN's next callback without a restart. Role changes do not alter locale, quality, profile,
+download/album history, queue work, cache rows, or normal downloader access. The bot sends no
+unsolicited promotion/demotion notification to the target user.
 
 Dashboard opening and refresh use only SQLite/runtime snapshots. They never authenticate or probe
 music providers, validate Telegram cached files over the network, invoke FFmpeg, create downloads,
@@ -490,9 +515,9 @@ Stage 8 cache uploader, reconciles SingleFlight/queues, starts download/upload w
 delivery fanout, and begins polling. Ctrl+C stops polling and fanout, gracefully stops queue
 workers, closes the OnTheSpot child and Telegram session, and disposes database resources.
 
-No new Stage 9.3 or Stage 10.1 environment variables. Album expansion uses one bounded coordinator
-worker and a hard 500-track snapshot limit. Stage 10.1 changes no database schema and requires no
-admin-panel migration or session table.
+No new Stage 9.3, Stage 10.1, or Stage 10.2 environment variables. Album expansion uses one bounded
+coordinator worker and a hard 500-track snapshot limit. Stage 10.2 changes no database schema and
+requires no admin-panel migration, role-assignment table, or session table.
 
 Authentication with only a subset of supported music providers is valid. Download planning uses
 only providers available at actual execution time; it never requires the provider from the input
@@ -685,8 +710,9 @@ SQLite-only operations.
   derived from the pinned provider's ordered track listing and can be incomplete.
 - Album delivery is per track. There is no ZIP/archive, concatenated audio, M3U, album-wide media
   job/cache artifact, strict Telegram delivery ordering, or per-track quality override.
-- Stage 10.1 administration is read-only. Administrator add/remove (Stage 10.2), worker-count
-  controls (Stage 10.3), and Provider Health checks/history (Stage 10.4) are not implemented.
+- Stage 10.2 administrator management is owner-only. OWNER transfer, persistent security audit
+  history, worker-count controls (Stage 10.3), and Provider Health checks/history (Stage 10.4) are
+  not implemented.
 - Changing `OWNER_ID` does not automatically demote stale OWNER rows; mismatched rows are denied all
   privileged access until a future explicit owner-transfer/revocation policy is implemented.
 - Playlists, webhooks, inline mode, publishing-bot integration, deep links/internal API, user

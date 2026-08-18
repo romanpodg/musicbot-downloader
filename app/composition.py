@@ -12,6 +12,7 @@ from app.config import Settings
 from app.core.models import TelegramBotIdentity
 from app.i18n import LocalizationService
 from app.providers.base import MusicProvider
+from app.services.admin_management import AdministratorManagementService
 from app.services.admin_overview import AdminOverviewService
 from app.services.artifacts import DownloadArtifactManager
 from app.services.authorization import TelegramAuthorizationService
@@ -43,6 +44,7 @@ from app.services.workers import DownloadWorkerBackend, QueueManager, UploadWork
 from app.storage import Database
 from app.telegram import AiogramTelegramGateway, TelegramGateway
 from app.telegram.admin_handlers import AdminHandlerDependencies, create_admin_router
+from app.telegram.admin_management_presentation import AdminManagementPresentation
 from app.telegram.admin_presentation import AdminPresentation
 from app.telegram.handlers import TelegramHandlerDependencies, create_stage9_router
 from app.telegram.presentation import TelegramPresentation
@@ -104,6 +106,7 @@ class Stage9Components:
     provider: MusicProvider
     authorization: TelegramAuthorizationService
     admin_overview: AdminOverviewService
+    admin_management: AdministratorManagementService
 
     async def start(self) -> None:
         await self.queue_manager.start()
@@ -220,10 +223,21 @@ async def compose_stage9(
         stage8.telegram_cache,
         telegram_bot_id=stage8.bot_identity.telegram_bot_id,
     )
+    admin_management = AdministratorManagementService(
+        database,
+        authorization,
+        owner_id=settings.owner_id,
+    )
     dispatcher = Dispatcher()
     dispatcher.include_router(
         create_admin_router(
-            AdminHandlerDependencies(users, admin_overview, AdminPresentation(i18n))
+            AdminHandlerDependencies(
+                users,
+                admin_overview,
+                AdminPresentation(i18n),
+                admin_management,
+                AdminManagementPresentation(i18n),
+            )
         )
     )
     dispatcher.include_router(
@@ -271,4 +285,5 @@ async def compose_stage9(
         provider=provider,
         authorization=authorization,
         admin_overview=admin_overview,
+        admin_management=admin_management,
     )
