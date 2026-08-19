@@ -138,7 +138,7 @@ class TelegramAlbumCoordinator:
         finally:
             self._album_wake.set()
 
-    async def reconcile(self) -> int:
+    async def reconcile(self, *, notify: bool = True) -> int:
         changed = 0
         async with self._database.transaction() as repositories:
             requests = await repositories.telegram_album.list_reconcilable()
@@ -162,7 +162,8 @@ class TelegramAlbumCoordinator:
                     request_id=request.id, status=status, now=utc_now()
                 ):
                     changed += 1
-        await self._notify_terminal()
+        if notify:
+            await self._notify_terminal()
         return changed
 
     async def _notify_terminal(self) -> None:

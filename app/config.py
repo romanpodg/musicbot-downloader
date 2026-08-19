@@ -74,6 +74,8 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./data/bot.db"
     temp_dir: Path = Path("./temp")
     temp_disk_min_free_bytes: int = Field(default=268_435_456, ge=0)
+    temp_cleanup_interval_seconds: float = Field(default=600.0, ge=60.0, le=86_400.0)
+    temp_artifact_stale_after_seconds: float = Field(default=3600.0, ge=60.0)
     download_timeout_seconds: float = Field(default=600.0, gt=0)
     transcode_timeout_seconds: float = Field(default=300.0, gt=0)
     ffmpeg_binary: str | None = None
@@ -117,6 +119,10 @@ class Settings(BaseSettings):
             raise ValueError("DOWNLOAD_WORKERS_MAX must be >= DOWNLOAD_WORKERS_DEFAULT")
         if self.upload_workers_max < self.upload_workers_default:
             raise ValueError("UPLOAD_WORKERS_MAX must be >= UPLOAD_WORKERS_DEFAULT")
+        if self.temp_artifact_stale_after_seconds < self.temp_cleanup_interval_seconds:
+            raise ValueError(
+                "TEMP_ARTIFACT_STALE_AFTER_SECONDS must be >= TEMP_CLEANUP_INTERVAL_SECONDS"
+            )
 
         self.default_locale = _normalize_locale(self.default_locale)
         self.supported_locales = tuple(_normalize_locale(item) for item in self.supported_locales)

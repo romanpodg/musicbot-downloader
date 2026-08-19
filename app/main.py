@@ -1,4 +1,4 @@
-"""Stage 12.1 production entry point and supervised application lifecycle."""
+"""Stage 12.2 production entry point and supervised application lifecycle."""
 
 from __future__ import annotations
 
@@ -115,6 +115,7 @@ async def run_bot(settings: Settings) -> None:
     api_server: InternalApiServer | None = None
     polling_task: asyncio.Task[None] | None = None
     api_wait_task: asyncio.Task[None] | None = None
+    component_wait_task: asyncio.Task[None] | None = None
     try:
         await require_current_schema(database)
         result = await OwnerBootstrapService(database, settings.owner_id).run()
@@ -125,6 +126,11 @@ async def run_bot(settings: Settings) -> None:
         provider = OnTheSpotProvider()
         components = await compose_stage9(database, settings, provider, gateway=gateway)
         await components.start()
+        component_waiter = getattr(components, "wait_terminated", None)
+        if component_waiter is not None:
+            component_wait_task = asyncio.create_task(
+                component_waiter(), name="component-supervisor"
+            )
 
         api_configuration = settings.internal_api_configuration()
         if api_configuration is not None:
@@ -165,12 +171,19 @@ async def run_bot(settings: Settings) -> None:
         critical_tasks = {polling_task}
         if api_wait_task is not None:
             critical_tasks.add(api_wait_task)
+        if component_wait_task is not None:
+            critical_tasks.add(component_wait_task)
         done, _ = await asyncio.wait(critical_tasks, return_when=asyncio.FIRST_COMPLETED)
         completed = done.pop()
         if completed.cancelled():
             raise RuntimeError("Critical application service was cancelled unexpectedly")
         await completed
-        service_name = "Telegram polling" if completed is polling_task else "Internal API"
+        if completed is polling_task:
+            service_name = "Telegram polling"
+        elif completed is api_wait_task:
+            service_name = "Internal API"
+        else:
+            service_name = "Application component"
         raise RuntimeError(f"{service_name} stopped unexpectedly")
     finally:
         status.ready = False
@@ -181,6 +194,9 @@ async def run_bot(settings: Settings) -> None:
         if api_wait_task is not None and not api_wait_task.done():
             api_wait_task.cancel()
             await asyncio.gather(api_wait_task, return_exceptions=True)
+        if component_wait_task is not None and not component_wait_task.done():
+            component_wait_task.cancel()
+            await asyncio.gather(component_wait_task, return_exceptions=True)
         if api_server is not None:
             await _cleanup("internal_api", api_server.stop)
         if components is not None:
@@ -245,7 +261,7 @@ async def _run_with_signals(settings: Settings) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the Stage 12.1 Telegram downloader service.")
+    parser = argparse.ArgumentParser(description="Run the Stage 12.2 Telegram downloader service.")
     parser.add_argument(
         "--check",
         action="store_true",
@@ -265,7 +281,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.check:
             asyncio.run(check_runtime(settings))
-            print("Stage 12.1 runtime configuration is ready.")
+            print("Stage 12.2 runtime configuration is ready.")
             return 0
         asyncio.run(_run_with_signals(settings))
     except KeyboardInterrupt:

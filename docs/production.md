@@ -1,10 +1,10 @@
-# Production deployment (Stage 12.1)
+# Production deployment (Stage 12.2)
 
 > **Single-instance constraint:** The current SQLite deployment supports one downloader
 > application instance. Do not run replicas or point multiple application containers at the same
 > database volume.
 
-Stage 12.1 packages the existing `python -m app.main` runtime as one service. The process owns
+Stage 12.2 packages the existing `python -m app.main` runtime as one service. The process owns
 Telegram long polling, the in-process worker managers, the optional embedded Internal API, and one
 lazy serialized OnTheSpot child. It does not add a second downloader process, Redis, PostgreSQL, or
 persistent local media storage.
@@ -28,7 +28,7 @@ Build a versioned local image:
 ```bash
 docker compose build
 # or
-docker build -t musicbot-downloader:stage12.1 .
+docker build -t musicbot-downloader:stage12.2 .
 ```
 
 ## Filesystem and permissions
@@ -81,6 +81,8 @@ chmod 600 .env
 | `DATABASE_URL` | Compose forces `sqlite+aiosqlite:////data/musicbot.db` |
 | `TEMP_DIR` | Compose forces ephemeral `/tmp/musicbot` |
 | `TEMP_DISK_MIN_FREE_BYTES` | Acquisition safety floor; default `268435456` (256 MiB) |
+| `TEMP_CLEANUP_INTERVAL_SECONDS` | Cleanup watchdog interval; default `600`, bounded to 60–86400 seconds |
+| `TEMP_ARTIFACT_STALE_AFTER_SECONDS` | Minimum orphan age; default `3600`, at least the cleanup interval |
 | `FFMPEG_BINARY`, `FFPROBE_BINARY` | Optional explicit executable paths; PATH by default |
 | `DOWNLOAD_TIMEOUT_SECONDS`, `TRANSCODE_TIMEOUT_SECONDS` | Positive operation timeouts |
 | `DOWNLOAD_WORKERS_DEFAULT`, `DOWNLOAD_WORKERS_MAX` | Initial and maximum download workers |
@@ -125,13 +127,19 @@ configuration, or unwritable TEMP_DIR fails startup before workers begin.
 Exact runtime startup order is: load settings; configure stdout/stderr logging; validate local
 filesystem/media prerequisites; create the database engine; verify the Alembic head; reconcile
 the configured OWNER; create Telegram and obtain bot identity; compose provider/runtime services;
-initialize existing queue/SingleFlight state and start Download/Upload workers; start delivery and
-album workers; start the optional Internal API; create Telegram polling; mark ready.
+recover expired DownloadJob and UploadJob leases; recover expired delivery and album-item leases;
+validate non-terminal UploadJob artifacts and perform exact ACTIVE-cache rescue; reconcile
+SingleFlight subscribers and terminal Album aggregates without sending Telegram messages; run one
+conservative stale-artifact sweep; start Download/Upload, delivery, and album workers; start the
+supervised cleanup watchdog; start the optional Internal API; create Telegram polling; mark ready.
+No worker can claim work and readiness cannot become true before recovery and the startup sweep
+finish.
 
 SIGTERM/SIGINT cancels polling and runs bounded worker shutdown, stops uvicorn, closes the
 OnTheSpot child (terminate then kill after its existing bound if needed), closes Telegram, and
 disposes the DB engine. Individual Download/Upload worker exceptions remain contained by their
-existing pools. Unexpected termination of Telegram polling or the enabled Internal API is fatal;
+existing pools. Unexpected termination of Telegram polling, the enabled Internal API, or the
+cleanup watchdog is fatal;
 the process shuts down all resources and exits nonzero so the service manager can restart it.
 Deterministic config/schema errors will keep failing under `restart: unless-stopped`; run `--check`
 and inspect logs before startup.
@@ -144,8 +152,8 @@ When the Internal API is enabled:
 - `GET /internal/v1/ready` is unauthenticated readiness, returning only
   `{"status":"ready"}` or HTTP 503 `{"status":"not_ready"}`.
 
-Readiness means schema validation, composition, worker startup, listener startup (when enabled),
-and polling task creation completed. It does **not** mean any provider is authenticated or able to
+Readiness means schema validation, crash recovery, the startup cleanup sweep, worker startup,
+listener startup (when enabled), and polling task creation completed. It does **not** mean any provider is authenticated or able to
 download; Provider Health is separate. Transient provider failure and queue depth never affect
 liveness/readiness.
 
@@ -175,7 +183,40 @@ or equal to `TEMP_DISK_MIN_FREE_BYTES`. Low space and ENOSPC normalize to
 `TEMP_STORAGE_UNAVAILABLE`, use the existing maximum-three-attempt exponential queue backoff, and
 retain per-attempt cleanup. This floor cannot predict provider file size or perfectly reserve
 space across concurrent workers. Monitor both `/data` and the TEMP_DIR filesystem externally.
-Stage 12.1 does not scan or delete pre-existing/orphaned artifacts.
+
+The cleanup watchdog scans only direct UUID-style children of `TEMP_DIR`. It never scans `/data`,
+OnTheSpot state, or database files. A root is deleted only when it is not process-active, is not
+owned by any non-terminal UploadJob, is older than `TEMP_ARTIFACT_STALE_AFTER_SECONDS`, and passes
+containment/layout checks. Young orphans and queued/running/retry-delayed upload artifacts are
+preserved regardless of age. Unknown entries and top-level symlinks are ignored. Recursive removal
+does not follow inner symlinks; only the link entry is removed with its controlled tree, leaving an
+external target untouched. Candidate races and item-level filesystem errors are isolated. The
+periodic scan/deletion runs off the event loop and does not weaken the Stage 12.1 free-space floor:
+cleanup may let a later retry pass, but acquisition still checks the configured reserve.
+
+## Crash and atomicity semantics
+
+On process crash or SIGKILL, SQLite/WAL durable state survives. At the next startup, only expired
+leases are reclaimed under their existing bounded-attempt/cancellation policies; non-expired leases
+remain unchanged. Download retries use a fresh Stage 4–6 resolution and current provider auth. An
+artifact created before UploadJob handoff has no durable owner and is deleted only after becoming
+stale. An UploadJob with a surviving valid artifact is preserved and can retry. If container
+replacement or host policy removed ephemeral `/tmp/musicbot`, the pending UploadJob fails safely,
+waiting subscribers are reconciled, and a future user request may build fresh media. TEMP_DIR is
+not backed up and is intentionally not moved into `/data`.
+
+SQLite transitions are transactional, but SQLite, the filesystem, and Telegram cannot participate
+in one atomic transaction. Stage 12.2 narrows recoverable windows; it does not promise exactly-once
+external effects:
+
+- an exact ACTIVE cache row committed before UploadJob completion rescues the upload without a new
+  Telegram call;
+- Telegram may accept a cache upload before its SQLite cache row commits, leaving no durable
+  evidence; retry may upload it again and recovery never scrapes Telegram history;
+- a user send may succeed before the delivery row commits DELIVERED, so retry may duplicate it;
+- an album completion message has the same send-before-commit duplicate window;
+- filesystem creation/release cannot commit atomically with the UploadJob transaction, so stale
+  grace and durable ownership—not filesystem guessing—govern cleanup.
 
 ## Backup, upgrade, and rollback
 
@@ -212,7 +253,9 @@ privileged mode. Configure CPU/memory limits for observed workloads, leaving eno
 scratch disk for the largest expected transcode. Do not assume one universal limit. Keep outbound
 Internet access for Telegram/providers and keep inbound API access private.
 
-Known Stage 12.1 limitations: one SQLite application instance; no stale-artifact watchdog/orphan
-recovery; no scheduled backups or restore automation; no persistent security audit history; no
-PostgreSQL, Redis, distributed workers, or multi-replica operation; no TLS automation; and no
+Known Stage 12.2 limitations: one SQLite application instance; Telegram side effects remain
+at-least-once around SQLite commits; ephemeral container replacement can lose pending UploadJob
+artifacts; cleanup deliberately waits for a conservative stale threshold; the reserve floor is not
+a byte reservation; no scheduled backups/restore automation or persistent audit history; no
+PostgreSQL, Redis, distributed workers, or multi-replica cleanup/recovery; no TLS automation; and no
 guarantee that the reserve floor prevents every concurrent ENOSPC event.

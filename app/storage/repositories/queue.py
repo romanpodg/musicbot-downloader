@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
 
@@ -21,6 +22,12 @@ TERMINAL_STATUSES = (
     QueueJobStatus.FAILED,
     QueueJobStatus.CANCELLED,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class UploadLeaseRecovery:
+    recovered: int
+    terminal_artifacts: tuple[tuple[str, str], ...]
 
 
 class DownloadJobRepository:
@@ -65,8 +72,8 @@ class DownloadJobRepository:
         )
         return {status: count for status, count in rows}
 
-    async def recover_expired(self, now: datetime, max_attempts: int) -> None:
-        await self._session.execute(
+    async def recover_expired(self, now: datetime, max_attempts: int) -> int:
+        cancelled = await self._session.execute(
             update(DownloadJob)
             .where(
                 DownloadJob.status == QueueJobStatus.RUNNING,
@@ -80,7 +87,7 @@ class DownloadJobRepository:
                 lease_expires_at=None,
             )
         )
-        await self._session.execute(
+        exhausted = await self._session.execute(
             update(DownloadJob)
             .where(
                 DownloadJob.status == QueueJobStatus.RUNNING,
@@ -96,7 +103,7 @@ class DownloadJobRepository:
                 lease_expires_at=None,
             )
         )
-        await self._session.execute(
+        requeued = await self._session.execute(
             update(DownloadJob)
             .where(
                 DownloadJob.status == QueueJobStatus.RUNNING,
@@ -111,6 +118,7 @@ class DownloadJobRepository:
                 lease_expires_at=None,
             )
         )
+        return _rowcount(cancelled) + _rowcount(exhausted) + _rowcount(requeued)
 
     async def claim(
         self, *, worker_id: str, now: datetime, lease_expires_at: datetime
@@ -347,9 +355,7 @@ class UploadJobRepository:
         )
         return {status: count for status, count in rows}
 
-    async def recover_expired(
-        self, now: datetime, max_attempts: int
-    ) -> builtins.list[tuple[str, str]]:
+    async def recover_expired(self, now: datetime, max_attempts: int) -> UploadLeaseRecovery:
         cancelled = await self._session.execute(
             update(UploadJob)
             .where(
@@ -384,7 +390,7 @@ class UploadJobRepository:
             .returning(UploadJob.artifact_job_id, UploadJob.artifact_path)
         )
         released.extend(exhausted.tuples())
-        await self._session.execute(
+        requeued = await self._session.execute(
             update(UploadJob)
             .where(
                 UploadJob.status == QueueJobStatus.RUNNING,
@@ -399,7 +405,58 @@ class UploadJobRepository:
                 lease_expires_at=None,
             )
         )
-        return released
+        return UploadLeaseRecovery(len(released) + _rowcount(requeued), tuple(released))
+
+    async def list_nonterminal(self) -> builtins.list[UploadJob]:
+        rows = await self._session.scalars(
+            select(UploadJob)
+            .where(UploadJob.status.not_in(TERMINAL_STATUSES))
+            .order_by(UploadJob.id)
+        )
+        return builtins.list(rows)
+
+    async def protected_artifact_job_ids(self) -> set[str]:
+        rows = await self._session.scalars(
+            select(UploadJob.artifact_job_id).where(UploadJob.status.not_in(TERMINAL_STATUSES))
+        )
+        return set(rows)
+
+    async def fail_recovered(self, *, job_id: int, now: datetime, error_code: str) -> bool:
+        result = await self._session.execute(
+            update(UploadJob)
+            .where(UploadJob.id == job_id, UploadJob.status.not_in(TERMINAL_STATUSES))
+            .values(
+                status=case(
+                    (UploadJob.cancel_requested.is_(True), QueueJobStatus.CANCELLED),
+                    else_=QueueJobStatus.FAILED,
+                ),
+                finished_at=now,
+                last_error_code=error_code,
+                last_error_detail=None,
+                lease_owner=None,
+                lease_expires_at=None,
+            )
+        )
+        return _changed(result)
+
+    async def succeed_recovered(self, *, job_id: int, now: datetime) -> bool:
+        result = await self._session.execute(
+            update(UploadJob)
+            .where(
+                UploadJob.id == job_id,
+                UploadJob.status.not_in(TERMINAL_STATUSES),
+                UploadJob.cancel_requested.is_(False),
+            )
+            .values(
+                status=QueueJobStatus.SUCCEEDED,
+                finished_at=now,
+                last_error_code=None,
+                last_error_detail=None,
+                lease_owner=None,
+                lease_expires_at=None,
+            )
+        )
+        return _changed(result)
 
     async def claim(
         self, *, worker_id: str, now: datetime, lease_expires_at: datetime
@@ -623,4 +680,8 @@ class RuntimeSettingsRepository:
 
 
 def _changed(result: Any) -> bool:
-    return bool(cast(CursorResult[Any], result).rowcount)
+    return bool(_rowcount(result))
+
+
+def _rowcount(result: Any) -> int:
+    return max(0, cast(CursorResult[Any], result).rowcount)

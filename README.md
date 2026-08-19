@@ -1,7 +1,7 @@
 # Musicbot Downloader
 
 Production-oriented foundation for a future Telegram music downloader service. This repository
-implements Stage 0 through Stage 12.1: canonical recording identity, ambiguity-safe matching,
+implements Stage 0 through Stage 12.2: canonical recording identity, ambiguity-safe matching,
 verified cross-provider discovery, runtime provider candidate resolution, quality-dependent
 download planning, safe one-shot execution, persistent asynchronous queue orchestration, and
 durable SingleFlight subscribers, a bot-scoped Telegram completed-result cache, and the
@@ -27,12 +27,13 @@ Current delivery roadmap:
 - Stage 10.4: ADMIN/OWNER live Provider Health diagnostics.
 - Stage 11: private Internal API and bot-scoped Track/Album deep-link registry.
 - Stage 12.1: Production Packaging and Runtime Hardening Foundation.
+- Stage 12.2: Crash Recovery and Stale Artifact Cleanup.
 
-Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 (Crash
-Recovery and Stale Artifact Cleanup) and Stage 12.3 (Operational Audit and Recovery Tooling) are
-not implemented.
+Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
+deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage
+12.3 (Operational Audit and Recovery Tooling) is not implemented.
 
-See [the production deployment guide](docs/production.md) for the Stage 12.1 container,
+See [the production deployment guide](docs/production.md) for the Stage 12.2 container,
 filesystem, migration, preflight, security, backup, and upgrade contract.
 
 ## Architecture
@@ -128,6 +129,8 @@ BOT_TOKEN=<downloader bot token>
 TELEGRAM_CACHE_CHAT_ID=<private cache chat/channel ID>
 TELEGRAM_DELIVERY_WORKERS=4
 TELEGRAM_DELIVERY_MAX_ATTEMPTS=3
+TEMP_CLEANUP_INTERVAL_SECONDS=600
+TEMP_ARTIFACT_STALE_AFTER_SECONDS=3600
 ```
 
 Only the bot runtime requires the Telegram settings; Alembic and non-Telegram developer CLIs do
@@ -286,10 +289,19 @@ handoff transaction. A failed handoff releases the artifact. Retryable uploads r
 terminal, or cancelled uploads commit their status and then release only through
 `DownloadArtifactManager`. DB paths are checked under `TEMP_DIR/<job_id>/output` before use.
 
-The filesystem and SQLite cannot share a transaction. A crash after Stage 6 returns but before
-handoff can leave an orphan directory; a crash after external delivery but before the UploadJob
-success commit can cause duplicate delivery; and a crash after a terminal commit but before release
-can leak an artifact. Full cleanup/reconstruction remains deferred to the later recovery stage.
+The filesystem and SQLite cannot share a transaction. Stage 12.2 runs durable recovery before
+workers, protects artifacts referenced by every non-terminal UploadJob, and removes only recognized
+UUID artifact roots that are unowned, inactive, and older than the configured stale threshold. A
+Stage 6 crash before handoff therefore leaves a young orphan that is reclaimed later; a surviving
+post-handoff UploadJob resumes with the same validated artifact. If ephemeral storage disappeared,
+the UploadJob fails terminally and its waiting subscribers are reconciled. A terminal commit whose
+release was interrupted becomes stale-cleanup eligible.
+
+An exact ACTIVE Telegram cache row for the same bot, Track, and QualityProfile can rescue a pending
+UploadJob after restart without a Telegram call; the UploadJob succeeds, waiting subscribers become
+READY, and the local artifact is released. No fuzzy, wrong-quality, other-bot, or INVALID match is
+accepted. Telegram accepting an upload before the cache row commits remains an unavoidable
+at-least-once external side effect and can create an extra private-cache message on retry.
 
 Worker settings have three distinct authorities:
 
@@ -602,9 +614,12 @@ uv run python -m app.main --check
 uv run python -m app.main
 ```
 
-Startup verifies that the database is at Alembic head, resolves the bot identity, composes the
-Stage 8 cache uploader, reconciles SingleFlight/queues, starts download/upload workers, starts the
-delivery fanout, optionally starts the embedded Internal API, and begins polling. Ctrl+C stops the
+Startup verifies that the database is at Alembic head, reconciles OWNER, resolves the bot identity,
+composes services, recovers expired queue/delivery/album leases and active artifact consistency,
+reconciles SingleFlight and Album aggregates, runs one conservative stale-artifact sweep, starts
+download/upload, delivery, and album workers, starts the supervised cleanup watchdog, optionally
+starts the embedded Internal API, and begins polling. Recovery performs no provider work or
+Telegram sends/uploads. Ctrl+C stops the
 HTTP listener, polling, and fanout, gracefully stops queue workers, closes the OnTheSpot child and
 Telegram session, and disposes database resources. `--check` validates and composes the HTTP
 transport when enabled but never binds a socket.
@@ -857,7 +872,8 @@ SQLite-only operations.
 - `ffprobe` is the current mandatory application media-validation implementation. Direct delivery
   cannot succeed safely when it is unavailable. FFmpeg absence affects transcode plans and optional
   direct stream-copy tagging; a later direct fallback can still succeed when ffprobe is available.
-- There is no automatic stale-artifact watchdog yet; the immediate caller owns successful release.
+- Stale artifact cleanup is deliberately delayed by a conservative threshold; it is not an exact
+  byte-reservation system and ignores unknown TEMP_DIR entries.
 - Stage 7 targets one application instance and one SQLite database; multi-host workers and
   distributed locks are intentionally absent.
 - Telegram upload and cache persistence are not one distributed transaction. A process crash after

@@ -15,8 +15,13 @@ from app.i18n import LocalizationService
 from app.providers.base import MusicProvider
 from app.services.admin_management import AdministratorManagementService
 from app.services.admin_overview import AdminOverviewService
-from app.services.artifacts import DownloadArtifactManager
+from app.services.artifact_cleanup import (
+    StaleArtifactCleanupManager,
+    StaleArtifactCleanupService,
+)
+from app.services.artifacts import ActiveArtifactRegistry, DownloadArtifactManager
 from app.services.authorization import TelegramAuthorizationService
+from app.services.crash_recovery import CrashRecoveryService
 from app.services.deep_links import DeepLinkRegistryService
 from app.services.delivery import DeliveryPreparationService
 from app.services.download_pipeline import DownloadPipeline, NativeDownloadBoundary
@@ -119,12 +124,18 @@ class Stage9Components:
     worker_control: RuntimeWorkerControlService
     provider_health: ProviderHealthService
     deep_links: DeepLinkRegistryService
+    crash_recovery: CrashRecoveryService
+    artifact_cleanup: StaleArtifactCleanupService
+    cleanup_manager: StaleArtifactCleanupManager
 
     async def start(self) -> None:
         try:
+            await self.crash_recovery.recover_startup()
+            await self.artifact_cleanup.sweep()
             await self.queue_manager.start()
             await self.delivery_fanout.start()
             await self.album_coordinator.start()
+            await self.cleanup_manager.start()
         except BaseException:
             try:
                 await self.stop()
@@ -135,6 +146,7 @@ class Stage9Components:
     async def stop(self) -> None:
         failures: list[Exception] = []
         for operation in (
+            self.cleanup_manager.stop,
             self.album_coordinator.stop,
             self.delivery_fanout.stop,
             self.queue_manager.stop,
@@ -148,6 +160,9 @@ class Stage9Components:
                 logger.error("Application component shutdown failed")
         if failures:
             raise RuntimeError("one or more application components failed to stop") from failures[0]
+
+    async def wait_terminated(self) -> None:
+        await self.cleanup_manager.wait_terminated()
 
 
 async def compose_stage9(
@@ -164,7 +179,8 @@ async def compose_stage9(
     delivery_wake = asyncio.Event()
     album_wake = asyncio.Event()
     notifier = SubscriberNotifier()
-    artifacts = DownloadArtifactManager(settings.temp_dir)
+    artifact_registry = ActiveArtifactRegistry()
+    artifacts = DownloadArtifactManager(settings.temp_dir, artifact_registry)
     downloads = DownloadQueueService(
         database,
         max_size=settings.queue_max_size,
@@ -316,16 +332,35 @@ async def compose_stage9(
         workers=settings.telegram_delivery_workers,
         wake_event=delivery_wake,
     )
+    album_coordinator_service = TelegramAlbumCoordinator(
+        database,
+        track_resolution,
+        stage8.gateway,
+        i18n,
+        album_wake_event=album_wake,
+        delivery_wake_event=delivery_wake,
+    )
     album_coordinator = TelegramAlbumCoordinatorManager(
-        TelegramAlbumCoordinator(
-            database,
-            track_resolution,
-            stage8.gateway,
-            i18n,
-            album_wake_event=album_wake,
-            delivery_wake_event=delivery_wake,
-        ),
+        album_coordinator_service,
         wake_event=album_wake,
+    )
+    crash_recovery = CrashRecoveryService(
+        database,
+        uploads,
+        singleflight,
+        album_coordinator_service,
+        telegram_bot_id=stage8.bot_identity.telegram_bot_id,
+        delivery_max_attempts=settings.telegram_delivery_max_attempts,
+    )
+    artifact_cleanup = StaleArtifactCleanupService(
+        database,
+        settings.temp_dir,
+        artifact_registry,
+        stale_after_seconds=settings.temp_artifact_stale_after_seconds,
+    )
+    cleanup_manager = StaleArtifactCleanupManager(
+        artifact_cleanup,
+        interval_seconds=settings.temp_cleanup_interval_seconds,
     )
     return Stage9Components(
         stage8=stage8,
@@ -340,4 +375,7 @@ async def compose_stage9(
         worker_control=worker_control,
         provider_health=provider_health,
         deep_links=deep_links,
+        crash_recovery=crash_recovery,
+        artifact_cleanup=artifact_cleanup,
+        cleanup_manager=cleanup_manager,
     )

@@ -1,0 +1,193 @@
+"""Deterministic, side-effect-free startup reconciliation."""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime
+
+from app.core.enums import QueueErrorCode
+from app.services.artifacts import ArtifactPathError
+from app.services.queues import UploadQueueService
+from app.services.singleflight import SingleFlightService
+from app.services.telegram_album_coordinator import (
+    ALBUM_ITEM_MAX_ATTEMPTS,
+    TelegramAlbumCoordinator,
+)
+from app.services.workers import DOWNLOAD_JOB_MAX_ATTEMPTS, UPLOAD_JOB_MAX_ATTEMPTS
+from app.storage import Database
+from app.storage.models.base import utc_now
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class CrashRecoverySummary:
+    download_jobs_recovered: int = 0
+    upload_jobs_recovered: int = 0
+    upload_artifacts_failed: int = 0
+    uploads_recovered_from_cache: int = 0
+    flights_reconciled: int = 0
+    deliveries_recovered: int = 0
+    album_items_recovered: int = 0
+    album_requests_reconciled: int = 0
+
+
+class CrashRecoveryService:
+    """Compose existing durable recovery primitives before any worker claims."""
+
+    def __init__(
+        self,
+        database: Database,
+        upload_queue: UploadQueueService,
+        singleflight: SingleFlightService,
+        album_coordinator: TelegramAlbumCoordinator,
+        *,
+        telegram_bot_id: int,
+        delivery_max_attempts: int,
+        clock: Callable[[], datetime] = utc_now,
+    ) -> None:
+        self._database = database
+        self._upload_queue = upload_queue
+        self._singleflight = singleflight
+        self._album_coordinator = album_coordinator
+        self._telegram_bot_id = telegram_bot_id
+        self._delivery_max_attempts = delivery_max_attempts
+        self._clock = clock
+
+    async def recover_startup(self) -> CrashRecoverySummary:
+        logger.info("crash_recovery_started")
+        now = self._clock()
+        async with self._database.transaction() as repositories:
+            download_recovered = await repositories.download_jobs.recover_expired(
+                now, DOWNLOAD_JOB_MAX_ATTEMPTS
+            )
+            upload_recovery = await repositories.upload_jobs.recover_expired(
+                now, UPLOAD_JOB_MAX_ATTEMPTS
+            )
+            deliveries_recovered = await repositories.telegram_delivery.recover_expired(
+                now=now, max_attempts=self._delivery_max_attempts
+            )
+            album_items_recovered = await repositories.telegram_album.recover_expired(
+                now=now, max_attempts=ALBUM_ITEM_MAX_ATTEMPTS
+            )
+            active_uploads = await repositories.upload_jobs.list_nonterminal()
+
+        for artifact in upload_recovery.terminal_artifacts:
+            self._upload_queue.release_owned(*artifact)
+
+        artifact_failures = 0
+        cache_rescues = 0
+        direct_reconciliations = 0
+        for upload in active_uploads:
+            try:
+                self._upload_queue.validate_artifact_reference(
+                    upload.artifact_job_id, upload.artifact_path
+                )
+            except (ArtifactPathError, OSError):
+                reconciled = await self._fail_artifact(
+                    upload.id,
+                    upload.download_job_id,
+                    now,
+                    QueueErrorCode.UPLOAD_ARTIFACT_INVALID.value,
+                )
+                artifact_failures += 1
+                direct_reconciliations += int(reconciled)
+                logger.warning("upload_artifact_invalid", extra={"job_id": upload.id})
+                continue
+
+            async with self._database.transaction() as repositories:
+                cached = await repositories.telegram_cache.get_active(
+                    telegram_bot_id=self._telegram_bot_id,
+                    track_id=upload.track_id,
+                    quality_profile=upload.quality_profile,
+                )
+                if cached is not None:
+                    rescued = await repositories.upload_jobs.succeed_recovered(
+                        job_id=upload.id, now=now
+                    )
+                    reconciled = (
+                        await repositories.singleflight.reconcile_download_job(
+                            upload.download_job_id, now
+                        )
+                        if rescued
+                        else False
+                    )
+                else:
+                    rescued = False
+                    reconciled = False
+            if rescued:
+                cache_rescues += 1
+                direct_reconciliations += int(reconciled)
+                self._upload_queue.release_owned(upload.artifact_job_id, upload.artifact_path)
+                logger.info("upload_recovered_from_cache", extra={"job_id": upload.id})
+                continue
+
+            error_code: str | None = None
+            try:
+                self._upload_queue.validate_artifact(
+                    upload.artifact_job_id,
+                    upload.artifact_path,
+                    expected_size=upload.file_size_bytes,
+                )
+            except FileNotFoundError:
+                error_code = QueueErrorCode.UPLOAD_ARTIFACT_MISSING.value
+            except (ArtifactPathError, OSError):
+                error_code = QueueErrorCode.UPLOAD_ARTIFACT_INVALID.value
+            if error_code is None:
+                continue
+
+            reconciled = await self._fail_artifact(
+                upload.id, upload.download_job_id, now, error_code
+            )
+            artifact_failures += 1
+            direct_reconciliations += int(reconciled)
+            logger.warning(
+                "upload_artifact_missing"
+                if error_code == QueueErrorCode.UPLOAD_ARTIFACT_MISSING.value
+                else "upload_artifact_invalid",
+                extra={"job_id": upload.id},
+            )
+
+        flights_reconciled = direct_reconciliations + await self._singleflight.reconcile()
+        album_requests_reconciled = await self._album_coordinator.reconcile(notify=False)
+        summary = CrashRecoverySummary(
+            download_jobs_recovered=download_recovered,
+            upload_jobs_recovered=upload_recovery.recovered,
+            upload_artifacts_failed=artifact_failures,
+            uploads_recovered_from_cache=cache_rescues,
+            flights_reconciled=flights_reconciled,
+            deliveries_recovered=deliveries_recovered,
+            album_items_recovered=album_items_recovered,
+            album_requests_reconciled=album_requests_reconciled,
+        )
+        logger.info(
+            "crash_recovery_completed",
+            extra={
+                "download_jobs_recovered": summary.download_jobs_recovered,
+                "upload_jobs_recovered": summary.upload_jobs_recovered,
+                "upload_artifacts_failed": summary.upload_artifacts_failed,
+                "uploads_recovered_from_cache": summary.uploads_recovered_from_cache,
+                "flights_reconciled": summary.flights_reconciled,
+                "deliveries_recovered": summary.deliveries_recovered,
+                "album_items_recovered": summary.album_items_recovered,
+                "album_requests_reconciled": summary.album_requests_reconciled,
+            },
+        )
+        return summary
+
+    async def _fail_artifact(
+        self,
+        upload_job_id: int,
+        download_job_id: int,
+        now: datetime,
+        error_code: str,
+    ) -> bool:
+        async with self._database.transaction() as repositories:
+            failed = await repositories.upload_jobs.fail_recovered(
+                job_id=upload_job_id, now=now, error_code=error_code
+            )
+            if not failed:
+                return False
+            return await repositories.singleflight.reconcile_download_job(download_job_id, now)

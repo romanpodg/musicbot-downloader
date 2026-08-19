@@ -257,6 +257,10 @@ class DownloadPipeline:
         except BaseException:
             self._artifacts.release(job_id)
             raise
+        finally:
+            # Durable UploadJob ownership (after handoff) and the stale grace
+            # period take over once Stage 6 returns to its caller.
+            self._artifacts.mark_inactive(job_id)
 
     async def _execute_plan(
         self,

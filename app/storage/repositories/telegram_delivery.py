@@ -233,8 +233,8 @@ class TelegramDeliveryRepository:
         )
         return result.scalar_one_or_none()
 
-    async def recover_expired(self, *, now: datetime, max_attempts: int) -> None:
-        await self._session.execute(
+    async def recover_expired(self, *, now: datetime, max_attempts: int) -> int:
+        result = await self._session.execute(
             update(TelegramDeliveryRequest)
             .where(
                 TelegramDeliveryRequest.status == TelegramDeliveryStatus.SENDING,
@@ -254,6 +254,7 @@ class TelegramDeliveryRepository:
                 lease_expires_at=None,
             )
         )
+        return cast(CursorResult[Any], result).rowcount
 
     async def claim(
         self, *, worker_id: str, now: datetime, lease_expires_at: datetime

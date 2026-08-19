@@ -293,8 +293,8 @@ class TelegramAlbumRepository:
         )
         return changed, False
 
-    async def recover_expired(self, *, now: datetime, max_attempts: int) -> None:
-        await self._session.execute(
+    async def recover_expired(self, *, now: datetime, max_attempts: int) -> int:
+        result = await self._session.execute(
             update(TelegramAlbumItem)
             .where(
                 TelegramAlbumItem.resolution_status == AlbumItemResolutionStatus.RESOLVING,
@@ -314,6 +314,7 @@ class TelegramAlbumRepository:
                 last_error_code="ALBUM_ITEM_LEASE_EXPIRED",
             )
         )
+        return cast(CursorResult[Any], result).rowcount
 
     async def claim_item(
         self, *, worker_id: str, now: datetime, lease_expires_at: datetime

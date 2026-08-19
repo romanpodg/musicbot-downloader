@@ -18,6 +18,8 @@ def test_worker_defaults_and_limits_are_valid() -> None:
     assert settings.upload_workers_default == 3
     assert settings.upload_workers_max == 10
     assert settings.temp_disk_min_free_bytes == 268_435_456
+    assert settings.temp_cleanup_interval_seconds == 600.0
+    assert settings.temp_artifact_stale_after_seconds == 3600.0
 
 
 @pytest.mark.parametrize(
@@ -28,6 +30,14 @@ def test_worker_defaults_and_limits_are_valid() -> None:
         ({"upload_workers_default": 0}, "upload_workers_default"),
         ({"upload_workers_default": 4, "upload_workers_max": 3}, "UPLOAD_WORKERS_MAX"),
         ({"queue_max_size": 0}, "queue_max_size"),
+        ({"temp_cleanup_interval_seconds": 59}, "temp_cleanup_interval_seconds"),
+        (
+            {
+                "temp_cleanup_interval_seconds": 600,
+                "temp_artifact_stale_after_seconds": 599,
+            },
+            "TEMP_ARTIFACT_STALE_AFTER_SECONDS",
+        ),
     ],
 )
 def test_invalid_worker_and_queue_limits_are_rejected(

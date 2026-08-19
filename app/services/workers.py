@@ -273,16 +273,14 @@ class UploadWorkerBackend:
     async def claim(self, worker_id: str) -> UploadJob | None:
         now = self._clock()
         async with self._database.transaction() as repositories:
-            terminal_artifacts = await repositories.upload_jobs.recover_expired(
-                now, self._max_attempts
-            )
+            recovery = await repositories.upload_jobs.recover_expired(now, self._max_attempts)
             reconciled = await repositories.singleflight.reconcile_all(now)
             job = await repositories.upload_jobs.claim(
                 worker_id=worker_id,
                 now=now,
                 lease_expires_at=now + self._lease,
             )
-        for artifact in terminal_artifacts:
+        for artifact in recovery.terminal_artifacts:
             self._queue.release_owned(*artifact)
         await self._notify_if(reconciled > 0)
         return job

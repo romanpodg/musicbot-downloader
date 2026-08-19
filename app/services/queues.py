@@ -185,11 +185,22 @@ class UploadQueueService:
             self._artifacts.release(artifact_job_id)
         return True
 
-    def validate_artifact(self, artifact_job_id: str, stored_path: str) -> Path:
-        path = self._resolve_stored_path(artifact_job_id, stored_path)
+    def validate_artifact(
+        self,
+        artifact_job_id: str,
+        stored_path: str,
+        *,
+        expected_size: int | None = None,
+    ) -> Path:
+        path = self.validate_artifact_reference(artifact_job_id, stored_path)
         if not path.is_file() or path.stat().st_size <= 0:
             raise FileNotFoundError()
+        if expected_size is not None and path.stat().st_size != expected_size:
+            raise ArtifactPathError()
         return path
+
+    def validate_artifact_reference(self, artifact_job_id: str, stored_path: str) -> Path:
+        return self._resolve_stored_path(artifact_job_id, stored_path)
 
     def _resolve_stored_path(self, artifact_job_id: str, stored_path: str) -> Path:
         relative = Path(stored_path)
