@@ -10,7 +10,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from aiogram.types import User as AiogramUser
 
-from app.core.enums import AlbumRequestStatus, TelegramDeliveryStatus
+from app.core.enums import AlbumRequestStatus, DeepLinkTargetType, TelegramDeliveryStatus
 from app.core.exceptions import (
     AlbumResolutionFailed,
     AlbumTooLarge,
@@ -21,6 +21,7 @@ from app.core.exceptions import (
     UnsupportedMediaType,
     UnsupportedProvider,
 )
+from app.services.deep_links import DeepLinkRegistryService
 from app.services.telegram_albums import (
     AlbumActionOutcome,
     AlbumActionResult,
@@ -65,6 +66,7 @@ class TelegramHandlerDependencies:
     presentation: TelegramPresentation
     media: TelegramMediaRequestService | None = None
     albums: TelegramAlbumRequestService | None = None
+    deep_links: DeepLinkRegistryService | None = None
 
 
 def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
@@ -76,6 +78,54 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
         if user is None or not await _private(message, user, dependencies):
             return
         locale = dependencies.users.locale_for(user)
+        payload = _start_payload(message.text)
+        if (
+            payload is not None
+            and dependencies.deep_links is not None
+            and dependencies.deep_links.is_namespaced_payload(payload)
+        ):
+            entry = await dependencies.deep_links.resolve_start_payload(payload)
+            if entry is None:
+                await message.answer(
+                    dependencies.presentation.text("bot.deep_link_unavailable", locale)
+                )
+                return
+            try:
+                if entry.target_type is DeepLinkTargetType.TRACK and entry.track_id is not None:
+                    request = await dependencies.requests.request_track_id(
+                        user=user,
+                        telegram_chat_id=message.chat.id,
+                        source_message_id=message.message_id,
+                        track_id=entry.track_id,
+                    )
+                    await _send_track_request_card(message, user, request.id, dependencies)
+                    return
+                if (
+                    entry.target_type is DeepLinkTargetType.ALBUM
+                    and entry.album_provider is not None
+                    and entry.album_provider_id is not None
+                    and dependencies.albums is not None
+                ):
+                    album = await dependencies.albums.request_album_target(
+                        user=user,
+                        telegram_chat_id=message.chat.id,
+                        source_message_id=message.message_id,
+                        provider=entry.album_provider,
+                        provider_album_id=entry.album_provider_id,
+                    )
+                    await _send_album_request_card(message, user, album.id, dependencies)
+                    return
+            except (
+                AlbumTooLarge,
+                MetadataUnavailable,
+                ProviderAuthenticationError,
+                ProviderUnavailable,
+            ):
+                pass
+            await message.answer(
+                dependencies.presentation.text("bot.deep_link_unavailable", locale)
+            )
+            return
         await message.answer(dependencies.presentation.text("bot.welcome", locale))
 
     @router.message(Command("help"))
@@ -537,53 +587,58 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
                 dependencies.presentation.text("bot.track_resolution_failed", locale)
             )
             return
-        if request.status is TelegramDeliveryStatus.AWAITING_QUALITY:
-            card = await dependencies.requests.track_card(
-                request_id=request.id, telegram_user_id=user.telegram_id
-            )
-            if card is None or card.card_message_id is not None:
-                return
-            sent = await message.answer(
-                dependencies.presentation.track_card_text(card, locale, mode="first_quality"),
-                reply_markup=dependencies.presentation.quality_keyboard(
-                    locale, request_id=request.id
-                ),
-            )
-            await _record_card_message(sent, request.id, user.telegram_id, dependencies.requests)
-        elif request.status is TelegramDeliveryStatus.AWAITING_ACTION:
-            card = await dependencies.requests.track_card(
-                request_id=request.id, telegram_user_id=user.telegram_id
-            )
-            if card is None or card.card_message_id is not None or card.quality_profile is None:
-                return
-            sent = await message.answer(
-                dependencies.presentation.track_card_text(card, locale),
-                reply_markup=dependencies.presentation.track_card_keyboard(
-                    locale, request_id=request.id, quality=card.quality_profile
-                ),
-            )
-            await _record_card_message(sent, request.id, user.telegram_id, dependencies.requests)
-        elif request.status is TelegramDeliveryStatus.AWAITING_TRACK_QUALITY:
-            card = await dependencies.requests.track_card(
-                request_id=request.id, telegram_user_id=user.telegram_id
-            )
-            if card is None or card.card_message_id is not None:
-                return
-            sent = await message.answer(
-                dependencies.presentation.track_card_text(card, locale, mode="track_quality"),
-                reply_markup=dependencies.presentation.track_quality_keyboard(
-                    locale, request_id=request.id
-                ),
-            )
-            await _record_card_message(sent, request.id, user.telegram_id, dependencies.requests)
-        elif request.status is TelegramDeliveryStatus.DELIVERED:
-            await message.answer(
-                dependencies.presentation.text("bot.request_already_delivered", locale)
-            )
-        else:
-            await message.answer(dependencies.presentation.text("bot.preparing_download", locale))
+        await _send_track_request_card(message, user, request.id, dependencies)
 
     return router
+
+
+def _start_payload(text: str | None) -> str | None:
+    if text is None:
+        return None
+    parts = text.strip().split(maxsplit=1)
+    return parts[1].strip() if len(parts) == 2 and parts[1].strip() else None
+
+
+async def _send_track_request_card(
+    message: Message,
+    user: User,
+    request_id: int,
+    dependencies: TelegramHandlerDependencies,
+) -> None:
+    locale = dependencies.users.locale_for(user)
+    card = await dependencies.requests.track_card(
+        request_id=request_id, telegram_user_id=user.telegram_id
+    )
+    if card is None or card.card_message_id is not None:
+        return
+    if card.status is TelegramDeliveryStatus.AWAITING_QUALITY:
+        sent = await message.answer(
+            dependencies.presentation.track_card_text(card, locale, mode="first_quality"),
+            reply_markup=dependencies.presentation.quality_keyboard(locale, request_id=request_id),
+        )
+    elif card.status is TelegramDeliveryStatus.AWAITING_ACTION and card.quality_profile is not None:
+        sent = await message.answer(
+            dependencies.presentation.track_card_text(card, locale),
+            reply_markup=dependencies.presentation.track_card_keyboard(
+                locale, request_id=request_id, quality=card.quality_profile
+            ),
+        )
+    elif card.status is TelegramDeliveryStatus.AWAITING_TRACK_QUALITY:
+        sent = await message.answer(
+            dependencies.presentation.track_card_text(card, locale, mode="track_quality"),
+            reply_markup=dependencies.presentation.track_quality_keyboard(
+                locale, request_id=request_id
+            ),
+        )
+    elif card.status is TelegramDeliveryStatus.DELIVERED:
+        await message.answer(
+            dependencies.presentation.text("bot.request_already_delivered", locale)
+        )
+        return
+    else:
+        await message.answer(dependencies.presentation.text("bot.preparing_download", locale))
+        return
+    await _record_card_message(sent, request_id, user.telegram_id, dependencies.requests)
 
 
 async def _send_album_request_card(

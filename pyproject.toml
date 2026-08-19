@@ -13,14 +13,17 @@ dependencies = [
   "aiogram>=3.30,<4",
   "aiosqlite>=0.20,<1",
   "alembic>=1.14,<2",
+  "fastapi>=0.116,<1",
   "pydantic>=2.10,<3",
   "pydantic-settings>=2.7,<3",
   "sqlalchemy[asyncio]>=2.0.36,<3",
+  "uvicorn>=0.35,<1",
 ]
 
 [project.optional-dependencies]
 dev = [
   "mypy>=1.14,<2",
+  "httpx>=0.28,<1",
   "pytest>=8.3,<9",
   "pytest-asyncio>=1.0,<2",
   "ruff>=0.9,<1",

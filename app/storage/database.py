@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import (
 
 from app.core.exceptions import DatabaseConcurrencyError, DatabaseError
 from app.storage.repositories import (
+    DeepLinkRegistryRepository,
     DownloadJobRepository,
     RuntimeSettingsRepository,
     SingleFlightRepository,
@@ -35,6 +36,7 @@ from app.storage.repositories import (
 
 @dataclass(frozen=True, slots=True)
 class Repositories:
+    deep_links: DeepLinkRegistryRepository
     users: UserRepository
     tracks: TrackRepository
     track_sources: TrackSourceRepository
@@ -78,6 +80,7 @@ class Database:
     @staticmethod
     def _repositories(session: AsyncSession) -> Repositories:
         return Repositories(
+            deep_links=DeepLinkRegistryRepository(session),
             users=UserRepository(session),
             tracks=TrackRepository(session),
             track_sources=TrackSourceRepository(session),
@@ -133,6 +136,16 @@ class Database:
                 )
                 in message
                 or ("unique constraint failed: telegram_delivery_requests.album_item_id") in message
+                or (
+                    "unique constraint failed: deep_link_registry.telegram_bot_id, "
+                    "deep_link_registry.token"
+                )
+                in message
+                or (
+                    "unique constraint failed: deep_link_registry.telegram_bot_id, "
+                    "deep_link_registry.idempotency_key"
+                )
+                in message
             )
         if not isinstance(exc, OperationalError):
             return False

@@ -1,14 +1,15 @@
 # Musicbot Downloader
 
 Production-oriented foundation for a future Telegram music downloader service. This repository
-implements Stage 0 through Stage 10.4: canonical recording identity, ambiguity-safe matching,
+implements Stage 0 through Stage 11: canonical recording identity, ambiguity-safe matching,
 verified cross-provider discovery, runtime provider candidate resolution, quality-dependent
 download planning, safe one-shot execution, persistent asynchronous queue orchestration, and
 durable SingleFlight subscribers, a bot-scoped Telegram completed-result cache, and the
 long-polling user downloader bot with persistent cached-file delivery, explicit Track Cards,
 durable provider-specific Album Cards with selective track fan-out, and a centralized,
 OWNER-hardened Telegram administration panel with owner-only administrator management and
-ADMIN/OWNER runtime Download/Upload worker controls and live Provider Health diagnostics.
+ADMIN/OWNER runtime Download/Upload worker controls, live Provider Health diagnostics, and a
+private authenticated Internal API with durable opaque Telegram deep links.
 
 Current delivery roadmap:
 
@@ -24,8 +25,10 @@ Current delivery roadmap:
 - Stage 10.2: owner-only promotion and removal of database-backed administrators;
 - Stage 10.3: ADMIN/OWNER runtime Download and Upload worker controls.
 - Stage 10.4: ADMIN/OWNER live Provider Health diagnostics.
+- Stage 11: private Internal API and bot-scoped Track/Album deep-link registry.
 
-The next boundary is intentionally not implemented: Stage 11 — Internal API and Deep-Link Registry.
+The next boundary is intentionally not implemented: Stage 12 — Production Packaging, Recovery,
+Cleanup and Hardening.
 
 ## Architecture
 
@@ -596,14 +599,77 @@ uv run python -m app.main
 
 Startup verifies that the database is at Alembic head, resolves the bot identity, composes the
 Stage 8 cache uploader, reconciles SingleFlight/queues, starts download/upload workers, starts the
-delivery fanout, and begins polling. Ctrl+C stops polling and fanout, gracefully stops queue
-workers, closes the OnTheSpot child and Telegram session, and disposes database resources.
+delivery fanout, optionally starts the embedded Internal API, and begins polling. Ctrl+C stops the
+HTTP listener, polling, and fanout, gracefully stops queue workers, closes the OnTheSpot child and
+Telegram session, and disposes database resources. `--check` validates and composes the HTTP
+transport when enabled but never binds a socket.
 
-No new Stage 9.3, Stage 10.1, Stage 10.2, Stage 10.3, or Stage 10.4 environment variables. Album expansion uses one bounded
-coordinator worker and a hard 500-track snapshot limit. Stage 10.2 changes no database schema and
-requires no admin-panel migration, role-assignment table, or session table. Stage 10.3 reuses the
-existing `runtime_settings` row and likewise adds no migration. Stage 10.4 is entirely ephemeral;
-the database schema remains at Alembic head `20260818_0009`.
+Album expansion uses one bounded coordinator worker and a hard 500-track snapshot limit. Stage 11
+adds the `deep_link_registry` table at Alembic head `20260820_0010`. It does not add API users,
+publication rows, canonical Albums, media endpoints, or Provider Health coupling.
+
+## Internal API and Telegram deep links (Stage 11)
+
+The Internal API is intended only for localhost or a trusted private container/network path. Do
+not expose it directly to the public internet. Stage 11 provides no TLS/reverse proxy and no
+public audio download or streaming endpoint. Full deployment hardening belongs to Stage 12.
+
+The API is disabled by default. Enable it with a dedicated high-entropy secret unrelated to
+`BOT_TOKEN`, provider credentials, and Telegram ADMIN/OWNER authorization:
+
+```env
+INTERNAL_API_ENABLED=true
+INTERNAL_API_HOST=127.0.0.1
+INTERNAL_API_PORT=8081
+INTERNAL_API_TOKEN=<at-least-32-character-high-entropy-secret>
+```
+
+Generate a value with `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
+Authentication is `Authorization: Bearer <INTERNAL_API_TOKEN>` only; query-string credentials are
+not accepted. The liveness-only `GET /internal/v1/health` is deliberately unauthenticated and
+returns only `{"status":"ok"}`. All registry endpoints require the Bearer secret:
+
+```bash
+curl -X POST http://127.0.0.1:8081/internal/v1/deep-links \
+  -H "Authorization: Bearer $INTERNAL_API_TOKEN" \
+  -H "Idempotency-Key: publishing-item-123" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://open.spotify.com/track/..."}'
+curl -H "Authorization: Bearer $INTERNAL_API_TOKEN" \
+  http://127.0.0.1:8081/internal/v1/deep-links/d1_...
+curl -X POST -H "Authorization: Bearer $INTERNAL_API_TOKEN" \
+  http://127.0.0.1:8081/internal/v1/deep-links/d1_.../revoke
+```
+
+Registration accepts supported `TRACK` and `ALBUM` URLs only. Track URLs run the existing Stage 3
+canonical resolver and verified source discovery, then store only the canonical Track ID. Album
+URLs store the safe provider-release identity `(provider, provider_album_id)` because the project
+deliberately has no unsafe cross-provider canonical Album. Registration creates no Telegram user
+request, queue job, cache entry, artifact, or download. Provider Health is not consulted.
+
+The returned `d1_` parameter contains 192 random bits encoded with unpadded base64url. It is a
+reusable public capability, not an API credential, and is scoped by the numeric downloader-bot
+identity from Telegram `getMe`. Rotating `BOT_TOKEN` for the same bot preserves links; a different
+bot ID cannot resolve them. The current bot username constructs each response URL but is not
+persisted.
+
+`Idempotency-Key` is optional and bounded to 128 characters, but publishing integrations should
+send a stable publication-item identifier. The registry stores a SHA-256 fingerprint of
+`target type + canonical provider value + provider item ID`, never the raw request URL. Replaying
+the same bot/key/fingerprint returns the original token with `created: false`; using the key for a
+different target returns `409 IDEMPOTENCY_KEY_CONFLICT`. Different keys may intentionally create
+independent links for the same Track.
+
+Opening an ACTIVE Track link loads the canonical Track locally and creates the normal durable
+Stage 9.2 Track Card. Opening an ACTIVE Album link resolves its stored provider release and creates
+the normal per-user Stage 9.3 Album snapshot/Card. Neither action starts media work. First-quality,
+explicit Download/Download All/Select Tracks, Telegram cache-first delivery, and SingleFlight are
+unchanged. Revocation only blocks future token resolution; already materialized cards, Album
+requests, cache entries, deliveries, and queue work remain intact. Album links depend on their
+provider-release metadata remaining resolvable when opened.
+
+The complete transport contract, stable errors, security decisions, and examples are documented
+in [`docs/stage11-internal-api.md`](docs/stage11-internal-api.md).
 
 Authentication with only a subset of supported music providers is valid. Download planning uses
 only providers available at actual execution time; it never requires the provider from the input
@@ -805,6 +871,8 @@ SQLite-only operations.
   credential management, or provider enable/ranking UI.
 - Changing `OWNER_ID` does not automatically demote stale OWNER rows; mismatched rows are denied all
   privileged access until a future explicit owner-transfer/revocation policy is implemented.
-- Playlists, webhooks, inline mode, publishing-bot integration, deep links/internal API, user
-  management, and cache eviction are absent. YouTube Music album URLs are unsupported by the pinned
-  adapter.
+- Playlists, webhooks, inline mode, the publishing bot itself, channel publication, deep-link
+  analytics/expiration, API rate limiting, API users/JWT, user management, and cache eviction are
+  absent. The API has one deployment-owned static secret and remains a localhost/private-network
+  interface. SQLite and one application instance remain authoritative. YouTube Music album URLs
+  are unsupported by the pinned adapter.

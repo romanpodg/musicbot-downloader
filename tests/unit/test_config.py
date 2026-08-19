@@ -109,3 +109,32 @@ def test_telegram_configuration_is_lazy_but_strict_when_requested() -> None:
     settings = make_settings()
     with pytest.raises(ConfigurationError):
         settings.telegram_cache_configuration()
+
+
+def test_internal_api_is_disabled_and_loopback_bound_by_default() -> None:
+    settings = make_settings()
+    assert settings.internal_api_configuration() is None
+    assert settings.internal_api_host == "127.0.0.1"
+    assert settings.internal_api_port == 8081
+
+
+@pytest.mark.parametrize("token", ["", "short", " x" * 20])
+def test_enabled_internal_api_requires_a_strong_trimmed_token(token: str) -> None:
+    with pytest.raises(ValidationError, match="INTERNAL_API_TOKEN"):
+        make_settings(internal_api_enabled=True, internal_api_token=token)
+
+
+def test_enabled_internal_api_returns_validated_listener_configuration() -> None:
+    settings = make_settings(
+        internal_api_enabled=True,
+        internal_api_host=" localhost ",
+        internal_api_port=9091,
+        internal_api_token="x" * 32,
+    )
+    assert settings.internal_api_configuration() == ("localhost", 9091, "x" * 32)
+
+
+@pytest.mark.parametrize("port", [0, 65536])
+def test_internal_api_port_is_bounded(port: int) -> None:
+    with pytest.raises(ValidationError):
+        make_settings(internal_api_port=port)

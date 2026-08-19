@@ -161,6 +161,7 @@
   "admin.provider_health_check_failed": "Не удалось проверить состояние провайдеров.",
   "admin.provider_health_access_denied": "У вас нет доступа к состоянию провайдеров.",
   "admin.provider_health_semantic_hint": "Показана только готовность провайдера. Отдельные треки повторно проверяются при загрузке.",
+  "bot.deep_link_unavailable": "Эта ссылка для скачивания недоступна.",
   "provider.apple_music": "Apple Music",
   "provider.bandcamp": "Bandcamp",
   "provider.deezer": "Deezer",

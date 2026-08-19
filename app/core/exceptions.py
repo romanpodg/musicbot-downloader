@@ -60,6 +60,14 @@ class DatabaseConcurrencyError(DatabaseError):
     """A transient write conflict that may be retried as a whole transaction."""
 
 
+class IdempotencyKeyConflict(MusicBotError):
+    """One bot-scoped idempotency key was reused for a different request."""
+
+
+class DeepLinkNotFound(MusicBotError):
+    """A bot-scoped registry token does not exist."""
+
+
 class TrackSourceOwnershipConflict(DatabaseError):
     """A provider identity is already owned by a different canonical Track."""
 

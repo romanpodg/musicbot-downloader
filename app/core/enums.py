@@ -183,6 +183,16 @@ class MusicProviderName(StrEnum):
     YOUTUBE_MUSIC = "youtube_music"
 
 
+class DeepLinkTargetType(StrEnum):
+    TRACK = "TRACK"
+    ALBUM = "ALBUM"
+
+
+class DeepLinkStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    REVOKED = "REVOKED"
+
+
 class NativeCodec(StrEnum):
     MP3 = "mp3"
     AAC = "aac"

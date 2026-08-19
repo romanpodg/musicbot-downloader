@@ -108,6 +108,16 @@ class OnTheSpotProvider(MusicProvider):
         raw = await self._process_client.resolve_album(reference.source_url)
         return _album_snapshot(raw, reference)
 
+    async def get_album_by_id(
+        self, provider: MusicProviderName, provider_album_id: str
+    ) -> AlbumSnapshot:
+        if not provider_album_id or len(provider_album_id) > 2048:
+            raise MetadataUnavailable()
+        source_url = _provider_album_url(provider, provider_album_id) or ""
+        reference = AlbumReference(provider, provider_album_id, source_url)
+        raw = await self._process_client.resolve_album_id(provider.value, provider_album_id)
+        return _album_snapshot(raw, reference)
+
     async def get_track_metadata(
         self, provider: MusicProviderName, provider_track_id: str
     ) -> NormalizedTrackMetadata:
@@ -599,6 +609,24 @@ def _provider_track_url(provider: MusicProviderName, item_id: str) -> str | None
         return f"https://tidal.com/browse/track/{item_id}"
     if provider is MusicProviderName.YOUTUBE_MUSIC:
         return f"https://music.youtube.com/watch?v={item_id}"
+    return None
+
+
+def _provider_album_url(provider: MusicProviderName, item_id: str) -> str | None:
+    if provider is MusicProviderName.APPLE_MUSIC:
+        return f"https://music.apple.com/us/album/release/{item_id}"
+    if provider is MusicProviderName.BANDCAMP:
+        return item_id if item_id.startswith(("https://", "http://")) else None
+    if provider is MusicProviderName.DEEZER:
+        return f"https://www.deezer.com/album/{item_id}"
+    if provider is MusicProviderName.QOBUZ:
+        return f"https://play.qobuz.com/album/{item_id}"
+    if provider is MusicProviderName.SPOTIFY:
+        return f"https://open.spotify.com/album/{item_id}"
+    if provider is MusicProviderName.TIDAL:
+        return f"https://tidal.com/browse/album/{item_id}"
+    if provider is MusicProviderName.SOUNDCLOUD and item_id.startswith(("https://", "http://")):
+        return item_id
     return None
 
 

@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
 
-from app.core.enums import AlbumRequestStatus, QualityProfile
+from app.core.enums import AlbumRequestStatus, MusicProviderName, QualityProfile
 from app.core.exceptions import DatabaseConcurrencyError
 from app.core.models import AlbumSnapshot
 from app.providers.base import MusicProvider
@@ -24,6 +24,11 @@ class TelegramAlbumResolver:
 
     async def resolve_album(self, url: str) -> AlbumSnapshot:
         return await self._provider.get_album(url)
+
+    async def resolve_album_target(
+        self, provider: MusicProviderName, provider_album_id: str
+    ) -> AlbumSnapshot:
+        return await self._provider.get_album_by_id(provider, provider_album_id)
 
 
 class AlbumActionOutcome(StrEnum):
@@ -92,6 +97,41 @@ class TelegramAlbumRequestService:
         if existing is not None:
             return existing
         snapshot = await self._resolver.resolve_album(url)
+        return await self._persist_snapshot(
+            user=user,
+            telegram_chat_id=telegram_chat_id,
+            source_message_id=source_message_id,
+            snapshot=snapshot,
+        )
+
+    async def request_album_target(
+        self,
+        *,
+        user: User,
+        telegram_chat_id: int,
+        source_message_id: int,
+        provider: MusicProviderName,
+        provider_album_id: str,
+    ) -> TelegramAlbumRequest:
+        existing = await self._get_by_message(telegram_chat_id, source_message_id)
+        if existing is not None:
+            return existing
+        snapshot = await self._resolver.resolve_album_target(provider, provider_album_id)
+        return await self._persist_snapshot(
+            user=user,
+            telegram_chat_id=telegram_chat_id,
+            source_message_id=source_message_id,
+            snapshot=snapshot,
+        )
+
+    async def _persist_snapshot(
+        self,
+        *,
+        user: User,
+        telegram_chat_id: int,
+        source_message_id: int,
+        snapshot: AlbumSnapshot,
+    ) -> TelegramAlbumRequest:
         try:
             async with self._database.transaction() as repositories:
                 existing = await repositories.telegram_album.get_by_message(

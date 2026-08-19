@@ -38,6 +38,7 @@ from app.providers.onthespot.ipc import (
     PREPARE_SOURCE_METHOD,
     PROTOCOL_VERSION,
     REFRESH_PROVIDER_HEALTH_METHOD,
+    RESOLVE_ALBUM_ID_METHOD,
     RESOLVE_ALBUM_METHOD,
     SEARCH_TRACKS_METHOD,
     SHUTDOWN_METHOD,
@@ -179,6 +180,11 @@ class OnTheSpotWorker:
         item_type = matched["item_type"]
         album_id = matched["item_id"]
         if item_type != "album":
+            raise WorkerError("unsupported_album")
+        return self.resolve_album_id(service, album_id)
+
+    def resolve_album_id(self, service: str, album_id: str) -> dict[str, Any]:
+        if service not in _DOWNLOAD_SERVICES or not album_id or len(album_id) > 2048:
             raise WorkerError("unsupported_album")
         get_track_ids = self._registry.SERVICE_ALBUM_TRACK_ID_FUNCTIONS.get(service)
         if get_track_ids is None:
@@ -786,6 +792,12 @@ def main() -> int:
                 if not isinstance(url, str):
                     raise WorkerError("invalid_track_url")
                 result = worker.resolve_album(url)
+            elif method == RESOLVE_ALBUM_ID_METHOD:
+                provider = params.get("provider")
+                provider_album_id = params.get("provider_album_id")
+                if not isinstance(provider, str) or not isinstance(provider_album_id, str):
+                    raise WorkerError("unsupported_album")
+                result = worker.resolve_album_id(provider, provider_album_id)
             elif method == LIST_SEARCHABLE_PROVIDERS_METHOD:
                 result = worker.list_searchable_providers()
             elif method == SEARCH_TRACKS_METHOD:

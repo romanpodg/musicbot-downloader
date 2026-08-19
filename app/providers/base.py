@@ -62,6 +62,15 @@ class MusicProvider(ABC):
 
         raise UnsupportedAlbum()
 
+    async def get_album_by_id(
+        self, provider: MusicProviderName, provider_album_id: str
+    ) -> AlbumSnapshot:
+        """Resolve a durable provider-release identity."""
+
+        from app.core.exceptions import UnsupportedAlbum
+
+        raise UnsupportedAlbum()
+
     async def get_track_metadata(
         self, provider: MusicProviderName, provider_track_id: str
     ) -> NormalizedTrackMetadata:

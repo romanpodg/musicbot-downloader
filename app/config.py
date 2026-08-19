@@ -89,9 +89,9 @@ class Settings(BaseSettings):
     default_locale: str = "en"
     supported_locales: LocaleTuple = ("en", "ru")
 
-    internal_api_enabled: bool = True
-    internal_api_host: str = "0.0.0.0"
-    internal_api_port: int = Field(default=8080, ge=1, le=65535)
+    internal_api_enabled: bool = False
+    internal_api_host: str = "127.0.0.1"
+    internal_api_port: int = Field(default=8081, ge=1, le=65535)
     internal_api_token: SecretStr = SecretStr("")
 
     app_log_level: AppLogLevel = "INFO"
@@ -126,6 +126,17 @@ class Settings(BaseSettings):
         if self.default_locale not in self.supported_locales:
             raise ValueError("DEFAULT_LOCALE must be present in SUPPORTED_LOCALES")
 
+        host = self.internal_api_host.strip()
+        if not host or any(value in host for value in ("://", "/", "\\", "?", "#")):
+            raise ValueError("INTERNAL_API_HOST must be a host name or address")
+        self.internal_api_host = host
+        if self.internal_api_enabled:
+            token = self.internal_api_token.get_secret_value()
+            if len(token) < 32 or token != token.strip():
+                raise ValueError(
+                    "INTERNAL_API_TOKEN must contain at least 32 characters when enabled"
+                )
+
         try:
             database_url = make_url(self.database_url)
         except ArgumentError as exc:
@@ -144,6 +155,17 @@ class Settings(BaseSettings):
         if not token or self.telegram_cache_chat_id is None:
             raise ConfigurationError()
         return token, self.telegram_cache_chat_id
+
+    def internal_api_configuration(self) -> tuple[str, int, str] | None:
+        """Return validated private HTTP listener settings when enabled."""
+
+        if not self.internal_api_enabled:
+            return None
+        return (
+            self.internal_api_host,
+            self.internal_api_port,
+            self.internal_api_token.get_secret_value(),
+        )
 
 
 @lru_cache(maxsize=1)

@@ -1,6 +1,7 @@
 """SQLAlchemy model exports used by Alembic and repositories."""
 
 from app.storage.models.base import Base
+from app.storage.models.deep_link import DeepLinkRegistryEntry
 from app.storage.models.queue import (
     DownloadFlight,
     DownloadJob,
@@ -18,6 +19,7 @@ from app.storage.models.user import User
 __all__ = [
     "Base",
     "DownloadJob",
+    "DeepLinkRegistryEntry",
     "DownloadFlight",
     "JobSubscriber",
     "RuntimeSettings",

@@ -16,6 +16,7 @@ from app.services.admin_management import AdministratorManagementService
 from app.services.admin_overview import AdminOverviewService
 from app.services.artifacts import DownloadArtifactManager
 from app.services.authorization import TelegramAuthorizationService
+from app.services.deep_links import DeepLinkRegistryService
 from app.services.delivery import DeliveryPreparationService
 from app.services.download_pipeline import DownloadPipeline, NativeDownloadBoundary
 from app.services.media import MediaProbe, Transcoder
@@ -113,6 +114,7 @@ class Stage9Components:
     admin_management: AdministratorManagementService
     worker_control: RuntimeWorkerControlService
     provider_health: ProviderHealthService
+    deep_links: DeepLinkRegistryService
 
     async def start(self) -> None:
         await self.queue_manager.start()
@@ -209,6 +211,12 @@ async def compose_stage9(
     i18n = LocalizationService(settings.supported_locales, settings.default_locale)
     users = TelegramUserService(database, i18n, owner_id=settings.owner_id)
     track_resolution = ResolveTrackService(database, provider)
+    deep_links = DeepLinkRegistryService(
+        database,
+        provider,
+        track_resolution,
+        telegram_bot_id=stage8.bot_identity.telegram_bot_id,
+    )
     requests = TelegramTrackRequestService(
         database,
         ResolveTrackAdapter(track_resolution, database=database, provider=provider),
@@ -265,6 +273,7 @@ async def compose_stage9(
                 TelegramPresentation(i18n),
                 media_requests,
                 albums,
+                deep_links,
             )
         )
     )
@@ -305,4 +314,5 @@ async def compose_stage9(
         admin_management=admin_management,
         worker_control=worker_control,
         provider_health=provider_health,
+        deep_links=deep_links,
     )

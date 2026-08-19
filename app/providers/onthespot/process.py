@@ -35,6 +35,7 @@ from app.providers.onthespot.ipc import (
     MAX_MESSAGE_BYTES,
     PREPARE_SOURCE_METHOD,
     REFRESH_PROVIDER_HEALTH_METHOD,
+    RESOLVE_ALBUM_ID_METHOD,
     RESOLVE_ALBUM_METHOD,
     SEARCH_TRACKS_METHOD,
     SHUTDOWN_METHOD,
@@ -116,6 +117,15 @@ class OnTheSpotProcessClient:
 
     async def resolve_album(self, url: str) -> Mapping[str, Any]:
         result = await self._request(RESOLVE_ALBUM_METHOD, {"url": url})
+        if not isinstance(result, dict):
+            raise MetadataUnavailable()
+        return result
+
+    async def resolve_album_id(self, provider: str, provider_album_id: str) -> Mapping[str, Any]:
+        result = await self._request(
+            RESOLVE_ALBUM_ID_METHOD,
+            {"provider": provider, "provider_album_id": provider_album_id},
+        )
         if not isinstance(result, dict):
             raise MetadataUnavailable()
         return result

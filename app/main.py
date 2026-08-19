@@ -1,4 +1,4 @@
-"""Stage 10.4 production long-polling application entry point."""
+"""Stage 11 production Telegram and private Internal API entry point."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from app.composition import compose_stage9
 from app.config import Settings, get_settings
 from app.core.exceptions import ConfigurationError
 from app.i18n import LocalizationService
+from app.internal_api import InternalApiServer, create_internal_api_app
 from app.logging import configure_logging
 from app.providers.onthespot import OnTheSpotProvider
 from app.services.owner_bootstrap import OwnerBootstrapService
@@ -51,6 +52,7 @@ async def run_bot(settings: Settings) -> None:
     database = Database(settings.database_url)
     gateway: AiogramTelegramGateway | None = None
     components = None
+    api_server: InternalApiServer | None = None
     try:
         await require_current_schema(database)
         result = await OwnerBootstrapService(database, settings.owner_id).run()
@@ -64,9 +66,25 @@ async def run_bot(settings: Settings) -> None:
             gateway=gateway,
         )
         await components.start()
-        logger.info("Stage 10.4 Telegram long polling started")
+        api_configuration = settings.internal_api_configuration()
+        if api_configuration is not None:
+            host, port, api_token = api_configuration
+            username = components.stage8.bot_identity.username
+            if username is None:
+                raise ConfigurationError()
+            api_app = create_internal_api_app(
+                api_token=api_token,
+                registry=components.deep_links,
+                bot_username=username,
+            )
+            api_server = InternalApiServer(api_app, host=host, port=port)
+            await api_server.start()
+            logger.info("Internal API listener started on %s:%s", host, port)
+        logger.info("Stage 11 Telegram long polling started")
         await components.dispatcher.start_polling(gateway.bot, close_bot_session=False)
     finally:
+        if api_server is not None:
+            await api_server.stop()
         if components is not None:
             await components.stop()
         elif gateway is not None:
@@ -77,6 +95,14 @@ async def run_bot(settings: Settings) -> None:
 async def check_runtime(settings: Settings) -> None:
     settings.telegram_cache_configuration()
     LocalizationService(settings.supported_locales, settings.default_locale)
+    api_configuration = settings.internal_api_configuration()
+    if api_configuration is not None:
+        _, _, api_token = api_configuration
+        create_internal_api_app(
+            api_token=api_token,
+            registry=None,
+            bot_username=None,
+        )
     database = Database(settings.database_url)
     try:
         await require_current_schema(database)
@@ -85,7 +111,7 @@ async def check_runtime(settings: Settings) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the Stage 10.4 Telegram downloader bot.")
+    parser = argparse.ArgumentParser(description="Run the Stage 11 Telegram downloader bot.")
     parser.add_argument(
         "--check",
         action="store_true",
@@ -100,7 +126,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_logging(settings)
     if args.check:
         asyncio.run(check_runtime(settings))
-        print("Stage 10.4 runtime configuration is ready.")
+        print("Stage 11 runtime configuration is ready.")
         return 0
     try:
         asyncio.run(run_bot(settings))

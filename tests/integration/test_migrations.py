@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
 from alembic.config import Config
 
 from alembic import command
@@ -407,6 +408,61 @@ def test_stage93_migration_upgrades_0008_preserves_tracks_and_round_trips(
                 "SELECT id, source_message_id, card_message_id "
                 "FROM telegram_delivery_requests ORDER BY id"
             ).fetchall() == [(1, 10, 99)]
+        command.upgrade(config, "head")
+        command.check(config)
+    finally:
+        get_settings.cache_clear()
+
+
+def test_stage11_migration_enforces_registry_target_and_bot_scope(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    database_path = tmp_path / "stage11.db"
+    database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", database_url)  # type: ignore[attr-defined]
+    get_settings.cache_clear()
+    config = Config("alembic.ini")
+    try:
+        command.upgrade(config, "head")
+        with sqlite3.connect(database_path) as connection:
+            connection.execute(
+                "INSERT INTO tracks (id, title, created_at, updated_at) "
+                "VALUES (1, 'Song', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+            connection.execute(
+                "INSERT INTO deep_link_registry "
+                "(telegram_bot_id, token, target_type, track_id, status, idempotency_key, "
+                "request_fingerprint, created_at, updated_at) VALUES "
+                "(100, 'd1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', 'TRACK', 1, 'ACTIVE', 'post-1', "
+                "'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    "INSERT INTO deep_link_registry "
+                    "(telegram_bot_id, token, target_type, track_id, album_provider, "
+                    "album_provider_id, status, request_fingerprint, created_at, updated_at) "
+                    "VALUES (100, 'd1_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', 'TRACK', 1, 'spotify', "
+                    "'album', 'ACTIVE', "
+                    "'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', "
+                    "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                )
+            connection.execute(
+                "INSERT INTO deep_link_registry "
+                "(telegram_bot_id, token, target_type, track_id, status, idempotency_key, "
+                "request_fingerprint, created_at, updated_at) VALUES "
+                "(200, 'd1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', 'TRACK', 1, 'ACTIVE', 'post-1', "
+                "'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        command.check(config)
+        command.downgrade(config, "20260818_0009")
+        with sqlite3.connect(database_path) as connection:
+            tables = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            assert "deep_link_registry" not in tables
         command.upgrade(config, "head")
         command.check(config)
     finally:

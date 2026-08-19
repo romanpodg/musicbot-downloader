@@ -107,6 +107,24 @@ class TelegramTrackRequestService:
             return existing
 
         track_id = await self._resolver.resolve_track_id(url)
+        return await self.request_track_id(
+            user=user,
+            telegram_chat_id=telegram_chat_id,
+            source_message_id=source_message_id,
+            track_id=track_id,
+        )
+
+    async def request_track_id(
+        self,
+        *,
+        user: User,
+        telegram_chat_id: int,
+        source_message_id: int,
+        track_id: int,
+    ) -> TelegramDeliveryRequest:
+        existing = await self._get_by_message(telegram_chat_id, source_message_id)
+        if existing is not None:
+            return existing
         try:
             async with self._database.transaction() as repositories:
                 existing = await repositories.telegram_delivery.get_by_message(
@@ -119,6 +137,8 @@ class TelegramTrackRequestService:
                 stored_user = await repositories.users.get(user.id)
                 if stored_user is None:
                     raise ValueError("Telegram user disappeared during request admission")
+                if await repositories.tracks.get_track_by_id(track_id) is None:
+                    raise ValueError("Deep-link Track target no longer exists")
                 quality = stored_user.preferred_quality_profile
                 request = await repositories.telegram_delivery.create(
                     telegram_bot_id=self._telegram_bot_id,
