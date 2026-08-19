@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from aiogram import F, Router
@@ -19,6 +20,12 @@ from app.services.admin_management import (
 )
 from app.services.admin_overview import AdminOverviewError, AdminOverviewService
 from app.services.authorization import AuthorizationError
+from app.services.runtime_worker_control import (
+    RuntimeWorkerControlService,
+    WorkerMutationResult,
+    WorkerMutationStatus,
+    WorkerPoolType,
+)
 from app.services.telegram_users import TelegramUserProfile, TelegramUserService
 from app.storage.models import User
 from app.telegram.admin_management_presentation import (
@@ -31,6 +38,13 @@ from app.telegram.admin_presentation import (
     AdminPresentation,
     parse_admin_callback,
 )
+from app.telegram.worker_control_presentation import (
+    WorkerCallbackAction,
+    WorkerControlPresentation,
+    parse_worker_callback,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +54,8 @@ class AdminHandlerDependencies:
     presentation: AdminPresentation
     management: AdministratorManagementService
     management_presentation: AdminManagementPresentation
+    worker_control: RuntimeWorkerControlService | None = None
+    worker_presentation: WorkerControlPresentation | None = None
 
 
 def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
@@ -279,7 +295,160 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
             dependencies.presentation.text("admin.invalid_action", locale), show_alert=True
         )
 
+    @router.callback_query(F.data.startswith("adm3:"))
+    async def worker_control_callback(callback: CallbackQuery) -> None:
+        user = await _observe_callback(callback, dependencies.users)
+        locale = dependencies.users.locale_for(user)
+        service = dependencies.worker_control
+        presentation = dependencies.worker_presentation
+        if service is None or presentation is None:
+            await callback.answer(
+                dependencies.presentation.text("admin.invalid_action", locale), show_alert=True
+            )
+            return
+
+        # Authorize even malformed/private-chat callbacks; callback shape and navigation history
+        # never establish authority.
+        try:
+            await service.authorize(user.id)
+        except AuthorizationError:
+            await _deny_callback(
+                callback,
+                dependencies.presentation,
+                locale,
+                key="admin.workers_access_denied",
+            )
+            return
+        if not isinstance(callback.message, Message) or (
+            callback.message.chat.type != ChatType.PRIVATE
+        ):
+            await callback.answer(
+                dependencies.presentation.text("admin.private_chat_only", locale), show_alert=True
+            )
+            return
+
+        parsed = parse_worker_callback(callback.data)
+        if parsed is None:
+            await callback.answer(
+                dependencies.presentation.text("admin.invalid_action", locale), show_alert=True
+            )
+            return
+
+        try:
+            if parsed.action is WorkerCallbackAction.BACK:
+                result = await dependencies.admin.get_overview(user.id)
+                await _edit_or_send(
+                    callback,
+                    dependencies.presentation.overview_text(result, locale),
+                    dependencies.presentation.keyboard(
+                        locale, authoritative_owner=result.access.is_authoritative_owner
+                    ),
+                )
+                await callback.answer()
+                return
+
+            if parsed.action is WorkerCallbackAction.OVERVIEW:
+                snapshot = await service.get_snapshot(user.id)
+                await _edit_or_send(
+                    callback,
+                    presentation.overview_text(snapshot, locale),
+                    presentation.overview_keyboard(locale),
+                )
+                await callback.answer()
+                return
+
+            pool = parsed.pool
+            if pool is None:
+                await callback.answer(
+                    dependencies.presentation.text("admin.invalid_action", locale),
+                    show_alert=True,
+                )
+                return
+
+            if parsed.action is WorkerCallbackAction.DETAIL:
+                snapshot = await service.get_snapshot(user.id)
+                await _edit_or_send(
+                    callback,
+                    presentation.detail_text(pool, snapshot, locale),
+                    presentation.detail_keyboard(pool, locale),
+                )
+                await callback.answer()
+                return
+
+            if parsed.action is WorkerCallbackAction.INCREASE:
+                mutation = await _adjust_worker(service, user.id, pool, 1)
+            elif parsed.action is WorkerCallbackAction.DECREASE:
+                mutation = await _adjust_worker(service, user.id, pool, -1)
+            elif parsed.action is WorkerCallbackAction.RESET:
+                mutation = await _reset_worker(service, user.id, pool)
+            else:
+                await callback.answer(
+                    dependencies.presentation.text("admin.invalid_action", locale),
+                    show_alert=True,
+                )
+                return
+
+            await _edit_or_send(
+                callback,
+                presentation.detail_text(pool, mutation.snapshot, locale),
+                presentation.detail_keyboard(pool, locale),
+            )
+            await callback.answer(
+                presentation.text(_worker_status_key(mutation.status), locale),
+                show_alert=mutation.status
+                in {
+                    WorkerMutationStatus.MINIMUM_REACHED,
+                    WorkerMutationStatus.MAXIMUM_REACHED,
+                },
+            )
+        except AuthorizationError:
+            await _deny_callback(
+                callback,
+                dependencies.presentation,
+                locale,
+                key="admin.workers_access_denied",
+            )
+        except AdminOverviewError:
+            await callback.answer(
+                dependencies.presentation.text("admin.refresh_failed", locale), show_alert=True
+            )
+        except Exception:
+            logger.exception(
+                "Worker-control callback failed",
+                extra={"action": "worker_control", "user_id": user.id},
+            )
+            await callback.answer(
+                presentation.text("admin.workers_update_failed", locale), show_alert=True
+            )
+
     return router
+
+
+async def _adjust_worker(
+    service: RuntimeWorkerControlService,
+    user_id: int,
+    pool: WorkerPoolType,
+    delta: int,
+) -> WorkerMutationResult:
+    if pool is WorkerPoolType.DOWNLOAD:
+        return await service.adjust_download_workers(user_id, delta)
+    return await service.adjust_upload_workers(user_id, delta)
+
+
+async def _reset_worker(
+    service: RuntimeWorkerControlService, user_id: int, pool: WorkerPoolType
+) -> WorkerMutationResult:
+    if pool is WorkerPoolType.DOWNLOAD:
+        return await service.reset_download_workers(user_id)
+    return await service.reset_upload_workers(user_id)
+
+
+def _worker_status_key(status: WorkerMutationStatus) -> str:
+    if status is WorkerMutationStatus.MINIMUM_REACHED:
+        return "admin.workers_minimum_reached"
+    if status is WorkerMutationStatus.MAXIMUM_REACHED:
+        return "admin.workers_maximum_reached"
+    return "admin.workers_updated"
 
 
 def _management_error_key(code: AdminManagementErrorCode) -> str:
@@ -291,14 +460,18 @@ def _management_error_key(code: AdminManagementErrorCode) -> str:
 
 
 async def _deny_callback(
-    callback: CallbackQuery, presentation: AdminPresentation, locale: str
+    callback: CallbackQuery,
+    presentation: AdminPresentation,
+    locale: str,
+    *,
+    key: str = "admin.access_denied",
 ) -> None:
     try:
         if isinstance(callback.message, Message):
             await callback.message.edit_reply_markup(reply_markup=None)
     except TelegramAPIError:
         pass
-    await callback.answer(presentation.text("admin.access_denied", locale), show_alert=True)
+    await callback.answer(presentation.text(key, locale), show_alert=True)
 
 
 async def _close_panel(callback: CallbackQuery) -> None:

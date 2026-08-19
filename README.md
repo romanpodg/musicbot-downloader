@@ -1,13 +1,14 @@
 # Musicbot Downloader
 
 Production-oriented foundation for a future Telegram music downloader service. This repository
-implements Stage 0 through Stage 10.2: canonical recording identity, ambiguity-safe matching,
+implements Stage 0 through Stage 10.3: canonical recording identity, ambiguity-safe matching,
 verified cross-provider discovery, runtime provider candidate resolution, quality-dependent
 download planning, safe one-shot execution, persistent asynchronous queue orchestration, and
 durable SingleFlight subscribers, a bot-scoped Telegram completed-result cache, and the
 long-polling user downloader bot with persistent cached-file delivery, explicit Track Cards,
 durable provider-specific Album Cards with selective track fan-out, and a centralized,
-OWNER-hardened Telegram administration panel with owner-only administrator management.
+OWNER-hardened Telegram administration panel with owner-only administrator management and
+ADMIN/OWNER runtime Download/Upload worker controls.
 
 Current delivery roadmap:
 
@@ -20,10 +21,10 @@ Current delivery roadmap:
 - Stage 9.3: provider-specific album snapshots, durable track selection, and per-track delivery.
 - Stage 10: Telegram Admin UI presentation foundation;
 - Stage 10.1: centralized authorization and authoritative OWNER enforcement;
-- Stage 10.2: owner-only promotion and removal of database-backed administrators.
+- Stage 10.2: owner-only promotion and removal of database-backed administrators;
+- Stage 10.3: ADMIN/OWNER runtime Download and Upload worker controls.
 
-The next boundaries are intentionally not implemented: Stage 10.3 runtime worker controls and
-Stage 10.4 Provider Health history/UI.
+The next boundary is intentionally not implemented: Stage 10.4 Provider Health history/UI.
 
 ## Architecture
 
@@ -444,7 +445,7 @@ Telegram album URL
   -> one localized terminal album summary
 ```
 
-## Telegram administration (Stage 10-10.2)
+## Telegram administration (Stage 10-10.3)
 
 `/admin` opens a compact read-only operational dashboard for a database `ADMIN` or the configured
 authoritative `OWNER`. It is deliberately absent from the global command menu and works only in a
@@ -460,15 +461,15 @@ action changes queue, cache, worker, delivery, or album state.
 
 `TelegramAuthorizationService` resolves each privileged request from current persistent user state
 and immutable `OWNER_ID`; no in-memory admin-ID authority or persistent panel session exists. The
-capability set is `ADMIN_PANEL_VIEW` and `OWNER_ONLY`. `AdminOverviewService`
+capability set is `ADMIN_PANEL_VIEW`, `WORKERS_MANAGE`, and `OWNER_ONLY`. `AdminOverviewService`
 requires a fresh `ADMIN_PANEL_VIEW` check before collecting bounded aggregates, so a forged
 `adm1:refresh` callback is harmless and an open panel stops working immediately after an ADMIN is
 demoted. A database `OWNER` role is not sufficient by itself: authoritative OWNER access also
 requires that user's Telegram ID to match `OWNER_ID`. Mismatched stale OWNER rows receive no
 privileged access and are not exposed as owners, administrators, or promotion candidates.
 
-The authoritative OWNER sees an `Administrators` action on `/admin`; ordinary ADMIN users retain
-the read-only dashboard with only `Refresh` and `Close`. The owner-only flow is:
+The authoritative OWNER sees both `Administrators` and `Workers` actions on `/admin`; ordinary
+ADMIN users see `Workers` but never `Administrators`. The owner-only management flow is:
 
 ```text
 /admin -> Administrators -> Add administrator -> existing USER -> Confirm
@@ -490,10 +491,46 @@ former ADMIN's next callback without a restart. Role changes do not alter locale
 download/album history, queue work, cache rows, or normal downloader access. The bot sends no
 unsolicited promotion/demotion notification to the target user.
 
-Dashboard opening and refresh use only SQLite/runtime snapshots. They never authenticate or probe
+`RuntimeWorkerControlService` requires a fresh `WORKERS_MANAGE` permission for every worker read
+and mutation. `ADMIN` and the authoritative `OWNER` receive this capability; `USER` and a stale,
+mismatched `OWNER` do not. Administrator management remains separately guarded by `OWNER_ONLY`.
+Consequently, promoting or demoting an administrator takes effect on their next open-panel or
+button callback, including callbacks from an already-open Workers screen.
+
+The worker UI is deliberately limited to the two Stage 7 pools:
+
+```text
+/admin -> Workers -> Download workers -> −1 / +1 / Reset to default
+/admin -> Workers -> Upload workers   -> −1 / +1 / Reset to default
+```
+
+Each overview/detail shows four distinct values: **Desired** is the SQLite-persisted runtime
+target, **Actual** is the number of current in-process worker tasks, **Default** is the ENV-backed
+bootstrap/reset value, and **Maximum** is the ENV-backed hard safety ceiling. Desired and Actual
+may temporarily differ while a pool converges. Refresh reads a fresh Stage 7 runtime snapshot.
+
+Relative `+1`/`−1` operations use a short serialized SQLite update against the latest persisted
+desired value, so concurrent administrators do not overwrite one another. Counts remain within
+`1..*_WORKERS_MAX`; neither ADMIN nor OWNER can bypass the maximum. Reset immediately stores the
+current process `*_WORKERS_DEFAULT`. Defaults and maxima remain deployment configuration and are
+read-only in Telegram.
+
+After a durable desired-state update, the existing `QueueManager` performs runtime resizing and
+continuous reconciliation. Increasing Desired starts workers without restarting the application.
+Decreasing Desired is graceful: workers already processing jobs finish their current work, do not
+claim another job when marked for retirement, and then exit. Telegram handlers never directly
+create or cancel asyncio worker tasks, and they do not wait for Actual to equal Desired.
+
+Desired counts persist across application restarts. If an ENV maximum is later lowered below a
+persisted value, Stage 7 startup reconciliation applies and persists the current safety ceiling.
+The Workers UI does not edit queue capacity, retry/timeout settings, delivery/album worker counts,
+or the shared OnTheSpot child-process count.
+
+Dashboard and worker-control screens use only SQLite/runtime snapshots. They never authenticate or probe
 music providers, validate Telegram cached files over the network, invoke FFmpeg, create downloads,
-or mutate worker settings. Callback data is limited to `adm1:refresh` and `adm1:close` and contains
-no role, user ID, owner ID, token, provider identity, or Telegram `file_id`.
+or mutate unrelated queue/cache/delivery/album state. Worker mutations change only persisted desired
+Download/Upload counts. Compact `adm1`, `adm2`, and strict `adm3` callback data contains no desired
+value, role, user ID, owner ID, token, provider identity, or Telegram `file_id`.
 
 Handlers do not wait for downloads. Delivery requests use a SQLite lease and bounded persistent
 retry schedule, including Telegram `retry_after`. A confirmed invalid cached file reference
@@ -515,9 +552,10 @@ Stage 8 cache uploader, reconciles SingleFlight/queues, starts download/upload w
 delivery fanout, and begins polling. Ctrl+C stops polling and fanout, gracefully stops queue
 workers, closes the OnTheSpot child and Telegram session, and disposes database resources.
 
-No new Stage 9.3, Stage 10.1, or Stage 10.2 environment variables. Album expansion uses one bounded
+No new Stage 9.3, Stage 10.1, Stage 10.2, or Stage 10.3 environment variables. Album expansion uses one bounded
 coordinator worker and a hard 500-track snapshot limit. Stage 10.2 changes no database schema and
-requires no admin-panel migration, role-assignment table, or session table.
+requires no admin-panel migration, role-assignment table, or session table. Stage 10.3 reuses the
+existing `runtime_settings` row and likewise adds no migration.
 
 Authentication with only a subset of supported music providers is valid. Download planning uses
 only providers available at actual execution time; it never requires the provider from the input
@@ -657,7 +695,7 @@ uv run python -m app.tools.queue workers download 4
 uv run python -m app.tools.queue workers upload 5
 ```
 
-Worker changes use the same persisted service intended for the future admin UI. The inspection CLI
+Worker changes use the same persisted service as the Telegram Workers UI. The inspection CLI
 has no running pool and reports zero actual workers; an executor-enabled QueueManager immediately
 reconciles to the stored desired values.
 
@@ -710,9 +748,10 @@ SQLite-only operations.
   derived from the pinned provider's ordered track listing and can be incomplete.
 - Album delivery is per track. There is no ZIP/archive, concatenated audio, M3U, album-wide media
   job/cache artifact, strict Telegram delivery ordering, or per-track quality override.
-- Stage 10.2 administrator management is owner-only. OWNER transfer, persistent security audit
-  history, worker-count controls (Stage 10.3), and Provider Health checks/history (Stage 10.4) are
-  not implemented.
+- Stage 10.2 administrator management is owner-only. OWNER transfer and persistent security audit
+  history are not implemented. Stage 10.3 controls only Download/Upload desired counts;
+  delivery/album/OnTheSpot worker counts and ENV defaults/maxima remain outside this UI. Provider
+  Health checks/history (Stage 10.4) are not implemented.
 - Changing `OWNER_ID` does not automatically demote stale OWNER rows; mismatched rows are denied all
   privileged access until a future explicit owner-transfer/revocation policy is implemented.
 - Playlists, webhooks, inline mode, publishing-bot integration, deep links/internal API, user

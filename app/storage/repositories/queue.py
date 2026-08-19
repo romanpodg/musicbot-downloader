@@ -585,6 +585,42 @@ class RuntimeSettingsRepository:
             update(RuntimeSettings).where(RuntimeSettings.id == 1).values(upload_workers=value)
         )
 
+    async def adjust_download_workers(
+        self, delta: int, *, minimum: int, maximum: int
+    ) -> tuple[int, int]:
+        # A reserved SQLite write lock makes read/validate/write one serialized operation.
+        await self._session.execute(text("BEGIN IMMEDIATE"))
+        settings = await self._required_settings()
+        previous = settings.download_workers
+        current = previous + delta
+        if current < minimum or current > maximum:
+            return previous, previous
+        await self._session.execute(
+            update(RuntimeSettings).where(RuntimeSettings.id == 1).values(download_workers=current)
+        )
+        return previous, current
+
+    async def adjust_upload_workers(
+        self, delta: int, *, minimum: int, maximum: int
+    ) -> tuple[int, int]:
+        # Keep Download and Upload updates independent while retaining SQLite serialization.
+        await self._session.execute(text("BEGIN IMMEDIATE"))
+        settings = await self._required_settings()
+        previous = settings.upload_workers
+        current = previous + delta
+        if current < minimum or current > maximum:
+            return previous, previous
+        await self._session.execute(
+            update(RuntimeSettings).where(RuntimeSettings.id == 1).values(upload_workers=current)
+        )
+        return previous, current
+
+    async def _required_settings(self) -> RuntimeSettings:
+        settings = await self._session.get(RuntimeSettings, 1)
+        if settings is None:
+            raise RuntimeError("runtime settings are not initialized")
+        return settings
+
 
 def _changed(result: Any) -> bool:
     return bool(cast(CursorResult[Any], result).rowcount)

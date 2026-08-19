@@ -12,6 +12,10 @@ from app.telegram.admin_management_presentation import (
     AdminManagementCallbackAction,
     encode_admin_management_callback,
 )
+from app.telegram.worker_control_presentation import (
+    WorkerCallbackAction,
+    encode_worker_callback,
+)
 
 
 class AdminCallbackAction(StrEnum):
@@ -161,6 +165,14 @@ class AdminPresentation:
                     )
                 ]
             )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=self.text("admin.workers", locale),
+                    callback_data=encode_worker_callback(WorkerCallbackAction.OVERVIEW),
+                )
+            ]
+        )
         rows.extend(
             [
                 [

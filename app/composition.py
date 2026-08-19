@@ -27,6 +27,7 @@ from app.services.queues import (
     UploadQueueService,
     WorkerSettingsService,
 )
+from app.services.runtime_worker_control import RuntimeWorkerControlService
 from app.services.singleflight import SingleFlightService, SubscriberNotifier
 from app.services.telegram_album_coordinator import (
     TelegramAlbumCoordinator,
@@ -48,6 +49,7 @@ from app.telegram.admin_management_presentation import AdminManagementPresentati
 from app.telegram.admin_presentation import AdminPresentation
 from app.telegram.handlers import TelegramHandlerDependencies, create_stage9_router
 from app.telegram.presentation import TelegramPresentation
+from app.telegram.worker_control_presentation import WorkerControlPresentation
 
 
 @dataclass(slots=True)
@@ -107,6 +109,7 @@ class Stage9Components:
     authorization: TelegramAuthorizationService
     admin_overview: AdminOverviewService
     admin_management: AdministratorManagementService
+    worker_control: RuntimeWorkerControlService
 
     async def start(self) -> None:
         await self.queue_manager.start()
@@ -190,9 +193,10 @@ async def compose_stage9(
         wake_event=upload_wake,
         subscriber_notifier=notifier,
     )
+    worker_settings = WorkerSettingsService(database, settings)
     queue_manager = QueueManager(
         settings,
-        WorkerSettingsService(database, settings),
+        worker_settings,
         downloads,
         uploads,
         download_backend,
@@ -228,6 +232,11 @@ async def compose_stage9(
         authorization,
         owner_id=settings.owner_id,
     )
+    worker_control = RuntimeWorkerControlService(
+        authorization,
+        worker_settings,
+        queue_manager,
+    )
     dispatcher = Dispatcher()
     dispatcher.include_router(
         create_admin_router(
@@ -237,6 +246,8 @@ async def compose_stage9(
                 AdminPresentation(i18n),
                 admin_management,
                 AdminManagementPresentation(i18n),
+                worker_control,
+                WorkerControlPresentation(i18n),
             )
         )
     )
@@ -286,4 +297,5 @@ async def compose_stage9(
         authorization=authorization,
         admin_overview=admin_overview,
         admin_management=admin_management,
+        worker_control=worker_control,
     )

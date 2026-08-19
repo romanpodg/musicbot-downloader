@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol
@@ -26,6 +27,14 @@ from app.storage.models import DownloadJob, UploadJob
 from app.storage.models.base import utc_now
 
 MAX_PAGE_SIZE = 100
+MIN_WORKERS = 1
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerSettingMutation:
+    previous: int
+    current: int
+    snapshot: WorkerSettingsSnapshot
 
 
 class UploadExecutor(Protocol):
@@ -226,24 +235,70 @@ class WorkerSettingsService:
         return self._snapshot(values.download_workers, values.upload_workers)
 
     async def set_download_workers(self, workers: int) -> WorkerSettingsSnapshot:
+        return (await self.update_download_workers(workers)).snapshot
+
+    async def update_download_workers(self, workers: int) -> WorkerSettingMutation:
         self._validate(workers, self._settings.download_workers_max)
         async with self._lock:
             await self.initialize_if_missing()
             async with self._database.transaction() as repositories:
+                values = await repositories.runtime_settings.get()
+                if values is None:
+                    raise RuntimeError("runtime settings are not initialized")
+                previous = values.download_workers
                 await repositories.runtime_settings.set_download_workers(workers)
             if self._resizer is not None:
                 await self._resizer.resize_download(workers)
-        return await self.get_values()
+            snapshot = await self.get_values()
+        return WorkerSettingMutation(previous, workers, snapshot)
 
     async def set_upload_workers(self, workers: int) -> WorkerSettingsSnapshot:
+        return (await self.update_upload_workers(workers)).snapshot
+
+    async def update_upload_workers(self, workers: int) -> WorkerSettingMutation:
         self._validate(workers, self._settings.upload_workers_max)
         async with self._lock:
             await self.initialize_if_missing()
             async with self._database.transaction() as repositories:
+                values = await repositories.runtime_settings.get()
+                if values is None:
+                    raise RuntimeError("runtime settings are not initialized")
+                previous = values.upload_workers
                 await repositories.runtime_settings.set_upload_workers(workers)
             if self._resizer is not None:
                 await self._resizer.resize_upload(workers)
-        return await self.get_values()
+            snapshot = await self.get_values()
+        return WorkerSettingMutation(previous, workers, snapshot)
+
+    async def adjust_download_workers(self, delta: int) -> WorkerSettingMutation:
+        self._validate_delta(delta)
+        async with self._lock:
+            await self.initialize_if_missing()
+            async with self._database.transaction() as repositories:
+                previous, current = await repositories.runtime_settings.adjust_download_workers(
+                    delta,
+                    minimum=MIN_WORKERS,
+                    maximum=self._settings.download_workers_max,
+                )
+            if current != previous and self._resizer is not None:
+                await self._resizer.resize_download(current)
+            snapshot = await self.get_values()
+        return WorkerSettingMutation(previous, current, snapshot)
+
+    async def adjust_upload_workers(self, delta: int) -> WorkerSettingMutation:
+        self._validate_delta(delta)
+        async with self._lock:
+            await self.initialize_if_missing()
+            async with self._database.transaction() as repositories:
+                previous, current = await repositories.runtime_settings.adjust_upload_workers(
+                    delta,
+                    minimum=MIN_WORKERS,
+                    maximum=self._settings.upload_workers_max,
+                )
+            if current != previous and self._resizer is not None:
+                await self._resizer.resize_upload(current)
+            snapshot = await self.get_values()
+        return WorkerSettingMutation(previous, current, snapshot)
 
     async def initialize_if_missing(self) -> None:
         async with self._database.transaction() as repositories:
@@ -256,8 +311,13 @@ class WorkerSettingsService:
 
     @staticmethod
     def _validate(workers: int, maximum: int) -> None:
-        if workers < 1 or workers > maximum:
+        if workers < MIN_WORKERS or workers > maximum:
             raise WorkerLimitError()
+
+    @staticmethod
+    def _validate_delta(delta: int) -> None:
+        if delta not in {-1, 1}:
+            raise ValueError("worker adjustment must be -1 or +1")
 
     def _snapshot(self, download: int, upload: int) -> WorkerSettingsSnapshot:
         return WorkerSettingsSnapshot(
