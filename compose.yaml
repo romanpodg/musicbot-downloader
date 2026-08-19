@@ -1,0 +1,27 @@
+services:
+  musicbot:
+    build:
+      context: .
+    image: musicbot-downloader:stage12.1
+    restart: unless-stopped
+    stop_grace_period: 90s
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: sqlite+aiosqlite:////data/musicbot.db
+      TEMP_DIR: /tmp/musicbot
+      ONTHESPOTDIR: /data/onthespot
+      XDG_CONFIG_HOME: /data/xdg-config
+      XDG_CACHE_HOME: /tmp/musicbot/cache
+      HOME: /tmp/musicbot/home
+      TMPDIR: /tmp/musicbot/os
+      QT_QPA_PLATFORM: offscreen
+    volumes:
+      - musicbot-data:/data
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  musicbot-data:

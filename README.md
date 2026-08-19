@@ -1,7 +1,7 @@
 # Musicbot Downloader
 
 Production-oriented foundation for a future Telegram music downloader service. This repository
-implements Stage 0 through Stage 11: canonical recording identity, ambiguity-safe matching,
+implements Stage 0 through Stage 12.1: canonical recording identity, ambiguity-safe matching,
 verified cross-provider discovery, runtime provider candidate resolution, quality-dependent
 download planning, safe one-shot execution, persistent asynchronous queue orchestration, and
 durable SingleFlight subscribers, a bot-scoped Telegram completed-result cache, and the
@@ -26,9 +26,14 @@ Current delivery roadmap:
 - Stage 10.3: ADMIN/OWNER runtime Download and Upload worker controls.
 - Stage 10.4: ADMIN/OWNER live Provider Health diagnostics.
 - Stage 11: private Internal API and bot-scoped Track/Album deep-link registry.
+- Stage 12.1: Production Packaging and Runtime Hardening Foundation.
 
-The next boundary is intentionally not implemented: Stage 12 — Production Packaging, Recovery,
-Cleanup and Hardening.
+Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 (Crash
+Recovery and Stale Artifact Cleanup) and Stage 12.3 (Operational Audit and Recovery Tooling) are
+not implemented.
+
+See [the production deployment guide](docs/production.md) for the Stage 12.1 container,
+filesystem, migration, preflight, security, backup, and upgrade contract.
 
 ## Architecture
 

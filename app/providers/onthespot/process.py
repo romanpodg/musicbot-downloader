@@ -18,6 +18,7 @@ from app.core.exceptions import (
     ProviderAuthenticationError,
     ProviderOperationTimeout,
     ProviderUnavailable,
+    TemporaryStorageUnavailable,
     UnsupportedAlbum,
     UnsupportedProvider,
 )
@@ -47,6 +48,7 @@ _ERROR_TYPES: dict[str, type[Exception]] = {
     "metadata_unavailable": MetadataUnavailable,
     "provider_authentication_error": ProviderAuthenticationError,
     "provider_unavailable": ProviderUnavailable,
+    "temporary_storage_unavailable": TemporaryStorageUnavailable,
     "unsupported_provider": UnsupportedProvider,
     "unsupported_album": UnsupportedAlbum,
 }

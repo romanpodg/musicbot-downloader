@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import importlib
 from pathlib import Path
 from types import SimpleNamespace
@@ -161,6 +162,34 @@ def test_native_download_bypasses_upstream_conversion(
     assert result["provider_decrypted"] is False
     assert Path(result["file_path"]).name == "native.mp3"
     assert Path(result["file_path"]).read_bytes() == b"provider native audio"
+
+
+def test_native_download_normalizes_enospc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    worker = _worker("bandcamp", {"is_playable": True}, token=object(), account_type="public")
+    job_id = "b" * 32
+    (tmp_path / job_id / "attempt-001" / "source").mkdir(parents=True)
+    monkeypatch.setenv("MUSICBOT_TEMP_DIR", str(tmp_path))
+
+    class FullDiskDownloadWorker:
+        def __init__(self, gui: bool) -> None:
+            assert gui is False
+
+        def _download(self, *args: object) -> tuple[str, str, list[object]]:
+            raise OSError(errno.ENOSPC, "controlled")
+
+    real_import = importlib.import_module
+
+    def fake_import(name: str) -> object:
+        if name == "onthespot.downloader":
+            return SimpleNamespace(DownloadWorker=FullDiskDownloadWorker)
+        if name == "onthespot.constants":
+            return SimpleNamespace(ItemStatus=SimpleNamespace(DOWNLOADING="downloading"))
+        return real_import(name)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import)
+    with pytest.raises(WorkerError) as raised:
+        worker.download_native("bandcamp", "track-id", job_id, 1)
+    assert raised.value.code == "temporary_storage_unavailable"
 
 
 def test_worker_rejects_download_path_escape(

@@ -8,6 +8,7 @@ reach parent application logs.
 
 from __future__ import annotations
 
+import errno
 import os
 
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
@@ -580,6 +581,11 @@ class OnTheSpotWorker:
         except (KeyError, IndexError) as exc:
             partial.unlink(missing_ok=True)
             raise WorkerError("provider_authentication_error") from exc
+        except OSError as exc:
+            partial.unlink(missing_ok=True)
+            if exc.errno == errno.ENOSPC:
+                raise WorkerError("temporary_storage_unavailable") from exc
+            raise WorkerError("metadata_unavailable") from exc
         except Exception as exc:
             partial.unlink(missing_ok=True)
             raise WorkerError("metadata_unavailable") from exc

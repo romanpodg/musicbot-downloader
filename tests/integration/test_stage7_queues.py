@@ -261,6 +261,30 @@ async def test_download_retry_invokes_stage6_fresh(database: Database, tmp_path:
     assert (await queue.get_download_job(submitted.id)).status is QueueJobStatus.SUCCEEDED
 
 
+async def test_temporary_storage_failure_uses_bounded_download_backoff(
+    database: Database, tmp_path: Path
+) -> None:
+    clock = ManualClock()
+    artifacts = DownloadArtifactManager(tmp_path / "temp")
+    pipeline = ScriptedPipeline(
+        artifacts,
+        [DownloadPipelineError(DownloadFailureCode.TEMP_STORAGE_UNAVAILABLE)],
+    )
+    track_id = await _track(database)
+    queue = DownloadQueueService(database, max_size=1, clock=clock)
+    submitted = await queue.submit(track_id=track_id, quality_profile=QualityProfile.MP3_128)
+    backend = DownloadWorkerBackend(database, pipeline, artifacts, clock=clock)
+
+    claimed = await backend.claim("download-1")
+    assert claimed is not None
+    await backend.process(claimed, "download-1")
+
+    retry = await queue.get_download_job(submitted.id)
+    assert retry.status is QueueJobStatus.QUEUED
+    assert retry.last_error_code == DownloadFailureCode.TEMP_STORAGE_UNAVAILABLE.value
+    assert await backend.claim("download-1") is None
+
+
 async def test_upload_retry_preserves_then_releases(database: Database, tmp_path: Path) -> None:
     clock = ManualClock()
     artifacts = DownloadArtifactManager(tmp_path / "temp")

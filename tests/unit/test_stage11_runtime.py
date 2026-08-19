@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from app.config import Settings
 from app.main import check_runtime, run_bot
@@ -49,7 +52,11 @@ async def test_run_bot_starts_and_stops_embedded_api_in_shared_lifecycle(tmp_pat
         stop=AsyncMock(),
     )
     gateway = SimpleNamespace(bot=object(), close=AsyncMock())
-    server_instance = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+    server_instance = SimpleNamespace(
+        start=AsyncMock(),
+        stop=AsyncMock(),
+        wait_terminated=AsyncMock(),
+    )
     with (
         patch("app.main.require_current_schema", new_callable=AsyncMock),
         patch(
@@ -63,7 +70,8 @@ async def test_run_bot_starts_and_stops_embedded_api_in_shared_lifecycle(tmp_pat
         patch("app.main.create_internal_api_app", return_value=object()) as create_app,
         patch("app.main.InternalApiServer", return_value=server_instance) as server,
     ):
-        await run_bot(settings)
+        with pytest.raises(RuntimeError, match="stopped unexpectedly"):
+            await run_bot(settings)
     components.start.assert_awaited_once()
     dispatcher.start_polling.assert_awaited_once()
     server.assert_called_once()
@@ -71,3 +79,74 @@ async def test_run_bot_starts_and_stops_embedded_api_in_shared_lifecycle(tmp_pat
     server_instance.stop.assert_awaited_once()
     components.stop.assert_awaited_once()
     create_app.assert_called_once()
+
+
+async def test_startup_failure_closes_constructed_provider_and_gateway(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    settings = _settings(tmp_path)
+    gateway = SimpleNamespace(bot=object(), close=AsyncMock())
+    provider = SimpleNamespace(close=AsyncMock())
+    with (
+        patch("app.main.require_current_schema", new_callable=AsyncMock),
+        patch(
+            "app.main.OwnerBootstrapService.run",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(value="UNCHANGED"),
+        ),
+        patch("app.main.AiogramTelegramGateway", return_value=gateway),
+        patch("app.main.OnTheSpotProvider", return_value=provider),
+        patch("app.main.compose_stage9", new_callable=AsyncMock, side_effect=RuntimeError),
+    ):
+        with pytest.raises(RuntimeError):
+            await run_bot(settings)
+
+    provider.close.assert_awaited_once()
+    gateway.close.assert_awaited_once()
+
+
+async def test_cancellation_runs_graceful_component_cleanup(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    settings = _settings(tmp_path)
+    settings.internal_api_enabled = False
+    polling_started = asyncio.Event()
+    startup_order: list[str] = []
+
+    async def schema_ready(*args: object, **kwargs: object) -> None:
+        startup_order.append("schema")
+
+    async def workers_started(*args: object, **kwargs: object) -> None:
+        startup_order.append("workers")
+
+    async def poll(*args: object, **kwargs: object) -> None:
+        assert components.start.await_count == 1
+        assert startup_order == ["schema", "workers"]
+        polling_started.set()
+        await asyncio.Event().wait()
+
+    dispatcher = SimpleNamespace(start_polling=AsyncMock(side_effect=poll))
+    components = SimpleNamespace(
+        stage8=SimpleNamespace(
+            bot_identity=SimpleNamespace(username="stage12_bot", telegram_bot_id=100)
+        ),
+        deep_links=object(),
+        dispatcher=dispatcher,
+        start=AsyncMock(side_effect=workers_started),
+        stop=AsyncMock(),
+    )
+    gateway = SimpleNamespace(bot=object(), close=AsyncMock())
+    with (
+        patch("app.main.require_current_schema", new=AsyncMock(side_effect=schema_ready)),
+        patch(
+            "app.main.OwnerBootstrapService.run",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(value="UNCHANGED"),
+        ),
+        patch("app.main.AiogramTelegramGateway", return_value=gateway),
+        patch("app.main.OnTheSpotProvider", return_value=object()),
+        patch("app.main.compose_stage9", new_callable=AsyncMock, return_value=components),
+    ):
+        runtime = asyncio.create_task(run_bot(settings))
+        await polling_started.wait()
+        runtime.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await runtime
+
+    components.stop.assert_awaited_once()

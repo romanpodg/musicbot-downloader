@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import cast
 
@@ -29,6 +30,7 @@ from app.services.queues import (
     UploadQueueService,
     WorkerSettingsService,
 )
+from app.services.runtime_prerequisites import TemporaryDiskGuard
 from app.services.runtime_worker_control import RuntimeWorkerControlService
 from app.services.singleflight import SingleFlightService, SubscriberNotifier
 from app.services.telegram_album_coordinator import (
@@ -53,6 +55,8 @@ from app.telegram.handlers import TelegramHandlerDependencies, create_stage9_rou
 from app.telegram.presentation import TelegramPresentation
 from app.telegram.provider_health_presentation import ProviderHealthPresentation
 from app.telegram.worker_control_presentation import WorkerControlPresentation
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -117,16 +121,33 @@ class Stage9Components:
     deep_links: DeepLinkRegistryService
 
     async def start(self) -> None:
-        await self.queue_manager.start()
-        await self.delivery_fanout.start()
-        await self.album_coordinator.start()
+        try:
+            await self.queue_manager.start()
+            await self.delivery_fanout.start()
+            await self.album_coordinator.start()
+        except BaseException:
+            try:
+                await self.stop()
+            except Exception:
+                logger.error("Partial component startup cleanup failed")
+            raise
 
     async def stop(self) -> None:
-        await self.album_coordinator.stop()
-        await self.delivery_fanout.stop()
-        await self.queue_manager.stop()
-        await self.provider.close()
-        await self.stage8.close()
+        failures: list[Exception] = []
+        for operation in (
+            self.album_coordinator.stop,
+            self.delivery_fanout.stop,
+            self.queue_manager.stop,
+            self.provider.close,
+            self.stage8.close,
+        ):
+            try:
+                await operation()
+            except Exception as exc:
+                failures.append(exc)
+                logger.error("Application component shutdown failed")
+        if failures:
+            raise RuntimeError("one or more application components failed to stop") from failures[0]
 
 
 async def compose_stage9(
@@ -183,6 +204,10 @@ async def compose_stage9(
             timeout=settings.transcode_timeout_seconds,
         ),
         download_timeout=settings.download_timeout_seconds,
+        disk_guard=TemporaryDiskGuard(
+            settings.temp_dir,
+            settings.temp_disk_min_free_bytes,
+        ),
     )
     download_backend = DownloadWorkerBackend(
         database,

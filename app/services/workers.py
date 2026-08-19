@@ -56,6 +56,7 @@ RETRYABLE_DOWNLOAD_CODES = frozenset(
         DownloadFailureCode.SOURCE_UNAVAILABLE,
         DownloadFailureCode.PROVIDER_ERROR,
         DownloadFailureCode.DOWNLOAD_TIMEOUT,
+        DownloadFailureCode.TEMP_STORAGE_UNAVAILABLE,
     }
 )
 

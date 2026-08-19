@@ -40,6 +40,10 @@ class ProviderOperationTimeout(ProviderUnavailable):
     """A bounded provider operation exceeded its execution timeout."""
 
 
+class TemporaryStorageUnavailable(MusicBotError):
+    """The controlled temporary filesystem cannot accept more media."""
+
+
 class MetadataUnavailable(MusicBotError):
     pass
 

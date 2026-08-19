@@ -6,16 +6,45 @@ from typing import Any
 
 import pytest
 
-from app.core.enums import MusicProviderName, NativeCodec, NativeContainer, QualityProfile
+from app.core.enums import (
+    DownloadFailureCode,
+    MusicProviderName,
+    NativeCodec,
+    NativeContainer,
+    QualityProfile,
+)
 from app.core.models import PreparedSourceMedia, SourceMediaRequirement
 from app.core.quality import QUALITY_OUTPUTS
 from app.services.media import (
     MediaOperationError,
     MediaProbe,
     Transcoder,
+    _run,
     media_satisfies_requirement,
     output_satisfies_specification,
 )
+
+
+async def test_ffmpeg_enospc_stderr_is_normalized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Process:
+        returncode = 1
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b"", b"No space left on device: secret-path"
+
+    async def create(*args: object, **kwargs: object) -> Process:
+        return Process()
+
+    monkeypatch.setattr("app.services.media.asyncio.create_subprocess_exec", create)
+    with pytest.raises(MediaOperationError) as raised:
+        await _run(
+            ("ffmpeg",),
+            timeout_seconds=1,
+            failure=DownloadFailureCode.TRANSCODE_FAILED,
+        )
+    assert raised.value.code is DownloadFailureCode.TEMP_STORAGE_UNAVAILABLE
 
 
 @pytest.mark.parametrize(

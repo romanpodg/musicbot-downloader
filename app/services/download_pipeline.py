@@ -29,6 +29,7 @@ from app.core.exceptions import (
     ProviderAuthenticationError,
     ProviderOperationTimeout,
     ProviderUnavailable,
+    TemporaryStorageUnavailable,
 )
 from app.core.models import (
     DownloadAttempt,
@@ -47,6 +48,7 @@ from app.services.media import (
     media_satisfies_requirement,
     output_satisfies_specification,
 )
+from app.services.runtime_prerequisites import TemporaryDiskGuard
 from app.storage import Database
 
 logger = logging.getLogger(__name__)
@@ -91,6 +93,7 @@ class DownloadPipeline:
         transcoder: Transcoder,
         *,
         download_timeout: float = 600,
+        disk_guard: TemporaryDiskGuard | None = None,
     ) -> None:
         self._database = database
         self._quality_resolver = quality_resolver
@@ -99,6 +102,7 @@ class DownloadPipeline:
         self._probe = probe
         self._transcoder = transcoder
         self._download_timeout = download_timeout
+        self._disk_guard = disk_guard
 
     async def download(self, track_id: int, quality_profile: QualityProfile) -> DownloadResult:
         resolution = await self._quality_resolver.resolve(track_id, quality_profile)
@@ -111,6 +115,8 @@ class DownloadPipeline:
             raise DownloadPipelineError(code)
         metadata, expected_duration = await self._track_metadata(track_id)
         try:
+            if self._disk_guard is not None:
+                self._disk_guard.ensure_available()
             job_id, _ = self._artifacts.create_job()
         except OSError as exc:
             raise DownloadPipelineError(DownloadFailureCode.TEMP_STORAGE_UNAVAILABLE) from exc
@@ -225,6 +231,8 @@ class DownloadPipeline:
                     last_code = DownloadFailureCode.DOWNLOAD_TIMEOUT
                 except ProviderUnavailable:
                     last_code = DownloadFailureCode.PROVIDER_UNAVAILABLE
+                except TemporaryStorageUnavailable:
+                    last_code = DownloadFailureCode.TEMP_STORAGE_UNAVAILABLE
                 except MetadataUnavailable:
                     last_code = DownloadFailureCode.SOURCE_UNAVAILABLE
                 except MediaOperationError as exc:

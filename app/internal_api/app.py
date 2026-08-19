@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import uuid
+from collections.abc import Callable
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, Request
@@ -40,6 +42,7 @@ def create_internal_api_app(
     api_token: str,
     registry: DeepLinkRegistryService | None,
     bot_username: str | None,
+    readiness: Callable[[], bool] | None = None,
 ) -> FastAPI:
     """Build the private ASGI app; passing no registry is reserved for ``--check``."""
 
@@ -54,14 +57,27 @@ def create_internal_api_app(
 
     @app.middleware("http")
     async def bound_request_body(request: Request, call_next):  # type: ignore[no-untyped-def]
+        request_id = uuid.uuid4().hex
         content_length = request.headers.get("content-length")
         if content_length is not None:
             try:
                 if int(content_length) > MAX_REQUEST_BODY_BYTES:
-                    return _error_response(413, "INVALID_REQUEST", "Request body is too large.")
+                    return _error_response(
+                        413,
+                        "INVALID_REQUEST",
+                        "Request body is too large.",
+                        headers={"X-Request-ID": request_id},
+                    )
             except ValueError:
-                return _error_response(400, "INVALID_REQUEST", "Invalid request.")
-        return await call_next(request)
+                return _error_response(
+                    400,
+                    "INVALID_REQUEST",
+                    "Invalid request.",
+                    headers={"X-Request-ID": request_id},
+                )
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
 
     @app.exception_handler(InternalApiError)
     async def internal_api_error(_: Request, exc: InternalApiError) -> JSONResponse:
@@ -79,6 +95,12 @@ def create_internal_api_app(
     @app.get("/internal/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
         return HealthResponse(status="ok")
+
+    @app.get("/internal/v1/ready", response_model=HealthResponse)
+    async def ready() -> HealthResponse | JSONResponse:
+        if readiness is not None and readiness():
+            return HealthResponse(status="ready")
+        return JSONResponse(status_code=503, content={"status": "not_ready"})
 
     @app.post(
         "/internal/v1/deep-links",

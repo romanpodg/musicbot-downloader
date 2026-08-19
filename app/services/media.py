@@ -279,7 +279,7 @@ async def _run(
             stderr=asyncio.subprocess.PIPE,
         )
         async with asyncio.timeout(timeout_seconds):
-            stdout, _ = await process.communicate()
+            stdout, stderr = await process.communicate()
     except asyncio.CancelledError:
         if process is not None and process.returncode is None:
             process.terminate()
@@ -293,6 +293,8 @@ async def _run(
     except OSError as exc:
         raise MediaOperationError(failure) from exc
     if process.returncode != 0:
+        if b"no space left on device" in stderr.lower():
+            raise MediaOperationError(DownloadFailureCode.TEMP_STORAGE_UNAVAILABLE)
         raise MediaOperationError(failure)
     return stdout.decode("utf-8", errors="strict")
 

@@ -17,6 +17,7 @@ def test_worker_defaults_and_limits_are_valid() -> None:
     assert settings.download_workers_max == 8
     assert settings.upload_workers_default == 3
     assert settings.upload_workers_max == 10
+    assert settings.temp_disk_min_free_bytes == 268_435_456
 
 
 @pytest.mark.parametrize(
@@ -138,3 +139,8 @@ def test_enabled_internal_api_returns_validated_listener_configuration() -> None
 def test_internal_api_port_is_bounded(port: int) -> None:
     with pytest.raises(ValidationError):
         make_settings(internal_api_port=port)
+
+
+def test_temp_disk_reserve_must_not_be_negative() -> None:
+    with pytest.raises(ValidationError):
+        make_settings(temp_disk_min_free_bytes=-1)

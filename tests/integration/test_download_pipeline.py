@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -36,6 +37,7 @@ from app.services.artifacts import DownloadArtifactManager
 from app.services.download_pipeline import DownloadPipeline
 from app.services.provider_resolution import ProviderResolver
 from app.services.quality_resolution import QualityResolver
+from app.services.runtime_prerequisites import TemporaryDiskGuard
 from app.storage import Database
 
 
@@ -215,6 +217,7 @@ def _pipeline(
     tmp_path: Path,
     plans: tuple[DownloadPlan, ...],
     provider: FakeProvider,
+    disk_guard: TemporaryDiskGuard | None = None,
 ) -> tuple[DownloadPipeline, DownloadArtifactManager, FakeTranscoder, FakeQualityResolver]:
     resolver = FakeQualityResolver(plans)
     artifacts = DownloadArtifactManager(tmp_path)
@@ -226,8 +229,47 @@ def _pipeline(
         artifacts,
         cast(object, FakeProbe(provider.media)),
         cast(object, transcoder),
+        disk_guard=disk_guard,
     )
     return pipeline, artifacts, transcoder, resolver
+
+
+@pytest.mark.asyncio
+async def test_low_disk_rejects_before_provider_acquisition(
+    database: Database, tmp_path: Path
+) -> None:
+    await _track(database)
+    media = {
+        MusicProviderName.DEEZER: PreparedSourceMedia(
+            MusicProviderName.DEEZER,
+            "deezer-track",
+            NativeCodec.MP3,
+            NativeContainer.MP3,
+            320,
+            lossless=False,
+        )
+    }
+    provider = FakeProvider(tmp_path, media)
+    disk_guard = TemporaryDiskGuard(
+        tmp_path,
+        100,
+        disk_usage=lambda _: SimpleNamespace(free=99),
+    )
+    pipeline, artifacts, _, _ = _pipeline(
+        database,
+        tmp_path,
+        (_plan(MusicProviderName.DEEZER, DownloadPlanOperation.DIRECT, source_id=1),),
+        provider,
+        disk_guard,
+    )
+
+    with pytest.raises(DownloadPipelineError) as raised:
+        await pipeline.download(1, QualityProfile.MP3_320)
+
+    assert raised.value.code is DownloadFailureCode.TEMP_STORAGE_UNAVAILABLE
+    assert provider.checks == []
+    assert provider.downloads == []
+    assert not any(path.is_dir() and len(path.name) == 32 for path in artifacts.root.iterdir())
 
 
 @pytest.mark.asyncio

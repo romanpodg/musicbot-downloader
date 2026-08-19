@@ -97,12 +97,37 @@ async def test_health_is_generic_and_registration_requires_correct_bearer(
         health = await client.get("/internal/v1/health")
         assert health.status_code == 200
         assert health.json() == {"status": "ok"}
+        assert len(health.headers["X-Request-ID"]) == 32
         for headers in ({}, _auth("wrong-token"), {"Authorization": "Basic value"}):
             response = await client.post(
                 "/internal/v1/deep-links", json={"url": TRACK_URL}, headers=headers
             )
             assert response.status_code == 401
             assert response.json()["error"]["code"] == "UNAUTHORIZED"
+
+
+async def test_readiness_is_generic_and_independent_of_provider_health(
+    database: Database,
+) -> None:
+    registry, _ = await _service(database)
+    ready = False
+    app = create_internal_api_app(
+        api_token=API_TOKEN,
+        registry=registry,
+        bot_username="stage11_downloader_bot",
+        readiness=lambda: ready,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://internal.test",
+    ) as client:
+        starting = await client.get("/internal/v1/ready")
+        assert starting.status_code == 503
+        assert starting.json() == {"status": "not_ready"}
+        ready = True
+        available = await client.get("/internal/v1/ready")
+        assert available.status_code == 200
+        assert available.json() == {"status": "ready"}
 
 
 async def test_track_and_album_registration_contract_and_safe_rejections(
