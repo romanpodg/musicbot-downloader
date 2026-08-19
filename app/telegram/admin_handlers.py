@@ -20,6 +20,7 @@ from app.services.admin_management import (
 )
 from app.services.admin_overview import AdminOverviewError, AdminOverviewService
 from app.services.authorization import AuthorizationError
+from app.services.provider_health import ProviderHealthService
 from app.services.runtime_worker_control import (
     RuntimeWorkerControlService,
     WorkerMutationResult,
@@ -37,6 +38,11 @@ from app.telegram.admin_presentation import (
     AdminCallbackAction,
     AdminPresentation,
     parse_admin_callback,
+)
+from app.telegram.provider_health_presentation import (
+    ProviderHealthCallbackAction,
+    ProviderHealthPresentation,
+    parse_provider_health_callback,
 )
 from app.telegram.worker_control_presentation import (
     WorkerCallbackAction,
@@ -56,6 +62,8 @@ class AdminHandlerDependencies:
     management_presentation: AdminManagementPresentation
     worker_control: RuntimeWorkerControlService | None = None
     worker_presentation: WorkerControlPresentation | None = None
+    provider_health: ProviderHealthService | None = None
+    provider_health_presentation: ProviderHealthPresentation | None = None
 
 
 def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
@@ -421,6 +429,99 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
                 presentation.text("admin.workers_update_failed", locale), show_alert=True
             )
 
+    @router.callback_query(F.data.startswith("adm4:"))
+    async def provider_health_callback(callback: CallbackQuery) -> None:
+        user = await _observe_callback(callback, dependencies.users)
+        locale = dependencies.users.locale_for(user)
+        service = dependencies.provider_health
+        presentation = dependencies.provider_health_presentation
+        if service is None or presentation is None:
+            await callback.answer(
+                dependencies.presentation.text("admin.invalid_action", locale), show_alert=True
+            )
+            return
+
+        # Authorization precedes parsing and every navigation operation.
+        try:
+            await service.authorize(user.id)
+        except AuthorizationError:
+            await _deny_callback(
+                callback,
+                dependencies.presentation,
+                locale,
+                key="admin.provider_health_access_denied",
+            )
+            return
+        if not isinstance(callback.message, Message) or (
+            callback.message.chat.type != ChatType.PRIVATE
+        ):
+            await callback.answer(
+                dependencies.presentation.text("admin.private_chat_only", locale), show_alert=True
+            )
+            return
+
+        action = parse_provider_health_callback(callback.data)
+        if action is None:
+            await callback.answer(
+                dependencies.presentation.text("admin.invalid_action", locale), show_alert=True
+            )
+            return
+        if action is ProviderHealthCallbackAction.BACK:
+            try:
+                result = await dependencies.admin.get_overview(user.id)
+                await _edit_or_send(
+                    callback,
+                    dependencies.presentation.overview_text(result, locale),
+                    dependencies.presentation.keyboard(
+                        locale, authoritative_owner=result.access.is_authoritative_owner
+                    ),
+                )
+                await callback.answer()
+            except AuthorizationError:
+                await _deny_callback(
+                    callback,
+                    dependencies.presentation,
+                    locale,
+                    key="admin.provider_health_access_denied",
+                )
+            except AdminOverviewError:
+                await callback.answer(
+                    dependencies.presentation.text("admin.refresh_failed", locale), show_alert=True
+                )
+            return
+
+        # Acknowledge Telegram before the serialized provider operation starts.
+        await callback.answer()
+        await _edit_or_send(
+            callback,
+            presentation.checking_text(locale),
+            presentation.keyboard(locale),
+        )
+        try:
+            snapshot = await service.check_all(user.id)
+            await _edit_or_send(
+                callback,
+                presentation.snapshot_text(snapshot, locale),
+                presentation.keyboard(locale),
+            )
+        except AuthorizationError:
+            await _deny_answered_callback(
+                callback,
+                dependencies.presentation,
+                locale,
+                key="admin.provider_health_access_denied",
+            )
+        except Exception:
+            logger.exception(
+                "Provider Health callback failed",
+                extra={"action": "provider_health", "user_id": user.id},
+            )
+            await _edit_or_send(
+                callback,
+                presentation.text("admin.provider_health_check_failed", locale),
+                presentation.keyboard(locale),
+            )
+
     return router
 
 
@@ -472,6 +573,27 @@ async def _deny_callback(
     except TelegramAPIError:
         pass
     await callback.answer(presentation.text(key, locale), show_alert=True)
+
+
+async def _deny_answered_callback(
+    callback: CallbackQuery,
+    presentation: AdminPresentation,
+    locale: str,
+    *,
+    key: str,
+) -> None:
+    """Render a denial after the callback was already acknowledged before network work."""
+
+    if not isinstance(callback.message, Message):
+        return
+    text = presentation.text(key, locale)
+    try:
+        await callback.message.edit_text(text, reply_markup=None)
+    except TelegramAPIError:
+        try:
+            await callback.message.answer(text)
+        except TelegramAPIError:
+            pass
 
 
 async def _close_panel(callback: CallbackQuery) -> None:

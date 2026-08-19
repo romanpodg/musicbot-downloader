@@ -23,7 +23,10 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any, TextIO
 
+from app.core.enums import MusicProviderName
+from app.providers.onthespot.capabilities import ONTHESPOT_CAPABILITIES
 from app.providers.onthespot.ipc import (
+    CHECK_PROVIDER_HEALTH_METHOD,
     CHECK_SOURCE_METHOD,
     DOWNLOAD_NATIVE_METHOD,
     GET_METADATA_METHOD,
@@ -34,6 +37,7 @@ from app.providers.onthespot.ipc import (
     MAX_MESSAGE_BYTES,
     PREPARE_SOURCE_METHOD,
     PROTOCOL_VERSION,
+    REFRESH_PROVIDER_HEALTH_METHOD,
     RESOLVE_ALBUM_METHOD,
     SEARCH_TRACKS_METHOD,
     SHUTDOWN_METHOD,
@@ -399,6 +403,91 @@ class OnTheSpotWorker:
             return _source_result("AUTH_REQUIRED", "authentication_required")
         return _source_result("AVAILABLE", native=_native_media(provider, selected_account))
 
+    def check_provider_health(self, provider: str) -> dict[str, Any]:
+        """Inspect current runtime account/session facts without selecting a TrackSource."""
+
+        if not self._initialized:
+            self.initialize()
+        try:
+            capabilities = ONTHESPOT_CAPABILITIES[MusicProviderName(provider)]
+        except (KeyError, ValueError):
+            return _health_result("UNAVAILABLE", False, False, "RUNTIME_UNAVAILABLE")
+
+        requires_auth = bool(capabilities.requires_auth)
+        if not capabilities.download_supported:
+            return _health_result("UNAVAILABLE", requires_auth, False, "RUNTIME_UNAVAILABLE")
+        configured = any(
+            isinstance(account, Mapping)
+            and account.get("service") == provider
+            and account.get("active") is True
+            for account in self._config.get("accounts", [])
+        )
+        active_accounts = [
+            account
+            for account in self._runtime.account_pool
+            if isinstance(account, Mapping)
+            and account.get("service") == provider
+            and account.get("status") == "active"
+        ]
+        if not active_accounts:
+            if requires_auth:
+                code = "SESSION_UNAVAILABLE" if configured else "AUTH_NOT_CONFIGURED"
+                return _health_result("AUTH_REQUIRED", True, True, code)
+            return _health_result("UNAVAILABLE", False, True, "RUNTIME_UNAVAILABLE")
+
+        try:
+            with _silence_upstream():
+                token = self._accounts.get_account_token(provider)
+        except (KeyError, IndexError):
+            status = "AUTH_REQUIRED" if requires_auth else "UNAVAILABLE"
+            code = "SESSION_UNAVAILABLE" if requires_auth else "RUNTIME_UNAVAILABLE"
+            return _health_result(status, requires_auth, True, code)
+        except Exception:
+            return _health_result("ERROR", requires_auth, True, "UPSTREAM_ERROR")
+
+        if provider in _AUTHENTICATED_SERVICES and token is None:
+            status = "AUTH_REQUIRED" if requires_auth else "UNAVAILABLE"
+            code = "SESSION_UNAVAILABLE" if requires_auth else "RUNTIME_UNAVAILABLE"
+            return _health_result(status, requires_auth, True, code)
+
+        selected = _selected_account(active_accounts, token)
+        if provider == "apple_music" and selected.get("account_type") != "premium":
+            return _health_result("AUTH_REQUIRED", True, True, "SUBSCRIPTION_REQUIRED")
+        if provider == "qobuz":
+            # v1.8.1 login only pings qobuz.com and trusts the saved token.
+            return _health_result("UNKNOWN", True, True, "SESSION_UNVERIFIED")
+        return _health_result("READY", requires_auth, True)
+
+    def refresh_provider_health(self) -> dict[str, bool]:
+        """Reload deployment-owned config and rebuild the one serialized runtime pool."""
+
+        if not self._initialized:
+            self.initialize()
+        try:
+            with _silence_upstream():
+                config_module = importlib.import_module("onthespot.otsconfig")
+                fresh_config = config_module.Config()
+                fresh_accounts = fresh_config.get("accounts")
+                if not isinstance(fresh_accounts, list):
+                    raise ValueError
+                self._config.set("accounts", fresh_accounts)
+                self._config.set(
+                    "active_account_number", fresh_config.get("active_account_number", 0)
+                )
+                for runtime_account in self._runtime.account_pool:
+                    if not isinstance(runtime_account, Mapping):
+                        continue
+                    login = runtime_account.get("login")
+                    session = login.get("session") if isinstance(login, Mapping) else None
+                    close = getattr(session, "close", None)
+                    if callable(close):
+                        close()
+                self._runtime.account_pool.clear()
+                self._accounts.AccountPoolLoader(gui=False).run()
+        except Exception as exc:
+            raise WorkerError("provider_unavailable") from exc
+        return {"refreshed": True}
+
     def prepare_source(self, provider: str, provider_track_id: str) -> dict[str, Any]:
         """Inspect selected native media without returning URLs, manifests, or credentials."""
 
@@ -716,6 +805,13 @@ def main() -> int:
                 if not isinstance(provider, str) or not isinstance(provider_track_id, str):
                     raise WorkerError("unsupported_provider")
                 result = worker.check_source(provider, provider_track_id)
+            elif method == CHECK_PROVIDER_HEALTH_METHOD:
+                provider = params.get("provider")
+                if not isinstance(provider, str):
+                    raise WorkerError("unsupported_provider")
+                result = worker.check_provider_health(provider)
+            elif method == REFRESH_PROVIDER_HEALTH_METHOD:
+                result = worker.refresh_provider_health()
             elif method == PREPARE_SOURCE_METHOD:
                 provider = params.get("provider")
                 provider_track_id = params.get("provider_track_id")
@@ -751,6 +847,22 @@ def main() -> int:
             response = _response(request_id, error="provider_unavailable")
         protocol_stdout.write(response)
         protocol_stdout.flush()
+
+
+def _health_result(
+    status: str,
+    requires_authentication: bool,
+    download_supported: bool,
+    error_code: str | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "status": status,
+        "requires_authentication": requires_authentication,
+        "download_supported": download_supported,
+    }
+    if error_code is not None:
+        result["error_code"] = error_code
+    return result
 
 
 def _source_result(

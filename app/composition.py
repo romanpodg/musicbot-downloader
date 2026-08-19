@@ -19,6 +19,7 @@ from app.services.authorization import TelegramAuthorizationService
 from app.services.delivery import DeliveryPreparationService
 from app.services.download_pipeline import DownloadPipeline, NativeDownloadBoundary
 from app.services.media import MediaProbe, Transcoder
+from app.services.provider_health import ProviderHealthProbe, ProviderHealthService
 from app.services.provider_resolution import ProviderResolver
 from app.services.quality_resolution import QualityResolver
 from app.services.queues import (
@@ -49,6 +50,7 @@ from app.telegram.admin_management_presentation import AdminManagementPresentati
 from app.telegram.admin_presentation import AdminPresentation
 from app.telegram.handlers import TelegramHandlerDependencies, create_stage9_router
 from app.telegram.presentation import TelegramPresentation
+from app.telegram.provider_health_presentation import ProviderHealthPresentation
 from app.telegram.worker_control_presentation import WorkerControlPresentation
 
 
@@ -110,6 +112,7 @@ class Stage9Components:
     admin_overview: AdminOverviewService
     admin_management: AdministratorManagementService
     worker_control: RuntimeWorkerControlService
+    provider_health: ProviderHealthService
 
     async def start(self) -> None:
         await self.queue_manager.start()
@@ -237,6 +240,7 @@ async def compose_stage9(
         worker_settings,
         queue_manager,
     )
+    provider_health = ProviderHealthService(cast(ProviderHealthProbe, provider), authorization)
     dispatcher = Dispatcher()
     dispatcher.include_router(
         create_admin_router(
@@ -248,6 +252,8 @@ async def compose_stage9(
                 AdminManagementPresentation(i18n),
                 worker_control,
                 WorkerControlPresentation(i18n),
+                provider_health,
+                ProviderHealthPresentation(i18n),
             )
         )
     )
@@ -298,4 +304,5 @@ async def compose_stage9(
         admin_overview=admin_overview,
         admin_management=admin_management,
         worker_control=worker_control,
+        provider_health=provider_health,
     )

@@ -1,14 +1,14 @@
 # Musicbot Downloader
 
 Production-oriented foundation for a future Telegram music downloader service. This repository
-implements Stage 0 through Stage 10.3: canonical recording identity, ambiguity-safe matching,
+implements Stage 0 through Stage 10.4: canonical recording identity, ambiguity-safe matching,
 verified cross-provider discovery, runtime provider candidate resolution, quality-dependent
 download planning, safe one-shot execution, persistent asynchronous queue orchestration, and
 durable SingleFlight subscribers, a bot-scoped Telegram completed-result cache, and the
 long-polling user downloader bot with persistent cached-file delivery, explicit Track Cards,
 durable provider-specific Album Cards with selective track fan-out, and a centralized,
 OWNER-hardened Telegram administration panel with owner-only administrator management and
-ADMIN/OWNER runtime Download/Upload worker controls.
+ADMIN/OWNER runtime Download/Upload worker controls and live Provider Health diagnostics.
 
 Current delivery roadmap:
 
@@ -23,8 +23,9 @@ Current delivery roadmap:
 - Stage 10.1: centralized authorization and authoritative OWNER enforcement;
 - Stage 10.2: owner-only promotion and removal of database-backed administrators;
 - Stage 10.3: ADMIN/OWNER runtime Download and Upload worker controls.
+- Stage 10.4: ADMIN/OWNER live Provider Health diagnostics.
 
-The next boundary is intentionally not implemented: Stage 10.4 Provider Health history/UI.
+The next boundary is intentionally not implemented: Stage 11 — Internal API and Deep-Link Registry.
 
 ## Architecture
 
@@ -445,7 +446,7 @@ Telegram album URL
   -> one localized terminal album summary
 ```
 
-## Telegram administration (Stage 10-10.3)
+## Telegram administration (Stage 10-10.4)
 
 `/admin` opens a compact read-only operational dashboard for a database `ADMIN` or the configured
 authoritative `OWNER`. It is deliberately absent from the global command menu and works only in a
@@ -461,15 +462,17 @@ action changes queue, cache, worker, delivery, or album state.
 
 `TelegramAuthorizationService` resolves each privileged request from current persistent user state
 and immutable `OWNER_ID`; no in-memory admin-ID authority or persistent panel session exists. The
-capability set is `ADMIN_PANEL_VIEW`, `WORKERS_MANAGE`, and `OWNER_ONLY`. `AdminOverviewService`
+capability set is `ADMIN_PANEL_VIEW`, `WORKERS_MANAGE`, `PROVIDER_HEALTH_VIEW`, and `OWNER_ONLY`.
+`AdminOverviewService`
 requires a fresh `ADMIN_PANEL_VIEW` check before collecting bounded aggregates, so a forged
 `adm1:refresh` callback is harmless and an open panel stops working immediately after an ADMIN is
 demoted. A database `OWNER` role is not sufficient by itself: authoritative OWNER access also
 requires that user's Telegram ID to match `OWNER_ID`. Mismatched stale OWNER rows receive no
 privileged access and are not exposed as owners, administrators, or promotion candidates.
 
-The authoritative OWNER sees both `Administrators` and `Workers` actions on `/admin`; ordinary
-ADMIN users see `Workers` but never `Administrators`. The owner-only management flow is:
+The authoritative OWNER sees `Administrators`, `Workers`, and `Provider Health` actions on
+`/admin`; ordinary ADMIN users see `Workers` and `Provider Health` but never `Administrators`.
+The owner-only management flow is:
 
 ```text
 /admin -> Administrators -> Add administrator -> existing USER -> Confirm
@@ -532,6 +535,50 @@ or mutate unrelated queue/cache/delivery/album state. Worker mutations change on
 Download/Upload counts. Compact `adm1`, `adm2`, and strict `adm3` callback data contains no desired
 value, role, user ID, owner ID, token, provider identity, or Telegram `file_id`.
 
+### Live Provider Health
+
+`/admin -> Provider Health` performs an explicit live, read-only sweep of all eight
+`MusicProviderName` values through the existing serialized OnTheSpot child. Opening the normal
+dashboard, refreshing it, and opening Workers or Administrators remain network-free. Provider
+Health is available to a current database `ADMIN` and the authoritative `OWNER`; every Open,
+Refresh, and Back callback is authorized again, and `ProviderHealthService` independently enforces
+`PROVIDER_HEALTH_VIEW` before any probe. A demoted administrator's old panel therefore cannot
+trigger provider work, while a promoted administrator gains access immediately.
+
+The screen shows the UTC check time and one normalized status per provider: `READY` means the
+provider-level runtime/account path currently exposes enough state to attempt native acquisition;
+`AUTH_REQUIRED` means required authentication or subscription state is absent; `UNAVAILABLE`
+means a non-authenticated integration is not operational; `ERROR` means the check failed; and
+`UNKNOWN` means pinned upstream state cannot safely prove readiness. In particular, pinned Qobuz
+v1.8.1 only pings the service while loading saved credentials, so an active pool entry is reported
+as `UNKNOWN`, not falsely promoted to `READY`.
+
+Provider Health is an administrative diagnostic snapshot only. It is not used to make download
+decisions. A `READY` result does not guarantee that a particular track exists, is regionally
+playable, has a current stream URL, or satisfies a `QualityProfile`. Every real download performs
+fresh provider/source validation through the existing Stage 4–6 pipeline. Likewise, a stale
+non-ready snapshot cannot block a newly usable provider. The provider from which a user supplied a
+Track URL does not have to be the provider used for acquisition.
+
+Checks run only when an authorized administrator opens or refreshes Provider Health. There is no
+background polling, durable health cache, health history, credential UI, login/logout flow, or
+provider preference. Concurrent refreshes share only the currently running in-process sweep;
+after it completes, the next refresh is fresh. Provider failures are normalized independently,
+with a 60-second bounded session-pool refresh and a 15-second bound per normalized provider
+inspection. Health performs no audio acquisition and never
+invokes Stage 6, FFmpeg, or ffprobe. Telegram cache hits remain independent of provider health and
+current music-provider authentication.
+
+A local operator can inspect the same normalized service without Telegram authorization:
+
+```bash
+uv run python -m app.tools.provider_health
+```
+
+The CLI and Telegram view expose no usernames, account IDs, cookies, tokens, credentials, raw
+account dictionaries, or raw upstream exception text. Callback data uses the strict `adm4`
+namespace and carries only an action code.
+
 Handlers do not wait for downloads. Delivery requests use a SQLite lease and bounded persistent
 retry schedule, including Telegram `retry_after`. A confirmed invalid cached file reference
 invalidates only that cache row and permits one persisted repair cycle. User-blocked, chat,
@@ -552,10 +599,11 @@ Stage 8 cache uploader, reconciles SingleFlight/queues, starts download/upload w
 delivery fanout, and begins polling. Ctrl+C stops polling and fanout, gracefully stops queue
 workers, closes the OnTheSpot child and Telegram session, and disposes database resources.
 
-No new Stage 9.3, Stage 10.1, Stage 10.2, or Stage 10.3 environment variables. Album expansion uses one bounded
+No new Stage 9.3, Stage 10.1, Stage 10.2, Stage 10.3, or Stage 10.4 environment variables. Album expansion uses one bounded
 coordinator worker and a hard 500-track snapshot limit. Stage 10.2 changes no database schema and
 requires no admin-panel migration, role-assignment table, or session table. Stage 10.3 reuses the
-existing `runtime_settings` row and likewise adds no migration.
+existing `runtime_settings` row and likewise adds no migration. Stage 10.4 is entirely ephemeral;
+the database schema remains at Alembic head `20260818_0009`.
 
 Authentication with only a subset of supported music providers is valid. Download planning uses
 only providers available at actual execution time; it never requires the provider from the input
@@ -750,8 +798,11 @@ SQLite-only operations.
   job/cache artifact, strict Telegram delivery ordering, or per-track quality override.
 - Stage 10.2 administrator management is owner-only. OWNER transfer and persistent security audit
   history are not implemented. Stage 10.3 controls only Download/Upload desired counts;
-  delivery/album/OnTheSpot worker counts and ENV defaults/maxima remain outside this UI. Provider
-  Health checks/history (Stage 10.4) are not implemented.
+  delivery/album/OnTheSpot worker counts and ENV defaults/maxima remain outside this UI.
+- Provider Health cannot guarantee TrackSource playability or quality. Some pinned integrations,
+  notably Qobuz, expose no safe provider-level authorization validation, so readiness remains
+  `UNKNOWN`. Checks use the serialized OnTheSpot worker; there is no history, background polling,
+  credential management, or provider enable/ranking UI.
 - Changing `OWNER_ID` does not automatically demote stale OWNER rows; mismatched rows are denied all
   privileged access until a future explicit owner-transfer/revocation policy is implemented.
 - Playlists, webhooks, inline mode, publishing-bot integration, deep links/internal API, user

@@ -13,6 +13,8 @@ from app.core.enums import (
     MusicProviderName,
     NativeCodec,
     NativeContainer,
+    ProviderHealthErrorCode,
+    ProviderHealthStatus,
     ProviderRuntimeStatus,
 )
 from app.core.exceptions import (
@@ -31,6 +33,7 @@ from app.core.models import (
     NormalizedTrackMetadata,
     PreparedSourceMedia,
     ProviderCapabilities,
+    ProviderHealthEntry,
     ProviderSourceCheck,
     TrackSearchCandidate,
     TrackSearchRequest,
@@ -168,6 +171,45 @@ class OnTheSpotProvider(MusicProvider):
 
     def provider_capabilities(self, provider: MusicProviderName) -> ProviderCapabilities:
         return ONTHESPOT_CAPABILITIES[provider]
+
+    async def refresh_provider_health_state(self) -> None:
+        """Reload configured accounts and normal runtime sessions inside the child."""
+
+        await self._process_client.refresh_provider_health()
+
+    async def check_provider_health(self, provider: MusicProviderName) -> ProviderHealthEntry:
+        """Read a sanitized provider-level observation from the isolated worker."""
+
+        raw = await self._process_client.check_provider_health(provider.value)
+        raw_status = raw.get("status")
+        raw_code = raw.get("error_code")
+        raw_requires_auth = raw.get("requires_authentication")
+        raw_download_supported = raw.get("download_supported")
+        if (
+            not isinstance(raw_status, str)
+            or not isinstance(raw_requires_auth, bool)
+            or not isinstance(raw_download_supported, bool)
+            or (raw_code is not None and not isinstance(raw_code, str))
+        ):
+            raise ProviderUnavailable()
+        try:
+            status = ProviderHealthStatus(raw_status)
+            error_code = ProviderHealthErrorCode(raw_code) if raw_code is not None else None
+        except ValueError as exc:
+            raise ProviderUnavailable() from exc
+        capabilities = self.provider_capabilities(provider)
+        if (
+            raw_requires_auth is not bool(capabilities.requires_auth)
+            or raw_download_supported is not capabilities.download_supported
+        ):
+            raise ProviderUnavailable()
+        return ProviderHealthEntry(
+            provider=provider,
+            status=status,
+            requires_authentication=raw_requires_auth,
+            download_supported=raw_download_supported,
+            error_code=error_code,
+        )
 
     async def check_source(
         self, provider: MusicProviderName, provider_track_id: str

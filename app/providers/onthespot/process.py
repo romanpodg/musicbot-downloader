@@ -23,6 +23,7 @@ from app.core.exceptions import (
 )
 from app.providers.base import ProviderAvailability
 from app.providers.onthespot.ipc import (
+    CHECK_PROVIDER_HEALTH_METHOD,
     CHECK_SOURCE_METHOD,
     DEFAULT_REQUEST_TIMEOUT_SECONDS,
     DOWNLOAD_NATIVE_METHOD,
@@ -33,6 +34,7 @@ from app.providers.onthespot.ipc import (
     MATCH_URL_METHOD,
     MAX_MESSAGE_BYTES,
     PREPARE_SOURCE_METHOD,
+    REFRESH_PROVIDER_HEALTH_METHOD,
     RESOLVE_ALBUM_METHOD,
     SEARCH_TRACKS_METHOD,
     SHUTDOWN_METHOD,
@@ -142,6 +144,17 @@ class OnTheSpotProcessClient:
             raise ProviderUnavailable()
         return result
 
+    async def check_provider_health(self, provider: str) -> Mapping[str, Any]:
+        result = await self._request(CHECK_PROVIDER_HEALTH_METHOD, {"provider": provider})
+        if not isinstance(result, dict):
+            raise ProviderUnavailable()
+        return result
+
+    async def refresh_provider_health(self) -> None:
+        result = await self._request(REFRESH_PROVIDER_HEALTH_METHOD, {})
+        if not isinstance(result, dict) or result.get("refreshed") is not True:
+            raise ProviderUnavailable()
+
     async def prepare_source(self, provider: str, provider_track_id: str) -> Mapping[str, Any]:
         result = await self._request(
             PREPARE_SOURCE_METHOD,
@@ -200,8 +213,28 @@ class OnTheSpotProcessClient:
             await self._ensure_started_locked()
             try:
                 return await self._exchange_locked(method, params, timeout_seconds=timeout_seconds)
+            except asyncio.CancelledError:
+                if (
+                    method
+                    in {
+                        CHECK_PROVIDER_HEALTH_METHOD,
+                        REFRESH_PROVIDER_HEALTH_METHOD,
+                    }
+                    and not self._closed
+                ):
+                    self._failed = False
+                    self._started_once = False
+                raise
             except ProviderOperationTimeout:
-                if method == DOWNLOAD_NATIVE_METHOD and not self._closed:
+                if (
+                    method
+                    in {
+                        DOWNLOAD_NATIVE_METHOD,
+                        CHECK_PROVIDER_HEALTH_METHOD,
+                        REFRESH_PROVIDER_HEALTH_METHOD,
+                    }
+                    and not self._closed
+                ):
                     self._failed = False
                     self._started_once = False
                 raise

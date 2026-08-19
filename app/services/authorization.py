@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 class AdminPermission(StrEnum):
     ADMIN_PANEL_VIEW = "ADMIN_PANEL_VIEW"
     WORKERS_MANAGE = "WORKERS_MANAGE"
+    PROVIDER_HEALTH_VIEW = "PROVIDER_HEALTH_VIEW"
     OWNER_ONLY = "OWNER_ONLY"
 
 
@@ -85,12 +86,17 @@ class TelegramAuthorizationService:
                 (
                     AdminPermission.ADMIN_PANEL_VIEW,
                     AdminPermission.WORKERS_MANAGE,
+                    AdminPermission.PROVIDER_HEALTH_VIEW,
                     AdminPermission.OWNER_ONLY,
                 )
             )
         elif user.role is UserRole.ADMIN:
             permissions = frozenset(
-                (AdminPermission.ADMIN_PANEL_VIEW, AdminPermission.WORKERS_MANAGE)
+                (
+                    AdminPermission.ADMIN_PANEL_VIEW,
+                    AdminPermission.WORKERS_MANAGE,
+                    AdminPermission.PROVIDER_HEALTH_VIEW,
+                )
             )
         else:
             permissions = frozenset()

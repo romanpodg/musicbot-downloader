@@ -5,6 +5,34 @@ This matrix describes only the implementation pinned at commit
 commercial service in general. `Unknown` means the value cannot be established reliably before
 OnTheSpot enters its stream/download path.
 
+## Stage 10.4 provider-level health audit
+
+Provider Health is distinct from Stage 4 `TrackSource` validation. It never chooses an arbitrary
+track, downloads audio, or proves a quality. The child exposes only status, authentication
+requirement, download support, and an allowlisted diagnostic code. Account identity and upstream
+objects never cross JSONL. On each coalesced sweep, the single child reloads deployment-owned
+OnTheSpot configuration and rebuilds its runtime pool with the pinned `AccountPoolLoader` before
+the eight normalized inspections. This performs the same bounded account/session initialization
+used by normal runtime, but it does not run broad searches or download media. It may refresh Tidal
+or Spotify session state and may persist SoundCloud client data as the pinned loader normally does.
+
+| Provider | Native download auth | Provider-level readiness mechanism | Network behavior | Missing/invalid auth | What READY proves / limitation |
+| --- | --- | --- | --- | --- | --- |
+| Apple Music | Required; active subscription required | Active account-pool entry, usable selected session, and pinned `account_type == premium` established by `/me/account?meta=subscription` during login | Login fetches the web developer token and account/subscription endpoint | No account/session or free tier → `AUTH_REQUIRED`; loader failure → `AUTH_REQUIRED` | `READY` proves the initialized premium session object is present. It does not prove a song has playback assets or a license key. |
+| Bandcamp | No user auth | Active public bootstrap entry created after the pinned connectivity ping | Initialization GETs `bandcamp.com`; health itself does not search | Failed/missing public runtime → `UNAVAILABLE` | `READY` proves the public runtime initialized, not that a track page has an MP3 URL. |
+| Deezer | Required by the pinned native path, including its configured/public ARL session | Active pool entry and non-null selected login dictionary created after `deezer.getUserData` | Initialization may fetch a public ARL and calls Deezer user data | Missing/failed session → `AUTH_REQUIRED` | `READY` proves the ARL-derived runtime session initialized. Entitlement and exact FLAC/MP3 selection remain source-specific. |
+| Qobuz | Required | Active pool entry and token structure are observable, but v1.8.1 login only pings `qobuz.com` and trusts saved token/app values | Initialization performs only the connectivity GET; health adds no speculative endpoint | Missing/failed runtime → `AUTH_REQUIRED`; active but unvalidated → `UNKNOWN / SESSION_UNVERIFIED` | Provider-level `READY` is intentionally not emitted. Only a real source/file call can validate the saved authorization and entitlement. |
+| SoundCloud | No user auth; OAuth optional | Active public/OAuth pool entry with selected client data; OAuth is validated by the pinned session endpoint during login | Initialization scrapes current client data; optional OAuth validation is networked and may persist refreshed client data | Failed public/OAuth initialization → `UNAVAILABLE` | `READY` proves current public/OAuth bootstrap succeeded, not that a particular transcoding is streamable. |
+| Spotify | Required | Active librespot session returned by `get_account_token`; the selector may run pinned bounded session reinitialization | Session construction/reinitialization is networked and can refresh normal runtime state | Missing or failed session → `AUTH_REQUIRED` | `READY` proves a live session object and tier fact are present. It does not prove a specific audio key can be loaded; free-tier Vorbis may also fail Stage 5 quality policy. |
+| Tidal | Required | Active token/country runtime entry after the pinned expiry/refresh loader | Initialization pings Tidal and refreshes expired tokens over OAuth, persisting normal refresh state | Missing/failed refresh/session → `AUTH_REQUIRED` | `READY` proves the loader accepted current token state. Pinned code does not validate an unexpired token against a separate provider-level endpoint, and source subscription/region checks remain later. |
+| YouTube Music | No user auth | Active public yt-dlp bootstrap entry created after connectivity succeeds | Initialization GETs `youtube.com`; health itself does not run extraction | Failed/missing public runtime → `UNAVAILABLE` | `READY` proves public bootstrap initialized, not that yt-dlp can extract a particular non-live public item. |
+
+All `READY` states mean only that the provider-level native runtime appears usable enough to make
+an attempt when a suitable verified source exists. Stage 4/5/6 still recheck source availability,
+media facts, quality policy, and acquisition. Provider Health has no persistence, no background
+poller, and no dependency edge into the resolver, pipeline, workers, SingleFlight, or Telegram
+cache.
+
 | Provider | Metadata | Search | Download implementation | Account/runtime requirement | Pre-download media facts and limitations |
 | --- | --- | --- | --- | --- | --- |
 | Apple Music | Registered catalog metadata; `playParams` supplies playability | Registered | Fetches web-playback flavor `28:ctrp256`, decrypts to M4A | User media token and an active subscription | Pinned path is AAC in M4A at 256 kbps. A logged-in free account is normalized to `AUTH_REQUIRED`; no lossless path is implemented. Source metadata can report unavailable. |

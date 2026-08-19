@@ -18,6 +18,8 @@ from app.core.enums import (
     NativeCodec,
     NativeContainer,
     ProviderDiscoveryStatus,
+    ProviderHealthErrorCode,
+    ProviderHealthStatus,
     ProviderResolutionStatus,
     ProviderRuntimeStatus,
     QualityCandidateRejectionReason,
@@ -71,6 +73,24 @@ class ProviderSourceCheck:
     status: ProviderRuntimeStatus
     native_media_info: NativeMediaInfo | None = None
     error_code: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderHealthEntry:
+    """Sanitized provider-level readiness; never contains account identity or secrets."""
+
+    provider: MusicProviderName
+    status: ProviderHealthStatus
+    requires_authentication: bool
+    download_supported: bool
+    error_code: ProviderHealthErrorCode | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderHealthSnapshot:
+    checked_at: datetime
+    entries: tuple[ProviderHealthEntry, ...]
+    duration_ms: int
 
 
 @dataclass(frozen=True, slots=True)
