@@ -25,6 +25,7 @@ class ArtifactCleanupSummary:
     preserved_owned: int = 0
     preserved_young: int = 0
     removed_stale: int = 0
+    stale_candidates: int = 0
     unknown: int = 0
     errors: int = 0
 
@@ -50,7 +51,7 @@ class StaleArtifactCleanupService:
         try:
             async with self._database.transaction() as repositories:
                 protected = await repositories.upload_jobs.protected_artifact_job_ids()
-            summary = await asyncio.to_thread(self._sweep_sync, protected, self._clock())
+            summary = await asyncio.to_thread(self._classify_sync, protected, self._clock(), True)
         except Exception:
             logger.exception("artifact_cleanup_failed")
             raise
@@ -68,13 +69,23 @@ class StaleArtifactCleanupService:
         )
         return summary
 
-    def _sweep_sync(self, protected: set[str], now: float) -> ArtifactCleanupSummary:
+    async def scan(self) -> ArtifactCleanupSummary:
+        """Classify with the exact cleanup policy without deleting anything."""
+
+        async with self._database.transaction() as repositories:
+            protected = await repositories.upload_jobs.protected_artifact_job_ids()
+        return await asyncio.to_thread(self._classify_sync, protected, self._clock(), False)
+
+    def _classify_sync(
+        self, protected: set[str], now: float, delete_stale: bool
+    ) -> ArtifactCleanupSummary:
         counts = {
             "scanned": 0,
             "preserved_active": 0,
             "preserved_owned": 0,
             "preserved_young": 0,
             "removed_stale": 0,
+            "stale_candidates": 0,
             "unknown": 0,
             "errors": 0,
         }
@@ -121,8 +132,11 @@ class StaleArtifactCleanupService:
                     if stat.S_ISLNK(current.st_mode) or not stat.S_ISDIR(current.st_mode):
                         counts["unknown"] += 1
                         continue
-                    shutil.rmtree(candidate)
-                    counts["removed_stale"] += 1
+                    if delete_stale:
+                        shutil.rmtree(candidate)
+                        counts["removed_stale"] += 1
+                    else:
+                        counts["stale_candidates"] += 1
                 except FileNotFoundError:
                     # A worker may release the artifact between classification
                     # and deletion; that is a successful idempotent outcome.

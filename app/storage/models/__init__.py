@@ -2,6 +2,7 @@
 
 from app.storage.models.base import Base
 from app.storage.models.deep_link import DeepLinkRegistryEntry
+from app.storage.models.operational_audit import OperationalAuditEvent
 from app.storage.models.queue import (
     DownloadFlight,
     DownloadJob,
@@ -22,6 +23,7 @@ __all__ = [
     "DeepLinkRegistryEntry",
     "DownloadFlight",
     "JobSubscriber",
+    "OperationalAuditEvent",
     "RuntimeSettings",
     "Track",
     "TrackSource",

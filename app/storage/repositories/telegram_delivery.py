@@ -256,6 +256,17 @@ class TelegramDeliveryRepository:
         )
         return cast(CursorResult[Any], result).rowcount
 
+    async def count_expired_leases(self, now: datetime) -> int:
+        return int(
+            await self._session.scalar(
+                select(func.count(TelegramDeliveryRequest.id)).where(
+                    TelegramDeliveryRequest.status == TelegramDeliveryStatus.SENDING,
+                    TelegramDeliveryRequest.lease_expires_at <= now,
+                )
+            )
+            or 0
+        )
+
     async def claim(
         self, *, worker_id: str, now: datetime, lease_expires_at: datetime
     ) -> TelegramDeliveryRequest | None:

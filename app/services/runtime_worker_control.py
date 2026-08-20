@@ -73,36 +73,48 @@ class RuntimeWorkerControlService:
 
     async def set_download_workers(self, actor_user_id: int, value: int) -> WorkerMutationResult:
         await self.authorize(actor_user_id)
-        mutation = await self._worker_settings.update_download_workers(value)
+        mutation = await self._worker_settings.update_download_workers(
+            value, actor_user_id=actor_user_id
+        )
         return await self._result(actor_user_id, WorkerPoolType.DOWNLOAD, mutation, action="set")
 
     async def set_upload_workers(self, actor_user_id: int, value: int) -> WorkerMutationResult:
         await self.authorize(actor_user_id)
-        mutation = await self._worker_settings.update_upload_workers(value)
+        mutation = await self._worker_settings.update_upload_workers(
+            value, actor_user_id=actor_user_id
+        )
         return await self._result(actor_user_id, WorkerPoolType.UPLOAD, mutation, action="set")
 
     async def adjust_download_workers(self, actor_user_id: int, delta: int) -> WorkerMutationResult:
         await self.authorize(actor_user_id)
-        mutation = await self._worker_settings.adjust_download_workers(delta)
+        mutation = await self._worker_settings.adjust_download_workers(
+            delta, actor_user_id=actor_user_id
+        )
         return await self._adjustment_result(
             actor_user_id, WorkerPoolType.DOWNLOAD, delta, mutation
         )
 
     async def adjust_upload_workers(self, actor_user_id: int, delta: int) -> WorkerMutationResult:
         await self.authorize(actor_user_id)
-        mutation = await self._worker_settings.adjust_upload_workers(delta)
+        mutation = await self._worker_settings.adjust_upload_workers(
+            delta, actor_user_id=actor_user_id
+        )
         return await self._adjustment_result(actor_user_id, WorkerPoolType.UPLOAD, delta, mutation)
 
     async def reset_download_workers(self, actor_user_id: int) -> WorkerMutationResult:
         await self.authorize(actor_user_id)
         current = await self._worker_settings.get_values()
-        mutation = await self._worker_settings.update_download_workers(current.download.default)
+        mutation = await self._worker_settings.update_download_workers(
+            current.download.default, actor_user_id=actor_user_id
+        )
         return await self._result(actor_user_id, WorkerPoolType.DOWNLOAD, mutation, action="reset")
 
     async def reset_upload_workers(self, actor_user_id: int) -> WorkerMutationResult:
         await self.authorize(actor_user_id)
         current = await self._worker_settings.get_values()
-        mutation = await self._worker_settings.update_upload_workers(current.upload.default)
+        mutation = await self._worker_settings.update_upload_workers(
+            current.upload.default, actor_user_id=actor_user_id
+        )
         return await self._result(actor_user_id, WorkerPoolType.UPLOAD, mutation, action="reset")
 
     async def _adjustment_result(

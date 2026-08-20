@@ -15,6 +15,7 @@ from app.core.exceptions import (
     IdempotencyKeyConflict,
 )
 from app.providers.base import AlbumReference, MusicProvider, TrackReference
+from app.services.operational_audit import OperationalAuditService
 from app.services.track_resolution import ResolveTrackService
 from app.storage import Database
 from app.storage.models import DeepLinkRegistryEntry
@@ -51,6 +52,7 @@ class DeepLinkRegistryService:
         self._provider = provider
         self._track_resolver = track_resolver
         self._telegram_bot_id = telegram_bot_id
+        self._audit = OperationalAuditService(database)
 
     async def register_from_url(
         self, url: str, *, idempotency_key: str | None = None
@@ -110,6 +112,12 @@ class DeepLinkRegistryService:
                         album_provider=album_provider,
                         album_provider_id=album_provider_id,
                     )
+                    await self._audit.append_deep_link_change(
+                        repositories.audit,
+                        registered=True,
+                        registry_id=entry.id,
+                        target_type=entry.target_type,
+                    )
                 return DeepLinkRegistration(entry, True)
             except DatabaseConcurrencyError:
                 replay = await self._idempotency_replay(key, fingerprint)
@@ -141,11 +149,18 @@ class DeepLinkRegistryService:
         for attempt in range(MAX_TOKEN_ATTEMPTS):
             try:
                 async with self._database.transaction() as repositories:
-                    entry = await repositories.deep_links.revoke_by_token(
+                    entry, changed = await repositories.deep_links.revoke_by_token(
                         self._telegram_bot_id, token, now=utc_now()
                     )
                     if entry is None:
                         raise DeepLinkNotFound()
+                    if changed:
+                        await self._audit.append_deep_link_change(
+                            repositories.audit,
+                            registered=False,
+                            registry_id=entry.id,
+                            target_type=entry.target_type,
+                        )
                     return entry
             except DatabaseConcurrencyError:
                 if attempt == MAX_TOKEN_ATTEMPTS - 1:

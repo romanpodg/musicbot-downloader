@@ -467,3 +467,70 @@ def test_stage11_migration_enforces_registry_target_and_bot_scope(
         command.check(config)
     finally:
         get_settings.cache_clear()
+
+
+def test_stage123_audit_migration_upgrades_0010_and_round_trips(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    database_path = tmp_path / "stage123.db"
+    database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", database_url)  # type: ignore[attr-defined]
+    get_settings.cache_clear()
+    config = Config("alembic.ini")
+    try:
+        command.upgrade(config, "20260820_0010")
+        with sqlite3.connect(database_path) as connection:
+            connection.execute(
+                "INSERT INTO users (id, telegram_id, role, is_banned, last_seen_at, "
+                "created_at, updated_at) VALUES "
+                "(1, 123, 'OWNER', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        command.upgrade(config, "20260820_0011")
+        with sqlite3.connect(database_path) as connection:
+            tables = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            assert "operational_audit_events" in tables
+            connection.execute(
+                "INSERT INTO operational_audit_events "
+                "(occurred_at, event_type, actor_kind, actor_user_id, target_kind, target_id, "
+                "details_json) VALUES (CURRENT_TIMESTAMP, 'ADMIN_PROMOTED', 'TELEGRAM_USER', "
+                "1, 'USER', '1', '{\"new_role\":\"ADMIN\"}')"
+            )
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    "INSERT INTO operational_audit_events "
+                    "(occurred_at, event_type, actor_kind, actor_user_id) VALUES "
+                    "(CURRENT_TIMESTAMP, 'ADMIN_PROMOTED', 'SYSTEM', 1)"
+                )
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    "INSERT INTO operational_audit_events "
+                    "(occurred_at, event_type, actor_kind, details_json) VALUES "
+                    "(CURRENT_TIMESTAMP, 'CRASH_RECOVERY_COMPLETED', 'SYSTEM', ?)",
+                    ("x" * 4097,),
+                )
+            indexes = {
+                row[1]
+                for row in connection.execute(
+                    "PRAGMA index_list('operational_audit_events')"
+                ).fetchall()
+            }
+            assert {
+                "ix_operational_audit_occurred",
+                "ix_operational_audit_event_occurred",
+                "ix_operational_audit_actor_occurred",
+            } <= indexes
+        command.downgrade(config, "20260820_0010")
+        with sqlite3.connect(database_path) as connection:
+            tables = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            assert "operational_audit_events" not in tables
+            assert connection.execute("SELECT role FROM users WHERE id=1").fetchone() == ("OWNER",)
+        command.upgrade(config, "head")
+        command.check(config)
+    finally:
+        get_settings.cache_clear()

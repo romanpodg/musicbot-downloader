@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import cast
 
 from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import DeepLinkStatus, DeepLinkTargetType, MusicProviderName
@@ -75,8 +76,8 @@ class DeepLinkRegistryRepository:
 
     async def revoke_by_token(
         self, telegram_bot_id: int, token: str, *, now: datetime
-    ) -> DeepLinkRegistryEntry | None:
-        await self._session.execute(
+    ) -> tuple[DeepLinkRegistryEntry | None, bool]:
+        result = await self._session.execute(
             update(DeepLinkRegistryEntry)
             .where(
                 DeepLinkRegistryEntry.telegram_bot_id == telegram_bot_id,
@@ -85,4 +86,5 @@ class DeepLinkRegistryRepository:
             )
             .values(status=DeepLinkStatus.REVOKED, revoked_at=now, updated_at=now)
         )
-        return await self.get_by_token(telegram_bot_id, token)
+        entry = await self.get_by_token(telegram_bot_id, token)
+        return entry, cast(CursorResult[object], result).rowcount > 0

@@ -22,6 +22,7 @@ from app.core.models import (
     WorkerSettingValues,
 )
 from app.services.artifacts import ArtifactPathError, DownloadArtifactManager
+from app.services.operational_audit import OperationalAuditService
 from app.storage import Database
 from app.storage.models import DownloadJob, UploadJob
 from app.storage.models.base import utc_now
@@ -223,6 +224,7 @@ class WorkerSettingsService:
         self._settings = settings
         self._resizer: WorkerPoolResizer | None = None
         self._lock = asyncio.Lock()
+        self._audit = OperationalAuditService(database)
 
     def attach_resizer(self, resizer: WorkerPoolResizer) -> None:
         self._resizer = resizer
@@ -245,10 +247,18 @@ class WorkerSettingsService:
             return await self.initialize()
         return self._snapshot(values.download_workers, values.upload_workers)
 
-    async def set_download_workers(self, workers: int) -> WorkerSettingsSnapshot:
-        return (await self.update_download_workers(workers)).snapshot
+    async def set_download_workers(
+        self, workers: int, *, local_operator: bool = False
+    ) -> WorkerSettingsSnapshot:
+        return (await self.update_download_workers(workers, local_operator=local_operator)).snapshot
 
-    async def update_download_workers(self, workers: int) -> WorkerSettingMutation:
+    async def update_download_workers(
+        self,
+        workers: int,
+        *,
+        actor_user_id: int | None = None,
+        local_operator: bool = False,
+    ) -> WorkerSettingMutation:
         self._validate(workers, self._settings.download_workers_max)
         async with self._lock:
             await self.initialize_if_missing()
@@ -258,15 +268,32 @@ class WorkerSettingsService:
                     raise RuntimeError("runtime settings are not initialized")
                 previous = values.download_workers
                 await repositories.runtime_settings.set_download_workers(workers)
+                if (actor_user_id is not None or local_operator) and previous != workers:
+                    await self._audit.append_worker_desired_change(
+                        repositories.audit,
+                        actor_user_id=actor_user_id,
+                        local_operator=local_operator,
+                        pool="download",
+                        old_desired=previous,
+                        new_desired=workers,
+                    )
             if self._resizer is not None:
                 await self._resizer.resize_download(workers)
             snapshot = await self.get_values()
         return WorkerSettingMutation(previous, workers, snapshot)
 
-    async def set_upload_workers(self, workers: int) -> WorkerSettingsSnapshot:
-        return (await self.update_upload_workers(workers)).snapshot
+    async def set_upload_workers(
+        self, workers: int, *, local_operator: bool = False
+    ) -> WorkerSettingsSnapshot:
+        return (await self.update_upload_workers(workers, local_operator=local_operator)).snapshot
 
-    async def update_upload_workers(self, workers: int) -> WorkerSettingMutation:
+    async def update_upload_workers(
+        self,
+        workers: int,
+        *,
+        actor_user_id: int | None = None,
+        local_operator: bool = False,
+    ) -> WorkerSettingMutation:
         self._validate(workers, self._settings.upload_workers_max)
         async with self._lock:
             await self.initialize_if_missing()
@@ -276,12 +303,27 @@ class WorkerSettingsService:
                     raise RuntimeError("runtime settings are not initialized")
                 previous = values.upload_workers
                 await repositories.runtime_settings.set_upload_workers(workers)
+                if (actor_user_id is not None or local_operator) and previous != workers:
+                    await self._audit.append_worker_desired_change(
+                        repositories.audit,
+                        actor_user_id=actor_user_id,
+                        local_operator=local_operator,
+                        pool="upload",
+                        old_desired=previous,
+                        new_desired=workers,
+                    )
             if self._resizer is not None:
                 await self._resizer.resize_upload(workers)
             snapshot = await self.get_values()
         return WorkerSettingMutation(previous, workers, snapshot)
 
-    async def adjust_download_workers(self, delta: int) -> WorkerSettingMutation:
+    async def adjust_download_workers(
+        self,
+        delta: int,
+        *,
+        actor_user_id: int | None = None,
+        local_operator: bool = False,
+    ) -> WorkerSettingMutation:
         self._validate_delta(delta)
         async with self._lock:
             await self.initialize_if_missing()
@@ -291,12 +333,27 @@ class WorkerSettingsService:
                     minimum=MIN_WORKERS,
                     maximum=self._settings.download_workers_max,
                 )
+                if (actor_user_id is not None or local_operator) and previous != current:
+                    await self._audit.append_worker_desired_change(
+                        repositories.audit,
+                        actor_user_id=actor_user_id,
+                        local_operator=local_operator,
+                        pool="download",
+                        old_desired=previous,
+                        new_desired=current,
+                    )
             if current != previous and self._resizer is not None:
                 await self._resizer.resize_download(current)
             snapshot = await self.get_values()
         return WorkerSettingMutation(previous, current, snapshot)
 
-    async def adjust_upload_workers(self, delta: int) -> WorkerSettingMutation:
+    async def adjust_upload_workers(
+        self,
+        delta: int,
+        *,
+        actor_user_id: int | None = None,
+        local_operator: bool = False,
+    ) -> WorkerSettingMutation:
         self._validate_delta(delta)
         async with self._lock:
             await self.initialize_if_missing()
@@ -306,6 +363,15 @@ class WorkerSettingsService:
                     minimum=MIN_WORKERS,
                     maximum=self._settings.upload_workers_max,
                 )
+                if (actor_user_id is not None or local_operator) and previous != current:
+                    await self._audit.append_worker_desired_change(
+                        repositories.audit,
+                        actor_user_id=actor_user_id,
+                        local_operator=local_operator,
+                        pool="upload",
+                        old_desired=previous,
+                        new_desired=current,
+                    )
             if current != previous and self._resizer is not None:
                 await self._resizer.resize_upload(current)
             snapshot = await self.get_values()

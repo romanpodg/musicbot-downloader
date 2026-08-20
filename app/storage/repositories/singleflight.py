@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import QualityProfile, QueueErrorCode, QueueJobStatus, SubscriberStatus
@@ -148,6 +148,29 @@ class SingleFlightRepository:
 
     async def active_flight_count(self) -> int:
         return int(await self._session.scalar(select(func.count(DownloadFlight.id))) or 0)
+
+    async def count_reconciliation_candidates(self) -> int:
+        statement = (
+            select(func.count(DownloadFlight.id))
+            .select_from(DownloadFlight)
+            .join(DownloadJob, DownloadJob.id == DownloadFlight.download_job_id)
+            .outerjoin(UploadJob, UploadJob.download_job_id == DownloadJob.id)
+            .where(
+                or_(
+                    DownloadJob.cancel_requested.is_(True),
+                    DownloadJob.status.in_((QueueJobStatus.FAILED, QueueJobStatus.CANCELLED)),
+                    and_(
+                        DownloadJob.status == QueueJobStatus.SUCCEEDED,
+                        or_(
+                            UploadJob.id.is_(None),
+                            UploadJob.cancel_requested.is_(True),
+                            UploadJob.status.in_(TERMINAL_QUEUE_STATUSES),
+                        ),
+                    ),
+                )
+            )
+        )
+        return int(await self._session.scalar(statement) or 0)
 
     async def cancel_subscriber(
         self, subscriber_id: str, now: datetime

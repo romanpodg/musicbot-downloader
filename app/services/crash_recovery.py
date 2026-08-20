@@ -9,6 +9,7 @@ from datetime import datetime
 
 from app.core.enums import QueueErrorCode
 from app.services.artifacts import ArtifactPathError
+from app.services.operational_audit import OperationalAuditService, RecoveryAuditDetails
 from app.services.queues import UploadQueueService
 from app.services.singleflight import SingleFlightService
 from app.services.telegram_album_coordinator import (
@@ -34,6 +35,19 @@ class CrashRecoverySummary:
     album_requests_reconciled: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class RecoveryInspection:
+    snapshot_at: datetime
+    expired_download_leases: int = 0
+    expired_upload_leases: int = 0
+    invalid_or_missing_upload_artifacts: int = 0
+    exact_cache_rescue_candidates: int = 0
+    stale_singleflight_candidates: int = 0
+    expired_delivery_leases: int = 0
+    expired_album_item_leases: int = 0
+    album_aggregate_reconciliation_candidates: int = 0
+
+
 class CrashRecoveryService:
     """Compose existing durable recovery primitives before any worker claims."""
 
@@ -55,8 +69,64 @@ class CrashRecoveryService:
         self._telegram_bot_id = telegram_bot_id
         self._delivery_max_attempts = delivery_max_attempts
         self._clock = clock
+        self._audit = OperationalAuditService(database)
 
-    async def recover_startup(self) -> CrashRecoverySummary:
+    async def inspect(self) -> RecoveryInspection:
+        """Return a read-only snapshot using the same recovery predicates."""
+
+        now = self._clock()
+        async with self._database.transaction() as repositories:
+            download_leases = await repositories.download_jobs.count_expired_leases(now)
+            upload_leases = await repositories.upload_jobs.count_expired_leases(now)
+            active_uploads = await repositories.upload_jobs.list_nonterminal()
+            stale_flights = await repositories.singleflight.count_reconciliation_candidates()
+            delivery_leases = await repositories.telegram_delivery.count_expired_leases(now)
+            album_leases = await repositories.telegram_album.count_expired_leases(now)
+            aggregate_candidates = (
+                await repositories.telegram_album.count_aggregate_reconciliation_candidates()
+            )
+
+        invalid_artifacts = 0
+        cache_rescues = 0
+        for upload in active_uploads:
+            try:
+                self._upload_queue.validate_artifact_reference(
+                    upload.artifact_job_id, upload.artifact_path
+                )
+            except (ArtifactPathError, OSError):
+                invalid_artifacts += 1
+                continue
+            async with self._database.transaction() as repositories:
+                cached = await repositories.telegram_cache.get_active(
+                    telegram_bot_id=self._telegram_bot_id,
+                    track_id=upload.track_id,
+                    quality_profile=upload.quality_profile,
+                )
+            if cached is not None:
+                cache_rescues += 1
+                continue
+            try:
+                self._upload_queue.validate_artifact(
+                    upload.artifact_job_id,
+                    upload.artifact_path,
+                    expected_size=upload.file_size_bytes,
+                )
+            except (ArtifactPathError, OSError):
+                invalid_artifacts += 1
+
+        return RecoveryInspection(
+            snapshot_at=now,
+            expired_download_leases=download_leases,
+            expired_upload_leases=upload_leases,
+            invalid_or_missing_upload_artifacts=invalid_artifacts,
+            exact_cache_rescue_candidates=cache_rescues,
+            stale_singleflight_candidates=stale_flights,
+            expired_delivery_leases=delivery_leases,
+            expired_album_item_leases=album_leases,
+            album_aggregate_reconciliation_candidates=aggregate_candidates,
+        )
+
+    async def recover_startup(self, *, manual: bool = False) -> CrashRecoverySummary:
         logger.info("crash_recovery_started")
         now = self._clock()
         async with self._database.transaction() as repositories:
@@ -175,6 +245,25 @@ class CrashRecoveryService:
                 "album_requests_reconciled": summary.album_requests_reconciled,
             },
         )
+        details = RecoveryAuditDetails(
+            download_jobs_recovered=summary.download_jobs_recovered,
+            upload_jobs_recovered=summary.upload_jobs_recovered,
+            upload_artifacts_failed=summary.upload_artifacts_failed,
+            uploads_recovered_from_cache=summary.uploads_recovered_from_cache,
+            flights_reconciled=summary.flights_reconciled,
+            deliveries_recovered=summary.deliveries_recovered,
+            album_items_recovered=summary.album_items_recovered,
+            album_requests_reconciled=summary.album_requests_reconciled,
+        )
+        if manual:
+            await self._audit.append_recovery(details, manual=True)
+        else:
+            try:
+                await self._audit.append_recovery(details, manual=False)
+            except Exception:
+                # Recovery spans several deliberate transactions. Once it has completed,
+                # an audit outage must not trigger a destructive recovery replay.
+                logger.exception("crash_recovery_audit_failed")
         return summary
 
     async def _fail_artifact(

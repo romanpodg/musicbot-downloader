@@ -22,6 +22,7 @@ from app.core.exceptions import DatabaseConcurrencyError, DatabaseError
 from app.storage.repositories import (
     DeepLinkRegistryRepository,
     DownloadJobRepository,
+    OperationalAuditRepository,
     RuntimeSettingsRepository,
     SingleFlightRepository,
     TelegramAlbumRepository,
@@ -36,6 +37,7 @@ from app.storage.repositories import (
 
 @dataclass(frozen=True, slots=True)
 class Repositories:
+    audit: OperationalAuditRepository
     deep_links: DeepLinkRegistryRepository
     users: UserRepository
     tracks: TrackRepository
@@ -80,6 +82,7 @@ class Database:
     @staticmethod
     def _repositories(session: AsyncSession) -> Repositories:
         return Repositories(
+            audit=OperationalAuditRepository(session),
             deep_links=DeepLinkRegistryRepository(session),
             users=UserRepository(session),
             tracks=TrackRepository(session),

@@ -1,4 +1,4 @@
-"""Stage 12.2 production entry point and supervised application lifecycle."""
+"""Stage 12.3 production entry point and supervised application lifecycle."""
 
 from __future__ import annotations
 
@@ -22,6 +22,10 @@ from app.i18n import LocalizationService
 from app.internal_api import InternalApiServer, create_internal_api_app
 from app.logging import configure_logging
 from app.providers.onthespot import OnTheSpotProvider
+from app.services.instance_lock import (
+    ApplicationInstanceAlreadyRunningError,
+    ApplicationInstanceLock,
+)
 from app.services.owner_bootstrap import OwnerBootstrapService
 from app.services.runtime_prerequisites import RuntimePrerequisiteService
 from app.storage import Database
@@ -107,8 +111,9 @@ async def run_bot(settings: Settings) -> None:
 
     status = RuntimeStatus()
     _preflight(settings)
-    _log_startup_summary(settings)
-    database = Database(settings.database_url)
+    instance_lock = ApplicationInstanceLock.from_database_url(settings.database_url)
+    instance_lock.acquire()
+    database: Database | None = None
     gateway: AiogramTelegramGateway | None = None
     provider: OnTheSpotProvider | None = None
     components = None
@@ -117,6 +122,8 @@ async def run_bot(settings: Settings) -> None:
     api_wait_task: asyncio.Task[None] | None = None
     component_wait_task: asyncio.Task[None] | None = None
     try:
+        _log_startup_summary(settings)
+        database = Database(settings.database_url)
         await require_current_schema(database)
         result = await OwnerBootstrapService(database, settings.owner_id).run()
         logger.info("Owner bootstrap result: %s", result.value)
@@ -206,7 +213,9 @@ async def run_bot(settings: Settings) -> None:
                 await _cleanup("onthespot_provider", provider.close)
             if gateway is not None:
                 await _cleanup("telegram_gateway", gateway.close)
-        await _cleanup("database", database.dispose)
+        if database is not None:
+            await _cleanup("database", database.dispose)
+        instance_lock.release()
         logger.info("application_stopped")
 
 
@@ -261,7 +270,7 @@ async def _run_with_signals(settings: Settings) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the Stage 12.2 Telegram downloader service.")
+    parser = argparse.ArgumentParser(description="Run the Stage 12.3 Telegram downloader service.")
     parser.add_argument(
         "--check",
         action="store_true",
@@ -281,11 +290,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.check:
             asyncio.run(check_runtime(settings))
-            print("Stage 12.2 runtime configuration is ready.")
+            print("Stage 12.3 runtime configuration is ready.")
             return 0
         asyncio.run(_run_with_signals(settings))
     except KeyboardInterrupt:
         logger.info("Shutdown requested")
+    except ApplicationInstanceAlreadyRunningError:
+        logger.error("application_instance_already_running")
+        return 2
     except (ConfigurationError, OSError):
         logger.error("Application startup validation failed")
         return 2

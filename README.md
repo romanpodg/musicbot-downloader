@@ -1,7 +1,7 @@
 # Musicbot Downloader
 
 Production-oriented foundation for a future Telegram music downloader service. This repository
-implements Stage 0 through Stage 12.2: canonical recording identity, ambiguity-safe matching,
+implements Stage 0 through Stage 12.3: canonical recording identity, ambiguity-safe matching,
 verified cross-provider discovery, runtime provider candidate resolution, quality-dependent
 download planning, safe one-shot execution, persistent asynchronous queue orchestration, and
 durable SingleFlight subscribers, a bot-scoped Telegram completed-result cache, and the
@@ -28,12 +28,14 @@ Current delivery roadmap:
 - Stage 11: private Internal API and bot-scoped Track/Album deep-link registry.
 - Stage 12.1: Production Packaging and Runtime Hardening Foundation.
 - Stage 12.2: Crash Recovery and Stale Artifact Cleanup.
+- Stage 12.3: Operational Audit and Recovery Tooling.
 
 Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
 deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage
-12.3 (Operational Audit and Recovery Tooling) is not implemented.
+12.3 adds a bounded append-only operational audit, offline-safe inspection/recovery tooling,
+validated online SQLite backup, and an OS-level one-runtime lock per SQLite database.
 
-See [the production deployment guide](docs/production.md) for the Stage 12.2 container,
+See [the production deployment guide](docs/production.md) for the Stage 12.3 container,
 filesystem, migration, preflight, security, backup, and upgrade contract.
 
 ## Architecture
@@ -855,6 +857,37 @@ The CLIs redact `file_id` by default and never print `BOT_TOKEN`. `get` may reso
 when `--bot-id` is omitted, which requires Telegram configuration. Cache status/list/invalidate are
 SQLite-only operations.
 
+## Local operational tooling
+
+Stage 12.3 provides one network-free operator entry point:
+
+```bash
+uv run python -m app.tools.ops status
+uv run python -m app.tools.ops status --json
+uv run python -m app.tools.ops audit list --limit 50 --json
+uv run python -m app.tools.ops recovery inspect
+uv run python -m app.tools.ops recovery run
+uv run python -m app.tools.ops artifacts scan
+uv run python -m app.tools.ops artifacts cleanup
+uv run python -m app.tools.ops backup create /protected/backups/musicbot.db
+```
+
+`status` and `audit list` can run beside the application. Status reports persisted desired worker
+counts and explicitly marks in-process actual counts unavailable. Recovery and artifact commands
+acquire the same exclusive instance lock as the runtime and refuse while it is live; artifact scan
+is also offline because an external process cannot see the active-artifact registry. Online backup
+uses SQLite snapshot semantics and can run while the application holds the runtime lock.
+
+The persistent audit records only successful high-value role, worker-setting, Deep-Link, recovery,
+cleanup, and backup transitions. It is not a full activity log: user downloads, cache hits, denied
+attacker-controlled traffic, provider credentials, raw URLs/tokens, and Telegram updates are not
+stored. Audit metadata is typed, allow-listed, deterministically serialized, and bounded. No audit
+retention scheduler exists yet.
+
+One active downloader application instance per SQLite database is technically enforced by an
+OS advisory lock beside the database (`<database>.instance.lock`). This is single-host process
+coordination, not a distributed lock or multi-replica design.
+
 ## Current limitations
 
 - OnTheSpot exposes no documented stable Python library API. Only the child worker imports the
@@ -874,8 +907,8 @@ SQLite-only operations.
   direct stream-copy tagging; a later direct fallback can still succeed when ffprobe is available.
 - Stale artifact cleanup is deliberately delayed by a conservative threshold; it is not an exact
   byte-reservation system and ignores unknown TEMP_DIR entries.
-- Stage 7 targets one application instance and one SQLite database; multi-host workers and
-  distributed locks are intentionally absent.
+- The runtime enforces one active application instance per SQLite database on one host; multi-host
+  workers and distributed locks are intentionally absent.
 - Telegram upload and cache persistence are not one distributed transaction. A process crash after
   Telegram accepts a file but before SQLite commits can leave an extra cache-chat message on retry.
 - Telegram user delivery is at-least-once across the external-send/SQLite-commit crash window.
@@ -883,8 +916,9 @@ SQLite-only operations.
   derived from the pinned provider's ordered track listing and can be incomplete.
 - Album delivery is per track. There is no ZIP/archive, concatenated audio, M3U, album-wide media
   job/cache artifact, strict Telegram delivery ordering, or per-track quality override.
-- Stage 10.2 administrator management is owner-only. OWNER transfer and persistent security audit
-  history are not implemented. Stage 10.3 controls only Download/Upload desired counts;
+- Stage 10.2 administrator management is owner-only. OWNER transfer is not implemented. The
+  operational audit intentionally excludes ordinary user activity and has no automated retention.
+  Stage 10.3 controls only Download/Upload desired counts;
   delivery/album/OnTheSpot worker counts and ENV defaults/maxima remain outside this UI.
 - Provider Health cannot guarantee TrackSource playability or quality. Some pinned integrations,
   notably Qobuz, expose no safe provider-level authorization validation, so readiness remains

@@ -10,6 +10,7 @@ from enum import StrEnum
 from app.core.enums import UserRole
 from app.core.exceptions import DatabaseConcurrencyError, MusicBotError
 from app.services.authorization import AdminAccessContext, TelegramAuthorizationService
+from app.services.operational_audit import OperationalAuditService
 from app.storage import Database
 from app.storage.models import User
 
@@ -83,6 +84,7 @@ class AdministratorManagementService:
         self._database = database
         self._authorization = authorization
         self._owner_id = owner_id
+        self._audit = OperationalAuditService(database)
 
     async def authorize_owner(self, actor_user_id: int) -> AdminAccessContext:
         return await self._authorization.require_authoritative_owner(actor_user_id)
@@ -184,6 +186,13 @@ class AdministratorManagementService:
                             actor_user_id=actor_user_id,
                             target_user_id=target_user_id,
                             owner_telegram_id=owner_id,
+                        )
+                    if changed:
+                        await self._audit.append_admin_role_change(
+                            repositories.audit,
+                            promoted=promote,
+                            actor_user_id=actor_user_id,
+                            target_user_id=target_user_id,
                         )
             except DatabaseConcurrencyError as exc:
                 last_concurrency_error = exc

@@ -1,10 +1,11 @@
-# Production deployment (Stage 12.2)
+# Production deployment (Stage 12.3)
 
-> **Single-instance constraint:** The current SQLite deployment supports one downloader
-> application instance. Do not run replicas or point multiple application containers at the same
-> database volume.
+> **Enforced single-instance constraint:** An OS advisory lock at
+> `<SQLite database>.instance.lock` permits at most one downloader runtime against a database on
+> this host. A second runtime exits before database recovery, workers, listeners, providers, or
+> polling. This is not distributed coordination; do not run replicas across hosts.
 
-Stage 12.2 packages the existing `python -m app.main` runtime as one service. The process owns
+Stage 12.3 packages the existing `python -m app.main` runtime as one service. The process owns
 Telegram long polling, the in-process worker managers, the optional embedded Internal API, and one
 lazy serialized OnTheSpot child. It does not add a second downloader process, Redis, PostgreSQL, or
 persistent local media storage.
@@ -28,7 +29,7 @@ Build a versioned local image:
 ```bash
 docker compose build
 # or
-docker build -t musicbot-downloader:stage12.2 .
+docker build -t musicbot-downloader:stage12.3 .
 ```
 
 ## Filesystem and permissions
@@ -125,7 +126,8 @@ guaranteed by the production image. An inaccessible database, wrong schema, inva
 configuration, or unwritable TEMP_DIR fails startup before workers begin.
 
 Exact runtime startup order is: load settings; configure stdout/stderr logging; validate local
-filesystem/media prerequisites; create the database engine; verify the Alembic head; reconcile
+filesystem/media prerequisites; acquire the database-adjacent instance lock; create the database
+engine; verify the Alembic head; reconcile
 the configured OWNER; create Telegram and obtain bot identity; compose provider/runtime services;
 recover expired DownloadJob and UploadJob leases; recover expired delivery and album-item leases;
 validate non-terminal UploadJob artifacts and perform exact ACTIVE-cache rescue; reconcile
@@ -134,6 +136,12 @@ conservative stale-artifact sweep; start Download/Upload, delivery, and album wo
 supervised cleanup watchdog; start the optional Internal API; create Telegram polling; mark ready.
 No worker can claim work and readiness cannot become true before recovery and the startup sweep
 finish.
+
+The lock uses `fcntl.flock` on production POSIX systems and `msvcrt.locking` for Windows
+development/tests. File contents (PID and UTC start time) are diagnostics only: file existence or a
+stale PID never establishes ownership. The OS releases the advisory lock on graceful close and
+process death. Startup cleanup releases it after partial failure. `app.main --check` never holds the
+runtime lock and remains safe beside the live service.
 
 SIGTERM/SIGINT cancels polling and runs bounded worker shutdown, stops uvicorn, closes the
 OnTheSpot child (terminate then kill after its existing bound if needed), closes Telegram, and
@@ -194,6 +202,51 @@ external target untouched. Candidate races and item-level filesystem errors are 
 periodic scan/deletion runs off the event loop and does not weaken the Stage 12.1 free-space floor:
 cleanup may let a later retry pass, but acquisition still checks the configured reserve.
 
+## Operator audit and recovery CLI
+
+Run the CLI in the same image/environment and with the same `DATABASE_URL`/`TEMP_DIR` as the
+service. All output is bounded; `--json` emits typed primitives without ORM representations.
+
+```bash
+python -m app.tools.ops status [--json]
+python -m app.tools.ops audit list --limit 50 [--before-id ID] [--event EVENT] [--actor-user-id ID] [--json]
+python -m app.tools.ops recovery inspect [--json]
+python -m app.tools.ops recovery run [--json]
+python -m app.tools.ops artifacts scan [--json]
+python -m app.tools.ops artifacts cleanup [--json]
+python -m app.tools.ops backup create /protected/backups/musicbot-YYYYMMDD.db [--json]
+```
+
+`status` is DB/config/filesystem-only. It reports current/head schema, runtime-lock state, bounded
+Download/Upload counts, active SingleFlight/waiting subscriber counts, delivery/album/cache counts,
+persisted desired workers, TEMP_DIR free/reserve bytes, and audit count/latest timestamp. An
+external CLI cannot see asyncio worker tasks, so actual workers are explicitly unavailable. It
+never probes Telegram, providers, OnTheSpot, FFmpeg, or HTTP.
+
+`audit list` is read-only, ordered by UTC occurrence then ID descending, defaults to 50, and rejects
+limits above 200. Audit rows distinguish `TELEGRAM_USER`, `INTERNAL_API`, `LOCAL_OPERATOR`, and
+`SYSTEM`. The audit is append-only through application APIs and records only successful promotion,
+demotion, desired-worker, Deep-Link create/revoke, startup/manual recovery, manual cleanup, and
+backup transitions. It stores internal IDs and small allow-listed summaries, never public
+Deep-Link tokens, raw URLs, Bot/Internal API tokens, Authorization headers, provider credentials,
+cookies, raw Telegram updates, file contents, or exception tracebacks. It adds no download history.
+Periodic cleanup remains structured-log-only. Audit retention is not automated.
+
+Role, desired-worker, and Deep-Link mutations append their audit row in the same SQLite transaction
+as the state transition; no-op/idempotent calls add nothing, and audit insertion failure rolls the
+mutation back. Startup recovery spans existing independent recovery transactions. Its bounded
+SYSTEM summary is appended afterward; audit failure is logged and does not replay already committed
+recovery. Manual recovery and cleanup append one LOCAL_OPERATOR summary after success.
+
+`recovery inspect` and `recovery run` require the application to be stopped and acquire the runtime
+lock. Inspect is dry-run. Run invokes the Stage 12.2 `CrashRecoveryService`; neither starts workers,
+Telegram, the Internal API, OnTheSpot, or providers. Offline exact-cache rescue uses a persisted bot
+identity only when it is unambiguous; otherwise it conservatively skips cross-bot rescue. Artifact
+scan and cleanup are also offline-only because another process cannot observe the live
+`ActiveArtifactRegistry`. Scan uses the exact Stage 12.2 classifier without deletion. Cleanup runs
+one sweep with the configured ownership, containment, symlink, and stale-age rules; there are no
+force/ignore/path override flags.
+
 ## Crash and atomicity semantics
 
 On process crash or SIGKILL, SQLite/WAL durable state survives. At the next startup, only expired
@@ -220,15 +273,21 @@ external effects:
 
 ## Backup, upgrade, and rollback
 
-Do not copy only the live `.db` file: WAL mode also uses `.db-wal` and `.db-shm`. Prefer SQLite's
-online backup API. For example, while the service is running, create a consistent backup in the
-data volume:
+Do not copy only the live `.db` file: WAL mode also uses `.db-wal` and `.db-shm`. The Stage 12.3
+command uses SQLite's online backup API and can run while the service is live:
 
 ```bash
-docker compose exec musicbot python -c "import sqlite3; s=sqlite3.connect('/data/musicbot.db'); d=sqlite3.connect('/data/musicbot-backup.db'); s.backup(d); d.close(); s.close()"
+docker compose exec musicbot python -m app.tools.ops backup create /data/musicbot-backup.db
 ```
 
-Move the completed backup to protected storage. Also back up `/data/onthespot` and deployment
+The destination must be explicit, must differ from the source, and must not already exist (including
+symlinks). The command writes a restrictive `0600` temporary sibling, snapshots committed WAL state,
+runs `PRAGMA integrity_check`, verifies the Alembic revision, and atomically publishes without
+overwriting. Failure removes only its controlled partial file. The subsequent backup audit event is
+in the live database and intentionally absent from the already completed snapshot.
+
+Move the completed backup to protected storage. The SQLite backup includes only application data;
+it excludes `.env`/secrets, `/data/onthespot`, and TEMP_DIR media. Also back up `/data/onthespot` and deployment
 configuration/secrets through a secure operator process. The DB contains users, Tracks/sources,
 queues/history, Telegram file IDs, and deep links; audio remains in Telegram. Deleting cache-chat
 messages can invalidate stored Telegram file references.
@@ -246,6 +305,13 @@ An Alembic downgrade is not automatically a safe rollback after the newer app ha
 Restore the verified pre-upgrade backup with the matching application image when rollback is
 required.
 
+Safe manual restore (there is deliberately no automatic restore command): stop the application;
+confirm an offline lock-requiring CLI command can acquire the instance lock; create a backup of the
+current DB if possible; validate the candidate backup with `PRAGMA integrity_check` and its
+`alembic_version`; replace the stopped DB using an operator-controlled atomic procedure; restore
+UID/GID 10001 ownership and restrictive permissions; run `alembic current`; run
+`python -m app.main --check`; then start one application instance and inspect logs/readiness.
+
 ## Security and resource notes
 
 The default service drops all Linux capabilities and enables `no-new-privileges`; it needs no
@@ -253,9 +319,9 @@ privileged mode. Configure CPU/memory limits for observed workloads, leaving eno
 scratch disk for the largest expected transcode. Do not assume one universal limit. Keep outbound
 Internet access for Telegram/providers and keep inbound API access private.
 
-Known Stage 12.2 limitations: one SQLite application instance; Telegram side effects remain
+Known Stage 12.3 limitations: SQLite/single-host operation only; Telegram side effects remain
 at-least-once around SQLite commits; ephemeral container replacement can lose pending UploadJob
 artifacts; cleanup deliberately waits for a conservative stale threshold; the reserve floor is not
-a byte reservation; no scheduled backups/restore automation or persistent audit history; no
+a byte reservation; no scheduled backups, automatic restore, or automated audit retention; no
 PostgreSQL, Redis, distributed workers, or multi-replica cleanup/recovery; no TLS automation; and no
 guarantee that the reserve floor prevents every concurrent ENOSPC event.

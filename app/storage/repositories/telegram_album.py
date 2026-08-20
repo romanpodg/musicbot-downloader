@@ -316,6 +316,33 @@ class TelegramAlbumRepository:
         )
         return cast(CursorResult[Any], result).rowcount
 
+    async def count_expired_leases(self, now: datetime) -> int:
+        return int(
+            await self._session.scalar(
+                select(func.count(TelegramAlbumItem.id)).where(
+                    TelegramAlbumItem.resolution_status == AlbumItemResolutionStatus.RESOLVING,
+                    TelegramAlbumItem.lease_expires_at <= now,
+                )
+            )
+            or 0
+        )
+
+    async def count_aggregate_reconciliation_candidates(self) -> int:
+        count = 0
+        for request in await self.list_reconcilable():
+            aggregate = await self.aggregate(request.id)
+            unresolved = aggregate.selected - aggregate.item_failed - aggregate.attached
+            terminal = (
+                aggregate.delivered + aggregate.delivery_failed + aggregate.delivery_cancelled
+            )
+            if (
+                unresolved <= 0
+                and aggregate.delivery_active == 0
+                and terminal == aggregate.attached
+            ):
+                count += 1
+        return count
+
     async def claim_item(
         self, *, worker_id: str, now: datetime, lease_expires_at: datetime
     ) -> TelegramAlbumItem | None:

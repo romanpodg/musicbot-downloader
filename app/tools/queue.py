@@ -62,9 +62,9 @@ async def _run(args: argparse.Namespace) -> str:
         if args.command == "workers":
             if args.pool is not None:
                 if args.pool == "download":
-                    await workers.set_download_workers(args.count)
+                    await workers.set_download_workers(args.count, local_operator=True)
                 else:
-                    await workers.set_upload_workers(args.count)
+                    await workers.set_upload_workers(args.count, local_operator=True)
             return _json(asdict(await workers.get_values()))
         if args.command == "status":
             return _json(

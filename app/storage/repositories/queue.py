@@ -72,6 +72,17 @@ class DownloadJobRepository:
         )
         return {status: count for status, count in rows}
 
+    async def count_expired_leases(self, now: datetime) -> int:
+        return int(
+            await self._session.scalar(
+                select(func.count(DownloadJob.id)).where(
+                    DownloadJob.status == QueueJobStatus.RUNNING,
+                    DownloadJob.lease_expires_at <= now,
+                )
+            )
+            or 0
+        )
+
     async def recover_expired(self, now: datetime, max_attempts: int) -> int:
         cancelled = await self._session.execute(
             update(DownloadJob)
@@ -354,6 +365,17 @@ class UploadJobRepository:
             select(UploadJob.status, func.count(UploadJob.id)).group_by(UploadJob.status)
         )
         return {status: count for status, count in rows}
+
+    async def count_expired_leases(self, now: datetime) -> int:
+        return int(
+            await self._session.scalar(
+                select(func.count(UploadJob.id)).where(
+                    UploadJob.status == QueueJobStatus.RUNNING,
+                    UploadJob.lease_expires_at <= now,
+                )
+            )
+            or 0
+        )
 
     async def recover_expired(self, now: datetime, max_attempts: int) -> UploadLeaseRecovery:
         cancelled = await self._session.execute(
