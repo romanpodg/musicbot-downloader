@@ -297,7 +297,7 @@ def _add_json(parser: argparse.ArgumentParser) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Stage 12.3 local operational tooling")
+    parser = argparse.ArgumentParser(description="Local operational tooling")
     commands = parser.add_subparsers(dest="command", required=True)
 
     status = commands.add_parser("status", help="inspect bounded durable/local state")

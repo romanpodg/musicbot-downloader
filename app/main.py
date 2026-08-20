@@ -1,4 +1,4 @@
-"""Stage 12.3 production entry point and supervised application lifecycle."""
+"""Production entry point and supervised application lifecycle."""
 
 from __future__ import annotations
 
@@ -270,7 +270,7 @@ async def _run_with_signals(settings: Settings) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the Stage 12.3 Telegram downloader service.")
+    parser = argparse.ArgumentParser(description="Run the Telegram downloader service.")
     parser.add_argument(
         "--check",
         action="store_true",
@@ -290,7 +290,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.check:
             asyncio.run(check_runtime(settings))
-            print("Stage 12.3 runtime configuration is ready.")
+            print("Runtime configuration is ready.")
             return 0
         asyncio.run(_run_with_signals(settings))
     except KeyboardInterrupt:

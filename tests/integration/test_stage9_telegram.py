@@ -608,11 +608,13 @@ async def test_mixed_quality_fanout_uses_two_flights_and_isolated_deliveries(
         assert await session.scalar(select(func.count(TelegramFileCache.id))) == 2
 
 
-async def test_retry_and_invalid_file_repair_are_persistent(database: Database) -> None:
+async def test_retry_and_invalid_file_repair_are_persistent(
+    database: Database, tmp_path: Path
+) -> None:
     track_id, source_id = await _track(database)
     cache = TelegramFileCacheService(database)
     gateway = Gateway()
-    artifacts = DownloadArtifactManager(Path("temp") / "stage9-test-artifacts")
+    artifacts = DownloadArtifactManager(tmp_path / "stage9-test-artifacts")
     pipeline = Pipeline(artifacts, source_id)
     result = await pipeline.download(track_id, QualityProfile.MP3_320)
     from app.services.workers import _artifact_metadata  # noqa: PLC0415

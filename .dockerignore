@@ -28,7 +28,11 @@ temp
 otsconfig.json
 .idea
 .vscode
-tests
 docs
 compose.yaml
 Dockerfile*
+
+# The opt-in validation target executes release-asset tests inside the image.
+!docs/
+!compose.yaml
+!Dockerfile

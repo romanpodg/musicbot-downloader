@@ -70,6 +70,13 @@ async def test_online_backup_is_valid_live_safe_and_non_overwriting(
             await SQLiteBackupService(database).create(source)
         if os.name != "nt":
             assert destination.stat().st_mode & 0o077 == 0
+            symlink_target = tmp_path / "symlink-target.db"
+            symlink_target.write_bytes(b"must survive")
+            symlink_destination = tmp_path / "symlink-backup.db"
+            symlink_destination.symlink_to(symlink_target)
+            with pytest.raises(FileExistsError):
+                await SQLiteBackupService(database).create(symlink_destination)
+            assert symlink_target.read_bytes() == b"must survive"
     finally:
         runtime_lock.release()
         await database.dispose()

@@ -25,7 +25,13 @@ def _generate_flac(source: Path) -> None:
             "-f",
             "lavfi",
             "-i",
-            "sine=frequency=440:duration=1",
+            "anoisesrc=color=white:duration=3:sample_rate=44100:seed=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "anoisesrc=color=white:duration=3:sample_rate=44100:seed=2",
+            "-filter_complex",
+            "[0:a][1:a]amerge=inputs=2",
             "-c:a",
             "flac",
             str(source),
@@ -59,7 +65,7 @@ async def test_synthetic_flac_transcodes_to_valid_mp3_and_aac(tmp_path: Path) ->
         )
         assert media.codec is QUALITY_OUTPUTS[profile].codec
         assert media.container is QUALITY_OUTPUTS[profile].container
-        assert output_satisfies_specification(media, QUALITY_OUTPUTS[profile], 1000)
+        assert output_satisfies_specification(media, QUALITY_OUTPUTS[profile], 3000)
 
     source_media = await probe.probe(
         source,

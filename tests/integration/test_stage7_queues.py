@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from app.config import Settings
 from app.core.enums import (
@@ -429,6 +429,52 @@ async def test_tampered_upload_path_is_never_read_or_deleted(
     await backend.process(claimed, "upload-1")
     assert executor.requests == []
     assert external.read_bytes() == b"private"
+    failed = await uploads.get_upload_job(upload.id)
+    assert failed.status is QueueJobStatus.FAILED
+    assert failed.last_error_code == QueueErrorCode.UPLOAD_ARTIFACT_INVALID.value
+
+
+async def test_upload_artifact_symlink_escape_is_never_uploaded(
+    database: Database, tmp_path: Path
+) -> None:
+    clock = ManualClock()
+    artifacts = DownloadArtifactManager(tmp_path / "temp")
+    pipeline = ScriptedPipeline(artifacts, [object()])
+    track_id = await _track(database)
+    downloads = DownloadQueueService(database, max_size=1, clock=clock)
+    uploads = UploadQueueService(database, artifacts, clock=clock)
+    await downloads.submit(track_id=track_id, quality_profile=QualityProfile.MP3_128)
+    download_backend = DownloadWorkerBackend(database, pipeline, artifacts, clock=clock)
+    download = await download_backend.claim("download-1")
+    assert download is not None
+    await download_backend.process(download, "download-1")
+    upload = (await uploads.list_upload_jobs())[0]
+    async with database.engine.connect() as connection:
+        artifact_job_id, stored_path = (
+            await connection.execute(
+                select(UploadJob.artifact_job_id, UploadJob.artifact_path).where(
+                    UploadJob.id == upload.id
+                )
+            )
+        ).one()
+    artifact = artifacts.root / stored_path
+    assert artifact_job_id in artifact.parts
+    external = tmp_path / "outside-symlink-target.mp3"
+    external.write_bytes(b"must survive")
+    artifact.unlink()
+    try:
+        artifact.symlink_to(external)
+    except OSError:
+        pytest.skip("symlink creation is unavailable")
+
+    executor = ScriptedUploader([object()])
+    backend = UploadWorkerBackend(database, executor, uploads, clock=clock)
+    claimed = await backend.claim("upload-1")
+    assert claimed is not None
+    await backend.process(claimed, "upload-1")
+
+    assert executor.requests == []
+    assert external.read_bytes() == b"must survive"
     failed = await uploads.get_upload_job(upload.id)
     assert failed.status is QueueJobStatus.FAILED
     assert failed.last_error_code == QueueErrorCode.UPLOAD_ARTIFACT_INVALID.value

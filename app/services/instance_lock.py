@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import importlib
 import os
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
@@ -114,15 +115,29 @@ class ApplicationInstanceLock:
                 typed.seek(0)
                 typed.write(b"\0")
                 typed.flush()
-            typed.seek(0)
-            try:
-                msvcrt.locking(typed.fileno(), msvcrt.LK_NBLCK, 1)
-            except OSError as exc:
-                if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EDEADLK, 13, 36}:
-                    raise ApplicationInstanceAlreadyRunningError(
-                        "another application instance is already running"
-                    ) from exc
-                raise
+            # Windows may retain a byte-range lock briefly after a killed
+            # process has exited. Retry only this one-time startup operation;
+            # a genuinely live holder is still rejected within a bounded time.
+            deadline = time.monotonic() + 0.5
+            while True:
+                typed.seek(0)
+                try:
+                    msvcrt.locking(typed.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError as exc:
+                    if exc.errno not in {
+                        errno.EACCES,
+                        errno.EAGAIN,
+                        errno.EDEADLK,
+                        13,
+                        36,
+                    }:
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise ApplicationInstanceAlreadyRunningError(
+                            "another application instance is already running"
+                        ) from exc
+                    time.sleep(0.01)
             return
         fcntl: Any = importlib.import_module("fcntl")
 

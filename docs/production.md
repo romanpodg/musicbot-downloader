@@ -1,11 +1,11 @@
-# Production deployment (Stage 12.3)
+# Production deployment and release validation (Stage 12.4)
 
 > **Enforced single-instance constraint:** An OS advisory lock at
 > `<SQLite database>.instance.lock` permits at most one downloader runtime against a database on
 > this host. A second runtime exits before database recovery, workers, listeners, providers, or
 > polling. This is not distributed coordination; do not run replicas across hosts.
 
-Stage 12.3 packages the existing `python -m app.main` runtime as one service. The process owns
+The production image packages the existing `python -m app.main` runtime as one service. The process owns
 Telegram long polling, the in-process worker managers, the optional embedded Internal API, and one
 lazy serialized OnTheSpot child. It does not add a second downloader process, Redis, PostgreSQL, or
 persistent local media storage.
@@ -29,8 +29,27 @@ Build a versioned local image:
 ```bash
 docker compose build
 # or
-docker build -t musicbot-downloader:stage12.3 .
+docker build -t musicbot-downloader:stage12.4 .
 ```
+
+Stage 12.4 adds an opt-in `validation` target derived from the production runtime. It installs the
+locked dev group plus the test and release-validation assets needed for Linux acceptance; the
+final/default `runtime` target does not inherit that layer. Build and execute both targets with a
+fake, non-secret `.env`:
+
+```bash
+docker build -t musicbot-downloader:stage12.4 .
+docker build --target validation -t musicbot-downloader:stage12.4-validation .
+cp .env.example .env
+bash scripts/validate-production.sh
+```
+
+The smoke script fails fast, uses fresh uniquely named Docker volumes, removes only its own
+containers/volumes, and performs no Telegram/provider request or commercial media download. It
+exercises image identity/tools, fresh and upgrade/downgrade migrations, read-only-root preflight,
+persistent durable rows, online WAL backup, manual restore, POSIX process locks, and the complete
+non-external Linux suite. Its output is release evidence, not a committed machine result. See
+[`docs/release-checklist.md`](release-checklist.md) for the mandatory and optional external gates.
 
 ## Filesystem and permissions
 
@@ -98,8 +117,9 @@ chmod 600 .env
 Inject secrets through the deployment environment, Docker secrets adapted into environment
 variables, or a protected systemd `EnvironmentFile`. Do not place them in Docker build arguments,
 the Dockerfile, source control, image labels, or support logs. `.dockerignore` excludes `.env*`,
-local databases, provider config, temporary media, caches, Git metadata, IDE state, tests, and
-coverage artifacts; `.env.example` is the only safe exception.
+local databases, provider config, temporary media, caches, Git metadata, IDE state, and coverage
+artifacts; `.env.example` is the only safe exception. The test tree is available to the
+opt-in Docker validation target but is never copied into the final runtime image.
 
 Prepare `otsconfig.json` using OnTheSpot's supported trusted-host workflow, then copy it into
 `/data/onthespot` with owner 10001 and mode 0600. The production service does not run a GUI or
@@ -312,6 +332,41 @@ current DB if possible; validate the candidate backup with `PRAGMA integrity_che
 UID/GID 10001 ownership and restrictive permissions; run `alembic current`; run
 `python -m app.main --check`; then start one application instance and inspect logs/readiness.
 
+For the named Compose volume, the replacement step can be performed by a stopped, one-off
+non-root container. `validated-backup.db` below must already have passed integrity and revision
+validation. The pre-restore copy is intentionally preserved until the restored service is
+accepted:
+
+```bash
+docker compose stop musicbot
+docker compose run --rm --no-deps musicbot python -m app.tools.ops recovery inspect
+docker compose run --rm --no-deps musicbot sh -eu -c '
+  umask 077
+  cp /data/musicbot.db /data/musicbot.pre-restore.db
+  if test -e /data/musicbot.db-wal; then
+    cp /data/musicbot.db-wal /data/musicbot.pre-restore.db-wal
+    rm -- /data/musicbot.db-wal
+  fi
+  if test -e /data/musicbot.db-shm; then
+    cp /data/musicbot.db-shm /data/musicbot.pre-restore.db-shm
+    rm -- /data/musicbot.db-shm
+  fi
+  cp /data/validated-backup.db /data/musicbot.db.restore
+  chmod 600 /data/musicbot.db.restore
+  mv /data/musicbot.db.restore /data/musicbot.db
+'
+docker compose run --rm --no-deps musicbot alembic current
+docker compose run --rm --no-deps musicbot alembic check
+docker compose run --rm --no-deps musicbot python -m app.main --check
+docker compose run --rm --no-deps musicbot python -m app.tools.ops status --json
+docker compose up -d musicbot
+docker compose logs --tail 200 musicbot
+```
+
+Do not attempt replacement while the runtime lock is active. There is no restore command that can
+bypass this offline procedure, and an Alembic downgrade is not a substitute for restoring a
+validated pre-upgrade backup.
+
 ## Security and resource notes
 
 The default service drops all Linux capabilities and enables `no-new-privileges`; it needs no
@@ -319,9 +374,27 @@ privileged mode. Configure CPU/memory limits for observed workloads, leaving eno
 scratch disk for the largest expected transcode. Do not assume one universal limit. Keep outbound
 Internet access for Telegram/providers and keep inbound API access private.
 
-Known Stage 12.3 limitations: SQLite/single-host operation only; Telegram side effects remain
+Known limitations: SQLite/single-host operation only; Telegram side effects remain
 at-least-once around SQLite commits; ephemeral container replacement can lose pending UploadJob
 artifacts; cleanup deliberately waits for a conservative stale threshold; the reserve floor is not
 a byte reservation; no scheduled backups, automatic restore, or automated audit retention; no
 PostgreSQL, Redis, distributed workers, or multi-replica cleanup/recovery; no TLS automation; and no
 guarantee that the reserve floor prevents every concurrent ENOSPC event.
+
+## Licensing / distribution review
+
+The production image includes third-party software with its own licenses, including the pinned
+OnTheSpot dependency. Distribution obligations should be reviewed before publishing images or
+binaries to third parties. This is not legal advice.
+
+OnTheSpot is installed from exact commit `8ed6cf33ef772e6569d5014237e0fb4ce8b9e45d`
+(documented upstream v1.8.1; its installed package metadata reports `0.1.0`) and ships a GNU GPL
+version 2 license text under its installed distribution metadata. The application parent talks to
+the isolated OnTheSpot child over bounded JSON Lines and no upstream source tree is copied into
+this repository, but isolation must not be treated as automatically eliminating GPL obligations.
+The runtime image also retains installed license metadata for transitive distributions.
+
+The direct locked runtime dependencies declare or bundle MIT licenses for aiogram, aiosqlite,
+Alembic, FastAPI, Pydantic, pydantic-settings, and SQLAlchemy, and BSD-3-Clause for Uvicorn. Review
+the full transitive dependency set and the target distribution model before release. The factual
+inventory and release sign-off gate are in [`docs/release-checklist.md`](release-checklist.md).

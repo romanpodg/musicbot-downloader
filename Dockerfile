@@ -21,7 +21,7 @@ COPY app ./app
 RUN uv sync --locked --no-dev --extra onthespot --no-editable
 
 
-FROM python:3.12-slim-bookworm AS runtime
+FROM python:3.12-slim-bookworm AS runtime-base
 
 ARG OCI_SOURCE=""
 ARG OCI_REVISION=""
@@ -65,3 +65,29 @@ COPY --chown=root:root alembic.ini pyproject.toml ./
 
 USER 10001:10001
 CMD ["python", "-m", "app.main"]
+
+
+# Opt-in Linux acceptance target. The default production target below does not
+# inherit this layer and therefore contains no test or developer dependencies.
+FROM runtime-base AS validation
+
+USER root
+COPY --from=uv /uv /usr/local/bin/uv
+COPY --chown=root:root uv.lock README.md ./
+COPY --chown=root:root tests ./tests
+COPY --chown=root:root .dockerignore Dockerfile compose.yaml ./
+COPY --chown=root:root docs ./docs
+COPY --chown=root:root scripts ./scripts
+COPY --chown=root:root .github ./.github
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/* \
+    && UV_PROJECT_ENVIRONMENT=/opt/venv uv sync \
+        --locked --extra dev --extra onthespot --no-editable
+
+USER 10001:10001
+CMD ["pytest", "-m", "not external", "-p", "no:cacheprovider", "-ra"]
+
+
+# Keep the production runtime as the default/final build target.
+FROM runtime-base AS runtime

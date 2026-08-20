@@ -29,14 +29,17 @@ Current delivery roadmap:
 - Stage 12.1: Production Packaging and Runtime Hardening Foundation.
 - Stage 12.2: Crash Recovery and Stale Artifact Cleanup.
 - Stage 12.3: Operational Audit and Recovery Tooling.
+- Stage 12.4: Final Production Validation and Release Readiness (evidence-gated; see checklist).
 
 Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
 deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage
 12.3 adds a bounded append-only operational audit, offline-safe inspection/recovery tooling,
 validated online SQLite backup, and an OS-level one-runtime lock per SQLite database.
 
-See [the production deployment guide](docs/production.md) for the Stage 12.3 container,
-filesystem, migration, preflight, security, backup, and upgrade contract.
+See [the production deployment guide](docs/production.md) for the container, filesystem,
+migration, preflight, security, backup, restore, and upgrade contract. Stage 12.4 acceptance is
+defined by [the release checklist](docs/release-checklist.md): it cannot be marked complete without
+an actual Linux production-image build and executed container evidence.
 
 ## Architecture
 

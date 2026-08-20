@@ -2,7 +2,7 @@ services:
   musicbot:
     build:
       context: .
-    image: musicbot-downloader:stage12.1
+    image: musicbot-downloader:stage12.4
     restart: unless-stopped
     stop_grace_period: 90s
     env_file:

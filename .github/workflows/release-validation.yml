@@ -1,0 +1,75 @@
+name: release-validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-and-container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.20"
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Verify locked host environment
+        run: |
+          uv lock --check
+          uv sync --locked --extra dev --extra onthespot
+          uv lock --check
+
+      - name: Run host quality and regression gates
+        run: |
+          ffmpeg -version
+          ffprobe -version
+          uv run ruff format --check .
+          uv run ruff check .
+          uv run mypy app
+          uv run pytest -m "not external" -ra
+          git diff --check
+
+      - name: Run host migration and preflight gates
+        env:
+          DATABASE_URL: sqlite+aiosqlite:////tmp/musicbot-stage124-ci.db
+          TEMP_DIR: /tmp/musicbot-stage124
+          TEMP_DISK_MIN_FREE_BYTES: "0"
+          BOT_TOKEN: 123456:STAGE124_FAKE_TOKEN
+          TELEGRAM_CACHE_CHAT_ID: "-1001204"
+        run: |
+          mkdir -p "$TEMP_DIR"
+          uv run alembic upgrade head
+          uv run alembic check
+          uv run alembic current
+          uv run alembic heads
+          uv run python -m app.main --help
+          uv run python -m app.main --check
+          uv run python -m app.tools.ops --help
+          uv run python -m app.tools.ops status --json
+
+      - name: Build production and validation images
+        run: |
+          docker build \
+            --build-arg "OCI_REVISION=${GITHUB_SHA}" \
+            --tag musicbot-downloader:stage12.4 .
+          docker build \
+            --target validation \
+            --tag musicbot-downloader:stage12.4-validation .
+
+      - name: Exercise production image on Linux
+        env:
+          MUSICBOT_IMAGE: musicbot-downloader:stage12.4
+          MUSICBOT_VALIDATION_IMAGE: musicbot-downloader:stage12.4-validation
+        run: |
+          cp .env.example .env
+          bash scripts/validate-production.sh
