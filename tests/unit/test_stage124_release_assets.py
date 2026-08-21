@@ -15,10 +15,14 @@ def test_release_smoke_is_fail_fast_scoped_and_noninteractive() -> None:
     assert "alembic downgrade 20260820_0010" in script
     assert "python -m app.main --check" in script
     assert "python -m app.tools.ops backup create" in script
+    assert "out-of-date schema unexpectedly passed" in script
+    assert "onthespot_version=" in script
     assert "--read-only" in script
     assert "--signal KILL" in script
     assert "pytest" in script and "not external" in script
     assert "STAGE12_4_CONTAINER_VALIDATION=PASS" in script
+    assert "MSYS2_ARG_CONV_EXCL='*'" in script
+    assert "cygpath -w" in script
     assert "read -" not in script
     assert "docker volume prune" not in script
     assert "docker system prune" not in script

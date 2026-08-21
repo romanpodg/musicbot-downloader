@@ -11,7 +11,16 @@ DATA_VOLUME="musicbot-stage124-data-${RUN_ID}"
 UPGRADE_VOLUME="musicbot-stage124-upgrade-${RUN_ID}"
 LOCK_CONTAINER="musicbot-stage124-lock-${RUN_ID}"
 WRITER_CONTAINER="musicbot-stage124-writer-${RUN_ID}"
-FIXTURE_MOUNT="$ROOT_DIR/scripts/container_fixture.py:/validation/container_fixture.py:ro"
+FIXTURE_PATH="$ROOT_DIR/scripts/container_fixture.py"
+
+# Git Bash/MSYS rewrites Linux container paths (for example /tmp/musicbot)
+# before passing them to the Windows Docker CLI. Disable that rewriting for
+# Docker arguments, while giving Docker the one host bind mount in native form.
+if [[ -n "${MSYSTEM:-}" ]] && command -v cygpath >/dev/null 2>&1; then
+  FIXTURE_PATH="$(cygpath -w "$FIXTURE_PATH")"
+  export MSYS2_ARG_CONV_EXCL='*'
+fi
+FIXTURE_MOUNT="$FIXTURE_PATH:/validation/container_fixture.py:ro"
 
 cleanup() {
   docker rm --force "$LOCK_CONTAINER" "$WRITER_CONTAINER" >/dev/null 2>&1 || true
@@ -60,7 +69,9 @@ docker run --rm --entrypoint python "$IMAGE" -m app.tools.ops --help
 docker run --rm --entrypoint python "$IMAGE" -c \
   "import importlib.util as u; assert all(u.find_spec(n) is None for n in ('pytest','ruff','mypy'))"
 docker run --rm --entrypoint sh "$IMAGE" -ec \
-  "test ! -e /app/.env; test ! -e /app/tests; test ! -e /app/musicbot.db; test -d /app/alembic; test -f /app/alembic.ini"
+  'for executable in uv git gcc cc make pytest ruff mypy; do ! command -v "$executable" >/dev/null 2>&1; done; test ! -e /app/.env; test ! -e /app/tests; test ! -e /app/musicbot.db; test -d /app/alembic; test -f /app/alembic.ini; test -f /app/app/i18n/locales/en/messages.json; test -f /app/app/i18n/locales/ru/messages.json'
+docker run --rm --entrypoint python "$IMAGE" -c \
+  "from importlib.metadata import distribution; d=distribution('onthespot'); files=[p for p in d.files or () if str(p).endswith('dist-info/licenses/LICENSE')]; assert d.version == '0.1.0' and files; print(f'onthespot_version={d.version} license={files[0]}')"
 
 echo '== fresh database and read-only-root preflight =='
 run_data alembic upgrade head
@@ -83,6 +94,11 @@ docker run --rm "${common[@]}" --volume "$UPGRADE_VOLUME:/data" "$IMAGE" \
 docker run --rm "${common[@]}" --volume "$UPGRADE_VOLUME:/data" \
   --volume "$FIXTURE_MOUNT" --entrypoint python "$IMAGE" \
   /validation/container_fixture.py seed-preupgrade
+if docker run --rm "${common[@]}" --volume "$UPGRADE_VOLUME:/data" "$IMAGE" \
+  python -m app.main --check; then
+  echo 'out-of-date schema unexpectedly passed production preflight' >&2
+  exit 1
+fi
 docker run --rm "${common[@]}" --volume "$UPGRADE_VOLUME:/data" "$IMAGE" alembic upgrade head
 docker run --rm "${common[@]}" --volume "$UPGRADE_VOLUME:/data" \
   --volume "$FIXTURE_MOUNT" --entrypoint python "$IMAGE" \

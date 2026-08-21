@@ -167,7 +167,9 @@ async def test_worker_crash_is_terminal_and_does_not_respawn(tmp_path: Path) -> 
 
 @pytest.mark.asyncio
 async def test_request_timeout_terminates_worker(tmp_path: Path) -> None:
-    client = _client(tmp_path, request_timeout=1, FAKE_WORKER_MODE="hang")
+    # Leave enough headroom for a new Windows interpreter under full-suite
+    # load; the fake operation still hangs for ten seconds.
+    client = _client(tmp_path, request_timeout=3, FAKE_WORKER_MODE="hang")
     assert (await client.availability()).available is True
     with pytest.raises(ProviderUnavailable):
         await client.get_metadata("https://example.invalid")
@@ -225,7 +227,8 @@ async def test_malformed_source_response_is_rejected(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_source_check_timeout_terminates_worker(tmp_path: Path) -> None:
-    client = _client(tmp_path, request_timeout=1, FAKE_WORKER_MODE="hang")
+    client = _client(tmp_path, request_timeout=3, FAKE_WORKER_MODE="hang")
+    assert (await client.availability()).available is True
     with pytest.raises(ProviderUnavailable):
         await client.check_source("bandcamp", "track-id")
     assert client.process_id is None

@@ -103,6 +103,58 @@ def _seed_durable() -> None:
             ) VALUES (1, 2, 3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             """
         )
+        download_id = connection.execute(
+            """
+            INSERT INTO download_jobs (
+                track_id, quality_profile, status, attempt_count, queued_at,
+                available_at, started_at, finished_at, cancel_requested,
+                created_at, updated_at
+            ) VALUES (
+                ?, 'MP3_320', 'SUCCEEDED', 1, CURRENT_TIMESTAMP,
+                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0,
+                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+            """,
+            (track_id,),
+        ).lastrowid
+        if download_id is None:
+            raise RuntimeError("download history fixture was not inserted")
+        connection.execute(
+            """
+            INSERT INTO upload_jobs (
+                download_job_id, track_id, quality_profile, status,
+                artifact_job_id, artifact_path, source_track_source_id,
+                source_provider, source_provider_track_id, operation,
+                transcoded, attempt_count, queued_at, available_at, started_at,
+                finished_at, cancel_requested, created_at, updated_at
+            ) VALUES (
+                ?, ?, 'MP3_320', 'SUCCEEDED', ?, ?, ?, 'spotify',
+                'stage124-source', 'DIRECT', 0, 1, CURRENT_TIMESTAMP,
+                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0,
+                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+            """,
+            (
+                download_id,
+                track_id,
+                "1234567890abcdef1234567890abcdef",
+                "1234567890abcdef1234567890abcdef/final.mp3",
+                source_id,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO job_subscribers (
+                id, download_job_id, status, request_key, completed_at,
+                created_at, updated_at
+            ) VALUES (
+                '12345678-1234-1234-1234-123456789012', ?, 'READY',
+                'stage124-subscriber', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+                CURRENT_TIMESTAMP
+            )
+            """,
+            (download_id,),
+        )
         connection.execute(
             """
             INSERT INTO deep_link_registry (
@@ -136,6 +188,9 @@ def _verify_durable(expected_username: str) -> None:
         "track_sources": 1,
         "telegram_file_cache": 1,
         "runtime_settings": 1,
+        "download_jobs": 1,
+        "upload_jobs": 1,
+        "job_subscribers": 1,
         "deep_link_registry": 1,
         "operational_audit_events": 1,
     }
@@ -148,6 +203,7 @@ def _verify_durable(expected_username: str) -> None:
             "SELECT username FROM users WHERE telegram_id=1204001"
         ).fetchone()
         journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+        foreign_keys = connection.execute("PRAGMA foreign_keys").fetchone()[0]
         busy_timeout = connection.execute("PRAGMA busy_timeout").fetchone()[0]
         integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
@@ -155,8 +211,10 @@ def _verify_durable(expected_username: str) -> None:
         raise RuntimeError(f"durable row counts mismatch: {observed!r}")
     if username != (expected_username,):
         raise RuntimeError(f"username mismatch: {username!r}")
-    if str(journal_mode).lower() != "wal" or busy_timeout != 5000:
-        raise RuntimeError(f"SQLite pragma mismatch: {journal_mode!r}, {busy_timeout!r}")
+    if str(journal_mode).lower() != "wal" or foreign_keys != 1 or busy_timeout != 5000:
+        raise RuntimeError(
+            f"SQLite pragma mismatch: {journal_mode!r}, {foreign_keys!r}, {busy_timeout!r}"
+        )
     if integrity != "ok" or revision != "20260820_0011":
         raise RuntimeError(f"database validation failed: {integrity!r}, {revision!r}")
     media_suffixes = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".webm"}
@@ -169,7 +227,8 @@ def _verify_durable(expected_username: str) -> None:
         raise RuntimeError(f"unexpected persistent media: {persistent_media!r}")
     print(
         "durable-fixture=verified "
-        f"journal_mode={journal_mode} busy_timeout={busy_timeout} revision={revision}"
+        f"journal_mode={journal_mode} foreign_keys={foreign_keys} "
+        f"busy_timeout={busy_timeout} revision={revision}"
     )
 
 

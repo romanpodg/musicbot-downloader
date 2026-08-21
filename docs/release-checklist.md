@@ -45,8 +45,9 @@ Release verdicts are:
 - [x] Read-only-root preflight passes with only `/data` and controlled temporary storage writable.
 - [x] Fresh DB installation, representative `0010 -> 0011`, isolated `0011 -> 0010 -> 0011`,
   schema mismatch refusal, WAL, foreign keys, and 5000 ms busy timeout are verified.
-- [x] Users, Tracks, TrackSources, Telegram cache metadata, worker settings, Deep Links, and audit
-  rows survive container recreation with the same `/data`; completed audio is absent from `/data`.
+- [x] Users, Tracks, TrackSources, queue/history and subscriber rows, Telegram cache metadata,
+  worker settings, Deep Links, and audit rows survive container recreation with the same `/data`;
+  completed audio is absent from `/data`.
 
 ### Filesystem, lifecycle, recovery, and backup
 
@@ -129,6 +130,23 @@ Dockerfile inspection alone; retain the actual workflow/container logs as eviden
 - Validation fixes: the validation target now includes its release-test assets; the Stage 9
   regression writes only under pytest temporary storage; the synthetic FFmpeg fixture uses
   deterministic stereo input so AAC bitrate validation is meaningful.
+- External Telegram/provider credential checks were not executed. Deterministic verdict:
+  `READY WITH EXTERNAL VERIFICATION PENDING`.
+
+### 2026-08-21 local deterministic validation
+
+- Candidate: `6f8e625` plus the preserved Stage 12.4 working tree documented by `git diff`.
+- Host: Python 3.12.13; 473 passed, 4 platform-inapplicable skips, 4 external deselected,
+  0 failed. The skipped FFmpeg and symlink cases passed in the Linux image.
+- Production image: `sha256:2ae1e818da453731e9937555e6e748a4cfbfcde295e7902def786f33e6aea9fb`,
+  `linux/amd64`, 342,288,472 bytes, Python 3.12.14, UID/GID `10001:10001`.
+- Linux validation image: 477 passed, 0 skipped, 4 external deselected, 0 failed.
+- Script result: `STAGE12_4_CONTAINER_VALIDATION=PASS`.
+- Validation fixes: Git Bash now preserves Linux Docker arguments while converting the fixture
+  bind path; the durable recreation fixture includes queue/subscriber history and all required
+  SQLite pragmas; schema mismatch, runtime tool absence, locale files, and installed OnTheSpot
+  license metadata are explicit image gates; timeout tests leave bounded Windows process-start
+  headroom while still forcing the ten-second fake operation to time out.
 - External Telegram/provider credential checks were not executed. Deterministic verdict:
   `READY WITH EXTERNAL VERIFICATION PENDING`.
 

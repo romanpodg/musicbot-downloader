@@ -1,7 +1,7 @@
 # Musicbot Downloader
 
 Production-oriented foundation for a future Telegram music downloader service. This repository
-implements Stage 0 through Stage 12.3: canonical recording identity, ambiguity-safe matching,
+implements Stage 0 through the Stage 12.4 deterministic production-validation baseline: canonical recording identity, ambiguity-safe matching,
 verified cross-provider discovery, runtime provider candidate resolution, quality-dependent
 download planning, safe one-shot execution, persistent asynchronous queue orchestration, and
 durable SingleFlight subscribers, a bot-scoped Telegram completed-result cache, and the
@@ -34,7 +34,9 @@ Current delivery roadmap:
 Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
 deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage
 12.3 adds a bounded append-only operational audit, offline-safe inspection/recovery tooling,
-validated online SQLite backup, and an OS-level one-runtime lock per SQLite database.
+validated online SQLite backup, and an OS-level one-runtime lock per SQLite database. Stage 12.4
+adds repeatable credential-free Linux/container release validation; real Telegram/provider checks
+remain explicitly opt-in, and no Stage 13 provider-account features are implemented.
 
 See [the production deployment guide](docs/production.md) for the container, filesystem,
 migration, preflight, security, backup, restore, and upgrade contract. Stage 12.4 acceptance is
