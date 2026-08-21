@@ -20,6 +20,7 @@ from app.services.admin_management import (
 )
 from app.services.admin_overview import AdminOverviewError, AdminOverviewService
 from app.services.authorization import AuthorizationError
+from app.services.provider_accounts import ProviderAccountManagementService
 from app.services.provider_health import ProviderHealthService
 from app.services.runtime_worker_control import (
     RuntimeWorkerControlService,
@@ -38,6 +39,11 @@ from app.telegram.admin_presentation import (
     AdminCallbackAction,
     AdminPresentation,
     parse_admin_callback,
+)
+from app.telegram.provider_accounts_presentation import (
+    ProviderAccountsCallbackAction,
+    ProviderAccountsPresentation,
+    parse_provider_accounts_callback,
 )
 from app.telegram.provider_health_presentation import (
     ProviderHealthCallbackAction,
@@ -64,6 +70,8 @@ class AdminHandlerDependencies:
     worker_presentation: WorkerControlPresentation | None = None
     provider_health: ProviderHealthService | None = None
     provider_health_presentation: ProviderHealthPresentation | None = None
+    provider_accounts: ProviderAccountManagementService | None = None
+    provider_accounts_presentation: ProviderAccountsPresentation | None = None
 
 
 def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
@@ -520,6 +528,100 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
                 callback,
                 presentation.text("admin.provider_health_check_failed", locale),
                 presentation.keyboard(locale),
+            )
+
+    @router.callback_query(F.data.startswith("adm5:"))
+    async def provider_accounts_callback(callback: CallbackQuery) -> None:
+        user = await _observe_callback(callback, dependencies.users)
+        locale = dependencies.users.locale_for(user)
+        service = dependencies.provider_accounts
+        presentation = dependencies.provider_accounts_presentation
+        if service is None or presentation is None:
+            await callback.answer(
+                dependencies.presentation.text("admin.invalid_action", locale), show_alert=True
+            )
+            return
+
+        # Authority is established before callback parsing or any account operation.
+        try:
+            await service.authorize(user.id)
+        except AuthorizationError:
+            await _deny_callback(
+                callback,
+                dependencies.presentation,
+                locale,
+                key="admin.provider_accounts_access_denied",
+            )
+            return
+        if not isinstance(callback.message, Message) or (
+            callback.message.chat.type != ChatType.PRIVATE
+        ):
+            await callback.answer(
+                dependencies.presentation.text("admin.private_chat_only", locale), show_alert=True
+            )
+            return
+
+        parsed = parse_provider_accounts_callback(callback.data)
+        if parsed is None:
+            await callback.answer(
+                dependencies.presentation.text("admin.invalid_action", locale), show_alert=True
+            )
+            return
+        try:
+            if parsed.action is ProviderAccountsCallbackAction.BACK:
+                result = await dependencies.admin.get_overview(user.id)
+                await _edit_or_send(
+                    callback,
+                    dependencies.presentation.overview_text(result, locale),
+                    dependencies.presentation.keyboard(
+                        locale, authoritative_owner=result.access.is_authoritative_owner
+                    ),
+                )
+            elif parsed.action is ProviderAccountsCallbackAction.OPEN:
+                overview = await service.get_overview(user.id)
+                await _edit_or_send(
+                    callback,
+                    presentation.overview_text(overview, locale),
+                    presentation.overview_keyboard(overview, locale),
+                )
+            elif parsed.action is ProviderAccountsCallbackAction.DETAIL:
+                if parsed.provider is None:
+                    raise ValueError("provider is required")
+                status = await service.get_status(user.id, parsed.provider)
+                await _edit_or_send(
+                    callback,
+                    presentation.detail_text(status, locale),
+                    presentation.detail_keyboard(status, locale),
+                )
+            elif parsed.provider is None:
+                overview = await service.refresh(user.id)
+                await _edit_or_send(
+                    callback,
+                    presentation.overview_text(overview, locale),
+                    presentation.overview_keyboard(overview, locale),
+                )
+            else:
+                status = await service.refresh_status(user.id, parsed.provider)
+                await _edit_or_send(
+                    callback,
+                    presentation.detail_text(status, locale),
+                    presentation.detail_keyboard(status, locale),
+                )
+            await callback.answer()
+        except AuthorizationError:
+            await _deny_callback(
+                callback,
+                dependencies.presentation,
+                locale,
+                key="admin.provider_accounts_access_denied",
+            )
+        except Exception:
+            logger.error(
+                "Provider account callback failed",
+                extra={"action": "provider_accounts", "user_id": user.id},
+            )
+            await callback.answer(
+                presentation.text("admin.provider_accounts_failed", locale), show_alert=True
             )
 
     return router

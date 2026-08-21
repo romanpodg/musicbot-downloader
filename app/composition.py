@@ -12,6 +12,10 @@ from aiogram import Dispatcher
 from app.config import Settings
 from app.core.models import TelegramBotIdentity
 from app.i18n import LocalizationService
+from app.providers.account_management import (
+    ProviderAccountRuntimeProbe,
+    ProviderRuntimeAccountBackend,
+)
 from app.providers.base import MusicProvider
 from app.services.admin_management import AdministratorManagementService
 from app.services.admin_overview import AdminOverviewService
@@ -26,6 +30,8 @@ from app.services.deep_links import DeepLinkRegistryService
 from app.services.delivery import DeliveryPreparationService
 from app.services.download_pipeline import DownloadPipeline, NativeDownloadBoundary
 from app.services.media import MediaProbe, Transcoder
+from app.services.provider_accounts import ProviderAccountManagementService
+from app.services.provider_authorization import ProviderAuthorizationCoordinator
 from app.services.provider_health import ProviderHealthProbe, ProviderHealthService
 from app.services.provider_resolution import ProviderResolver
 from app.services.quality_resolution import QualityResolver
@@ -58,6 +64,7 @@ from app.telegram.admin_management_presentation import AdminManagementPresentati
 from app.telegram.admin_presentation import AdminPresentation
 from app.telegram.handlers import TelegramHandlerDependencies, create_stage9_router
 from app.telegram.presentation import TelegramPresentation
+from app.telegram.provider_accounts_presentation import ProviderAccountsPresentation
 from app.telegram.provider_health_presentation import ProviderHealthPresentation
 from app.telegram.worker_control_presentation import WorkerControlPresentation
 
@@ -123,6 +130,8 @@ class Stage9Components:
     admin_management: AdministratorManagementService
     worker_control: RuntimeWorkerControlService
     provider_health: ProviderHealthService
+    provider_authorization: ProviderAuthorizationCoordinator
+    provider_accounts: ProviderAccountManagementService
     deep_links: DeepLinkRegistryService
     crash_recovery: CrashRecoveryService
     artifact_cleanup: StaleArtifactCleanupService
@@ -150,6 +159,7 @@ class Stage9Components:
             self.album_coordinator.stop,
             self.delivery_fanout.stop,
             self.queue_manager.stop,
+            self.provider_authorization.close,
             self.provider.close,
             self.stage8.close,
         ):
@@ -290,6 +300,12 @@ async def compose_stage9(
         queue_manager,
     )
     provider_health = ProviderHealthService(cast(ProviderHealthProbe, provider), authorization)
+    provider_authorization = ProviderAuthorizationCoordinator()
+    provider_accounts = ProviderAccountManagementService(
+        ProviderRuntimeAccountBackend(cast(ProviderAccountRuntimeProbe, provider)),
+        authorization,
+        provider_authorization,
+    )
     dispatcher = Dispatcher()
     dispatcher.include_router(
         create_admin_router(
@@ -303,6 +319,8 @@ async def compose_stage9(
                 WorkerControlPresentation(i18n),
                 provider_health,
                 ProviderHealthPresentation(i18n),
+                provider_accounts,
+                ProviderAccountsPresentation(i18n),
             )
         )
     )
@@ -374,6 +392,8 @@ async def compose_stage9(
         admin_management=admin_management,
         worker_control=worker_control,
         provider_health=provider_health,
+        provider_authorization=provider_authorization,
+        provider_accounts=provider_accounts,
         deep_links=deep_links,
         crash_recovery=crash_recovery,
         artifact_cleanup=artifact_cleanup,

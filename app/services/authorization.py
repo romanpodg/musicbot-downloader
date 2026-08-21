@@ -17,6 +17,7 @@ class AdminPermission(StrEnum):
     ADMIN_PANEL_VIEW = "ADMIN_PANEL_VIEW"
     WORKERS_MANAGE = "WORKERS_MANAGE"
     PROVIDER_HEALTH_VIEW = "PROVIDER_HEALTH_VIEW"
+    PROVIDER_ACCOUNTS_MANAGE = "PROVIDER_ACCOUNTS_MANAGE"
     OWNER_ONLY = "OWNER_ONLY"
 
 
@@ -87,6 +88,7 @@ class TelegramAuthorizationService:
                     AdminPermission.ADMIN_PANEL_VIEW,
                     AdminPermission.WORKERS_MANAGE,
                     AdminPermission.PROVIDER_HEALTH_VIEW,
+                    AdminPermission.PROVIDER_ACCOUNTS_MANAGE,
                     AdminPermission.OWNER_ONLY,
                 )
             )
@@ -118,7 +120,10 @@ class TelegramAuthorizationService:
 
         if context.effective_role is UserRole.OWNER and not context.is_authoritative_owner:
             code = AuthorizationFailureCode.OWNER_IDENTITY_MISMATCH
-        elif permission is AdminPermission.OWNER_ONLY:
+        elif permission in {
+            AdminPermission.OWNER_ONLY,
+            AdminPermission.PROVIDER_ACCOUNTS_MANAGE,
+        }:
             code = AuthorizationFailureCode.OWNER_REQUIRED
         else:
             code = AuthorizationFailureCode.ACCESS_DENIED

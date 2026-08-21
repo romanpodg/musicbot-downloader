@@ -12,6 +12,10 @@ from app.telegram.admin_management_presentation import (
     AdminManagementCallbackAction,
     encode_admin_management_callback,
 )
+from app.telegram.provider_accounts_presentation import (
+    ProviderAccountsCallbackAction,
+    encode_provider_accounts_callback,
+)
 from app.telegram.provider_health_presentation import (
     ProviderHealthCallbackAction,
     encode_provider_health_callback,
@@ -165,6 +169,16 @@ class AdminPresentation:
                         text=self.text("admin.administrators", locale),
                         callback_data=encode_admin_management_callback(
                             AdminManagementCallbackAction.LIST, page=0
+                        ),
+                    )
+                ]
+            )
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=self.text("admin.provider_accounts", locale),
+                        callback_data=encode_provider_accounts_callback(
+                            ProviderAccountsCallbackAction.OPEN
                         ),
                     )
                 ]

@@ -83,6 +83,7 @@ def test_admin_presentation_renders_zero_normal_and_large_values_in_both_locales
     ]
     assert owner_callbacks == [
         "adm2:l:0",
+        "adm5:o",
         "adm3:w",
         "adm4:h",
         "adm1:refresh",

@@ -33,6 +33,8 @@ from app.core.models import (
 from app.i18n import LocalizationService
 from app.services.artifacts import DownloadArtifactManager
 from app.services.delivery import DeliveryPreparationService
+from app.services.provider_accounts import ProviderAccountManagementService
+from app.services.provider_authorization import ProviderAuthorizationCoordinator
 from app.services.queues import UploadQueueService
 from app.services.singleflight import SubscriberNotifier
 from app.services.telegram_cache import TelegramFileCacheService
@@ -722,6 +724,8 @@ async def test_runtime_composition_starts_and_stops_without_leaked_tasks(
         database, settings, provider, gateway=Gateway()
     )
     assert components.dispatcher.sub_routers
+    assert isinstance(components.provider_authorization, ProviderAuthorizationCoordinator)
+    assert isinstance(components.provider_accounts, ProviderAccountManagementService)
     await components.start()
     await asyncio.sleep(0)
     await components.stop()
