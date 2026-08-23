@@ -6,13 +6,21 @@ import logging
 from dataclasses import dataclass
 
 from aiogram import F, Router
+from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from aiogram.types import User as AiogramUser
 
-from app.core.provider_accounts import ProviderAuthorizationStartStatus
+from app.core.enums import MusicProviderName
+from app.core.provider_accounts import (
+    ProviderAccountErrorCode,
+    ProviderAuthorizationOutcome,
+    ProviderAuthorizationOutcomeStatus,
+    ProviderAuthorizationStartStatus,
+    SensitiveValue,
+)
 from app.services.admin_management import (
     AdministratorManagementService,
     AdminManagementError,
@@ -79,6 +87,104 @@ class AdminHandlerDependencies:
 
 def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
     router = Router(name="stage10-admin-panel")
+    last_sensitive_message_by_chat: dict[int, int] = {}
+
+    @router.message(F.text & ~F.text.startswith("/"))
+    async def deezer_sensitive_input(message: Message) -> None:
+        """Consume only the authoritative OWNER's current private Deezer generation."""
+
+        service = dependencies.provider_accounts
+        presentation = dependencies.provider_accounts_presentation
+        if (
+            service is None
+            or presentation is None
+            or message.chat.type != ChatType.PRIVATE
+            or message.from_user is None
+            or message.forward_origin is not None
+        ):
+            raise SkipHandler
+        try:
+            user = await _observe_message(message, dependencies.users)
+            if user is None:
+                raise SkipHandler
+            await service.authorize(user.id)
+            challenge = await service.pending_sensitive_challenge(user.id, MusicProviderName.DEEZER)
+        except AuthorizationError:
+            raise SkipHandler from None
+        except SkipHandler:
+            raise
+        except Exception:
+            raise SkipHandler from None
+        if challenge is None:
+            raise SkipHandler
+
+        # Recheck the generation immediately before the destructive security gate.
+        try:
+            current = await service.pending_sensitive_challenge(user.id, MusicProviderName.DEEZER)
+        except Exception:
+            raise SkipHandler from None
+        if current is None or current.flow_id != challenge.flow_id:
+            raise SkipHandler
+        previous_message_id = last_sensitive_message_by_chat.get(message.chat.id, 0)
+        if message.message_id <= previous_message_id:
+            raise SkipHandler
+        last_sensitive_message_by_chat[message.chat.id] = message.message_id
+        locale = dependencies.users.locale_for(user)
+        try:
+            await message.delete()
+        except Exception:
+            try:
+                await service.fail_sensitive_input(
+                    user.id,
+                    MusicProviderName.DEEZER,
+                    challenge.flow_id,
+                    ProviderAccountErrorCode.DEEZER_AUTH_MESSAGE_DELETE_FAILED,
+                )
+            except Exception:
+                pass
+            try:
+                await message.answer(presentation.text("admin.deezer_auth_delete_failed", locale))
+            except Exception:
+                pass
+            return
+
+        progress: Message | None = None
+        try:
+            progress = await message.answer(presentation.text("admin.deezer_auth_progress", locale))
+        except Exception:
+            pass
+        try:
+            credential = SensitiveValue(message.text or " ")
+            outcome = await service.submit_sensitive_secret(
+                user.id,
+                MusicProviderName.DEEZER,
+                challenge.flow_id,
+                credential,
+            )
+            del credential
+        except Exception:
+            try:
+                outcome = await service.fail_sensitive_input(
+                    user.id,
+                    MusicProviderName.DEEZER,
+                    challenge.flow_id,
+                    ProviderAccountErrorCode.AUTHORIZATION_FAILED,
+                )
+            except Exception:
+                outcome = ProviderAuthorizationOutcome(
+                    MusicProviderName.DEEZER,
+                    ProviderAuthorizationOutcomeStatus.FAILED,
+                    ProviderAccountErrorCode.AUTHORIZATION_FAILED,
+                )
+        if progress is not None:
+            try:
+                status = await service.get_status(user.id, MusicProviderName.DEEZER)
+                await progress.edit_text(
+                    presentation.authorization_result_text(status, outcome, locale),
+                    reply_markup=presentation.detail_keyboard(status, locale),
+                )
+            except Exception:
+                pass
 
     @router.message(Command("admin"))
     async def admin_command(message: Message) -> None:
@@ -626,7 +732,13 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
                     )
                     if started.status is ProviderAuthorizationStartStatus.FAILED:
                         await callback.answer(
-                            presentation.text("admin.tidal_auth_failed", locale), show_alert=True
+                            presentation.text(
+                                "admin.deezer_auth_failed"
+                                if parsed.provider is MusicProviderName.DEEZER
+                                else "admin.tidal_auth_failed",
+                                locale,
+                            ),
+                            show_alert=True,
                         )
                         return
             elif parsed.action is ProviderAccountsCallbackAction.CANCEL:

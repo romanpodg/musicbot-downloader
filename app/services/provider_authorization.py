@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from dataclasses import dataclass
 from typing import Protocol, cast
 
@@ -18,6 +19,7 @@ from app.core.provider_accounts import (
     ProviderAuthorizationStartStatus,
     ProviderCompoundCredentialInput,
     ProviderSecretInput,
+    ProviderSensitiveInputChallenge,
 )
 
 
@@ -61,6 +63,15 @@ class _ActiveAuthorization:
     challenge: ProviderAuthorizationChallenge | None = None
 
 
+@dataclass(slots=True)
+class _ActiveSensitiveAuthorization:
+    flow_id: str
+    completion: asyncio.Future[ProviderAuthorizationOutcome]
+    driver: SensitiveSecretAuthorizationDriver
+    challenge: ProviderSensitiveInputChallenge
+    submission_task: asyncio.Task[ProviderAuthorizationOutcome] | None = None
+
+
 class ProviderAuthorizationCoordinator:
     """Allow at most one ephemeral authorization flow per provider per process."""
 
@@ -68,12 +79,15 @@ class ProviderAuthorizationCoordinator:
         self,
         drivers: dict[
             tuple[MusicProviderName, ProviderAuthorizationMethod],
-            ProviderAuthorizationDriver | BrowserDeviceAuthorizationDriver,
+            ProviderAuthorizationDriver
+            | BrowserDeviceAuthorizationDriver
+            | SensitiveSecretAuthorizationDriver,
         ]
         | None = None,
     ) -> None:
         self._drivers = dict(drivers or {})
         self._active: dict[MusicProviderName, _ActiveAuthorization] = {}
+        self._sensitive_active: dict[MusicProviderName, _ActiveSensitiveAuthorization] = {}
         self._completed: dict[MusicProviderName, tuple[str, ProviderAuthorizationOutcome]] = {}
         self._cleanup_tasks: set[asyncio.Task[None]] = set()
         self._lock = asyncio.Lock()
@@ -86,12 +100,24 @@ class ProviderAuthorizationCoordinator:
     async def is_active(self, provider: MusicProviderName) -> bool:
         async with self._lock:
             active = self._active.get(provider)
-            return active is not None and not active.task.done()
+            sensitive = self._sensitive_active.get(provider)
+            return (active is not None and not active.task.done()) or (
+                sensitive is not None and not sensitive.completion.done()
+            )
 
     async def start(
         self, request: ProviderAuthorizationRequest
     ) -> ProviderAuthorizationStartOutcome:
         driver = self._drivers.get((request.provider, request.method))
+        authorize_secret = getattr(driver, "authorize_secret", None)
+        if (
+            request.method is ProviderAuthorizationMethod.SENSITIVE_SECRET
+            and driver is not None
+            and callable(authorize_secret)
+        ):
+            return await self._start_sensitive(
+                request, cast(SensitiveSecretAuthorizationDriver, driver)
+            )
         start_method = getattr(driver, "start", None)
         wait_method = getattr(driver, "wait", None)
         if driver is None or not callable(start_method) or not callable(wait_method):
@@ -102,7 +128,10 @@ class ProviderAuthorizationCoordinator:
             )
         async with self._lock:
             existing = self._active.get(request.provider)
-            if existing is not None and not existing.task.done():
+            sensitive = self._sensitive_active.get(request.provider)
+            if (existing is not None and not existing.task.done()) or (
+                sensitive is not None and not sensitive.completion.done()
+            ):
                 return ProviderAuthorizationStartOutcome(
                     request.provider, ProviderAuthorizationStartStatus.ALREADY_ACTIVE
                 )
@@ -137,19 +166,27 @@ class ProviderAuthorizationCoordinator:
         )
 
     async def wait(self, provider: MusicProviderName, flow_id: str) -> ProviderAuthorizationOutcome:
+        task: asyncio.Future[ProviderAuthorizationOutcome] | None = None
         async with self._lock:
             active = self._active.get(provider)
             if active is not None and active.flow_id == flow_id:
                 task = active.task
             else:
+                sensitive = self._sensitive_active.get(provider)
+                if sensitive is not None and sensitive.flow_id == flow_id:
+                    task = sensitive.completion
+                else:
+                    task = None
                 completed = self._completed.get(provider)
-                if completed is not None and completed[0] == flow_id:
+                if task is None and completed is not None and completed[0] == flow_id:
                     return completed[1]
-                return ProviderAuthorizationOutcome(
-                    provider,
-                    ProviderAuthorizationOutcomeStatus.FAILED,
-                    ProviderAccountErrorCode.AUTHORIZATION_STALE_FLOW,
-                )
+                if task is None:
+                    return ProviderAuthorizationOutcome(
+                        provider,
+                        ProviderAuthorizationOutcomeStatus.FAILED,
+                        ProviderAccountErrorCode.AUTHORIZATION_STALE_FLOW,
+                    )
+        assert task is not None
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
@@ -184,11 +221,87 @@ class ProviderAuthorizationCoordinator:
         assert started.challenge is not None
         return await self.wait(request.provider, started.challenge.flow_id)
 
+    async def pending_sensitive_challenge(
+        self, provider: MusicProviderName
+    ) -> ProviderSensitiveInputChallenge | None:
+        """Return only the current generation while it is awaiting a first submission."""
+
+        async with self._lock:
+            active = self._sensitive_active.get(provider)
+            if active is None or active.completion.done() or active.submission_task is not None:
+                return None
+            return active.challenge
+
+    async def submit_sensitive_secret(
+        self,
+        provider: MusicProviderName,
+        flow_id: str,
+        credential: ProviderSecretInput,
+    ) -> ProviderAuthorizationOutcome:
+        """Generation-bound handoff; the credential is never retained after driver completion."""
+
+        if credential.provider is not provider:
+            return self._stale(provider)
+        async with self._lock:
+            active = self._sensitive_active.get(provider)
+            if active is None or active.flow_id != flow_id or active.completion.done():
+                return self._stale(provider)
+            if active.submission_task is not None:
+                return ProviderAuthorizationOutcome(
+                    provider, ProviderAuthorizationOutcomeStatus.ALREADY_ACTIVE
+                )
+            task = asyncio.create_task(
+                self._complete_sensitive_submission(active, credential),
+                name=f"provider-sensitive-authorization-{provider.value}-{flow_id}",
+            )
+            active.submission_task = task
+        return await asyncio.shield(task)
+
+    async def fail_sensitive_input(
+        self,
+        provider: MusicProviderName,
+        flow_id: str,
+        code: ProviderAccountErrorCode,
+    ) -> ProviderAuthorizationOutcome:
+        """Terminate a pending flow without invoking its provider driver."""
+
+        async with self._lock:
+            active = self._sensitive_active.get(provider)
+            if (
+                active is None
+                or active.flow_id != flow_id
+                or active.completion.done()
+                or active.submission_task is not None
+            ):
+                return self._stale(provider)
+            outcome = ProviderAuthorizationOutcome(
+                provider, ProviderAuthorizationOutcomeStatus.FAILED, code
+            )
+            active.completion.set_result(outcome)
+            self._completed[provider] = (flow_id, outcome)
+            self._sensitive_active.pop(provider, None)
+            return outcome
+
     async def cancel(
         self, provider: MusicProviderName, flow_id: str | None = None
     ) -> ProviderAuthorizationOutcome:
         async with self._lock:
             active = self._active.get(provider)
+            sensitive = self._sensitive_active.get(provider)
+            if sensitive is not None and not sensitive.completion.done():
+                if flow_id is not None and sensitive.flow_id != flow_id:
+                    return self._stale(provider)
+                if sensitive.submission_task is not None:
+                    return ProviderAuthorizationOutcome(
+                        provider, ProviderAuthorizationOutcomeStatus.ALREADY_ACTIVE
+                    )
+                outcome = ProviderAuthorizationOutcome(
+                    provider, ProviderAuthorizationOutcomeStatus.CANCELLED
+                )
+                sensitive.completion.set_result(outcome)
+                self._completed[provider] = (sensitive.flow_id, outcome)
+                self._sensitive_active.pop(provider, None)
+                return outcome
             if active is None or active.task.done():
                 completed = self._completed.get(provider)
                 if flow_id is not None and completed is not None and completed[0] == flow_id:
@@ -230,22 +343,38 @@ class ProviderAuthorizationCoordinator:
 
         async with self._lock:
             active_flows = tuple(self._active.values())
-        for active in active_flows:
-            if active.challenge is not None:
+            sensitive_flows = tuple(self._sensitive_active.values())
+        for browser_active in active_flows:
+            if browser_active.challenge is not None:
                 try:
-                    await cast(BrowserDeviceAuthorizationDriver, active.driver).cancel(
-                        active.flow_id
+                    await cast(BrowserDeviceAuthorizationDriver, browser_active.driver).cancel(
+                        browser_active.flow_id
                     )
                 except Exception:
                     pass
-            active.task.cancel()
+            browser_active.task.cancel()
         if active_flows:
             await asyncio.gather(*(active.task for active in active_flows), return_exceptions=True)
+        submitted: list[asyncio.Task[ProviderAuthorizationOutcome]] = []
+        for sensitive_active in sensitive_flows:
+            if sensitive_active.submission_task is None:
+                if not sensitive_active.completion.done():
+                    sensitive_active.completion.set_result(
+                        ProviderAuthorizationOutcome(
+                            sensitive_active.challenge.provider,
+                            ProviderAuthorizationOutcomeStatus.CANCELLED,
+                        )
+                    )
+            else:
+                submitted.append(sensitive_active.submission_task)
+        if submitted:
+            await asyncio.gather(*submitted, return_exceptions=True)
         cleanup_tasks = tuple(self._cleanup_tasks)
         if cleanup_tasks:
             await asyncio.gather(*cleanup_tasks, return_exceptions=True)
         async with self._lock:
             self._active.clear()
+            self._sensitive_active.clear()
             self._completed.clear()
 
     async def _authorize_legacy(
@@ -255,7 +384,10 @@ class ProviderAuthorizationCoordinator:
     ) -> ProviderAuthorizationOutcome:
         async with self._lock:
             existing = self._active.get(request.provider)
-            if existing is not None and not existing.task.done():
+            sensitive = self._sensitive_active.get(request.provider)
+            if (existing is not None and not existing.task.done()) or (
+                sensitive is not None and not sensitive.completion.done()
+            ):
                 return ProviderAuthorizationOutcome(
                     request.provider, ProviderAuthorizationOutcomeStatus.ALREADY_ACTIVE
                 )
@@ -290,6 +422,98 @@ class ProviderAuthorizationCoordinator:
                 ProviderAccountErrorCode.AUTHORIZATION_FAILED,
             )
         return outcome
+
+    async def _start_sensitive(
+        self,
+        request: ProviderAuthorizationRequest,
+        driver: SensitiveSecretAuthorizationDriver,
+    ) -> ProviderAuthorizationStartOutcome:
+        async with self._lock:
+            existing = self._active.get(request.provider)
+            sensitive = self._sensitive_active.get(request.provider)
+            if (existing is not None and not existing.task.done()) or (
+                sensitive is not None and not sensitive.completion.done()
+            ):
+                return ProviderAuthorizationStartOutcome(
+                    request.provider, ProviderAuthorizationStartStatus.ALREADY_ACTIVE
+                )
+            flow_id = uuid.uuid4().hex[:16]
+            challenge = ProviderSensitiveInputChallenge(request.provider, flow_id)
+            completion = asyncio.get_running_loop().create_future()
+            active = _ActiveSensitiveAuthorization(flow_id, completion, driver, challenge)
+            self._sensitive_active[request.provider] = active
+            self._completed.pop(request.provider, None)
+            cleanup = asyncio.create_task(
+                self._release_sensitive_when_done(request.provider, active),
+                name=f"provider-sensitive-release-{request.provider.value}-{flow_id}",
+            )
+            self._cleanup_tasks.add(cleanup)
+            cleanup.add_done_callback(self._cleanup_tasks.discard)
+        return ProviderAuthorizationStartOutcome(
+            request.provider, ProviderAuthorizationStartStatus.STARTED, challenge=challenge
+        )
+
+    async def _run_sensitive_driver(
+        self,
+        driver: SensitiveSecretAuthorizationDriver,
+        credential: ProviderSecretInput,
+    ) -> ProviderAuthorizationOutcome:
+        try:
+            outcome = await driver.authorize_secret(credential)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return ProviderAuthorizationOutcome(
+                credential.provider,
+                ProviderAuthorizationOutcomeStatus.FAILED,
+                ProviderAccountErrorCode.AUTHORIZATION_FAILED,
+            )
+        if outcome.provider is not credential.provider:
+            return ProviderAuthorizationOutcome(
+                credential.provider,
+                ProviderAuthorizationOutcomeStatus.FAILED,
+                ProviderAccountErrorCode.AUTHORIZATION_FAILED,
+            )
+        return outcome
+
+    async def _complete_sensitive_submission(
+        self,
+        active: _ActiveSensitiveAuthorization,
+        credential: ProviderSecretInput,
+    ) -> ProviderAuthorizationOutcome:
+        outcome = await self._run_sensitive_driver(active.driver, credential)
+        async with self._lock:
+            if not active.completion.done():
+                active.completion.set_result(outcome)
+        return outcome
+
+    async def _release_sensitive_when_done(
+        self, provider: MusicProviderName, active: _ActiveSensitiveAuthorization
+    ) -> None:
+        try:
+            outcome = await asyncio.shield(active.completion)
+        except asyncio.CancelledError:
+            outcome = ProviderAuthorizationOutcome(
+                provider, ProviderAuthorizationOutcomeStatus.CANCELLED
+            )
+        except BaseException:
+            outcome = ProviderAuthorizationOutcome(
+                provider,
+                ProviderAuthorizationOutcomeStatus.FAILED,
+                ProviderAccountErrorCode.AUTHORIZATION_FAILED,
+            )
+        async with self._lock:
+            if self._sensitive_active.get(provider) is active:
+                self._sensitive_active.pop(provider, None)
+                self._completed[provider] = (active.flow_id, outcome)
+
+    @staticmethod
+    def _stale(provider: MusicProviderName) -> ProviderAuthorizationOutcome:
+        return ProviderAuthorizationOutcome(
+            provider,
+            ProviderAuthorizationOutcomeStatus.FAILED,
+            ProviderAccountErrorCode.AUTHORIZATION_STALE_FLOW,
+        )
 
     async def _run_browser_driver(
         self,

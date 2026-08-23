@@ -17,6 +17,7 @@ from app.core.provider_accounts import (
     ProviderAuthorizationMethod,
     ProviderAuthorizationOutcome,
     ProviderAuthorizationOutcomeStatus,
+    ProviderSensitiveInputChallenge,
 )
 from app.i18n import LocalizationService
 
@@ -142,7 +143,21 @@ class ProviderAccountsPresentation:
         lines.extend(("", self.text(self._detail_hint_key(status), locale)))
         return _bounded("\n".join(lines))
 
-    def authorization_text(self, challenge: ProviderAuthorizationChallenge, locale: str) -> str:
+    def authorization_text(
+        self,
+        challenge: ProviderAuthorizationChallenge | ProviderSensitiveInputChallenge,
+        locale: str,
+    ) -> str:
+        if isinstance(challenge, ProviderSensitiveInputChallenge):
+            return _bounded(
+                "\n\n".join(
+                    (
+                        self.text("admin.deezer_auth_title", locale),
+                        self.text("admin.deezer_auth_instructions", locale),
+                        self.text("admin.deezer_auth_ownership", locale),
+                    )
+                )
+            )
         return _bounded(
             "\n\n".join(
                 (
@@ -165,15 +180,30 @@ class ProviderAccountsPresentation:
         locale: str,
     ) -> str:
         if outcome.status is ProviderAuthorizationOutcomeStatus.READY:
-            suffix = self.text("admin.tidal_auth_ready", locale)
+            suffix = self.text(
+                "admin.deezer_auth_ready"
+                if status.provider is MusicProviderName.DEEZER
+                else "admin.tidal_auth_ready",
+                locale,
+            )
         elif outcome.status is ProviderAuthorizationOutcomeStatus.CANCELLED:
-            suffix = self.text("admin.tidal_auth_cancelled", locale)
+            suffix = self.text(
+                "admin.deezer_auth_cancelled"
+                if status.provider is MusicProviderName.DEEZER
+                else "admin.tidal_auth_cancelled",
+                locale,
+            )
         elif outcome.error_code is not None:
             suffix = self.text(
                 f"admin.provider_auth_error.{outcome.error_code.value.lower()}", locale
             )
         else:
-            suffix = self.text("admin.tidal_auth_failed", locale)
+            suffix = self.text(
+                "admin.deezer_auth_failed"
+                if status.provider is MusicProviderName.DEEZER
+                else "admin.tidal_auth_failed",
+                locale,
+            )
         return _bounded(f"{self.detail_text(status, locale)}\n\n{suffix}")
 
     def overview_keyboard(
@@ -214,19 +244,23 @@ class ProviderAccountsPresentation:
 
     def detail_keyboard(self, status: ProviderAccountStatus, locale: str) -> InlineKeyboardMarkup:
         rows: list[list[InlineKeyboardButton]] = []
-        if (
-            status.state
-            in {
-                ProviderAccountState.NOT_CONFIGURED,
-                ProviderAccountState.AUTH_REQUIRED,
-                ProviderAccountState.ERROR,
-            }
-            and ProviderAuthorizationMethod.BROWSER_DEVICE_LINK in status.authorization_methods
+        if status.state in {
+            ProviderAccountState.NOT_CONFIGURED,
+            ProviderAccountState.AUTH_REQUIRED,
+            ProviderAccountState.ERROR,
+        } and (
+            ProviderAuthorizationMethod.BROWSER_DEVICE_LINK in status.authorization_methods
+            or ProviderAuthorizationMethod.SENSITIVE_SECRET in status.authorization_methods
         ):
             rows.append(
                 [
                     InlineKeyboardButton(
-                        text=self.text("admin.tidal_connect", locale),
+                        text=self.text(
+                            "admin.deezer_connect"
+                            if status.provider is MusicProviderName.DEEZER
+                            else "admin.tidal_connect",
+                            locale,
+                        ),
                         callback_data=encode_provider_accounts_callback(
                             ProviderAccountsCallbackAction.CONNECT, status.provider
                         ),
@@ -256,8 +290,25 @@ class ProviderAccountsPresentation:
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def authorization_keyboard(
-        self, challenge: ProviderAuthorizationChallenge, locale: str
+        self,
+        challenge: ProviderAuthorizationChallenge | ProviderSensitiveInputChallenge,
+        locale: str,
     ) -> InlineKeyboardMarkup:
+        if isinstance(challenge, ProviderSensitiveInputChallenge):
+            return InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=self.text("admin.deezer_cancel", locale),
+                            callback_data=encode_provider_accounts_callback(
+                                ProviderAccountsCallbackAction.CANCEL,
+                                challenge.provider,
+                                challenge.flow_id,
+                            ),
+                        )
+                    ]
+                ]
+            )
         return InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -284,6 +335,8 @@ class ProviderAccountsPresentation:
             return "admin.provider_accounts_runtime_ready"
         if ProviderAuthorizationMethod.BROWSER_DEVICE_LINK in status.authorization_methods:
             return "admin.provider_accounts_tidal_auth_hint"
+        if ProviderAuthorizationMethod.SENSITIVE_SECRET in status.authorization_methods:
+            return "admin.provider_accounts_deezer_auth_hint"
         return "admin.provider_accounts_no_auth_flows"
 
     def _status_line(self, status: ProviderAccountStatus, locale: str) -> str:

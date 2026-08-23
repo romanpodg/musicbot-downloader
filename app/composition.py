@@ -19,6 +19,10 @@ from app.providers.account_management import (
     ProviderRuntimeAccountBackend,
 )
 from app.providers.base import MusicProvider
+from app.providers.deezer_authorization import (
+    DeezerArlAuthorizationBoundary,
+    DeezerArlAuthorizationDriver,
+)
 from app.providers.tidal_authorization import (
     TidalDeviceAuthorizationBoundary,
     TidalDeviceAuthorizationDriver,
@@ -312,18 +316,26 @@ async def compose_stage9(
     account_backend = ProviderRuntimeAccountBackend(
         cast(ProviderAccountRuntimeProbe, provider),
         authorization_methods={
-            MusicProviderName.TIDAL: (ProviderAuthorizationMethod.BROWSER_DEVICE_LINK,)
+            MusicProviderName.TIDAL: (ProviderAuthorizationMethod.BROWSER_DEVICE_LINK,),
+            MusicProviderName.DEEZER: (ProviderAuthorizationMethod.SENSITIVE_SECRET,),
         },
     )
     tidal_authorization = TidalDeviceAuthorizationDriver(
         cast(TidalDeviceAuthorizationBoundary, provider), account_backend
+    )
+    deezer_authorization = DeezerArlAuthorizationDriver(
+        cast(DeezerArlAuthorizationBoundary, provider), account_backend
     )
     provider_authorization = ProviderAuthorizationCoordinator(
         {
             (
                 MusicProviderName.TIDAL,
                 ProviderAuthorizationMethod.BROWSER_DEVICE_LINK,
-            ): tidal_authorization
+            ): tidal_authorization,
+            (
+                MusicProviderName.DEEZER,
+                ProviderAuthorizationMethod.SENSITIVE_SECRET,
+            ): deezer_authorization,
         }
     )
     provider_accounts = ProviderAccountManagementService(

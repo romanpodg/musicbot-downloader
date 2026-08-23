@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.core.exceptions import ProviderOperationTimeout, ProviderUnavailable
+from app.core.provider_accounts import SensitiveValue
 from app.providers.onthespot.process import (
     OnTheSpotProcessClient,
     close_shared_process_client,
@@ -89,6 +90,13 @@ for line in sys.stdin.buffer:
                 "expires_in": 300,
                 "interval": 1,
             },
+        }
+    elif method == "deezer_arl_authorize":
+        assert request["params"]["arl"] == "stage133-ipc-test-secret"
+        response = {
+            "id": request_id,
+            "ok": True,
+            "result": {"status": "persisted"},
         }
     elif method == "tidal_device_authorization_poll":
         response = {
@@ -241,6 +249,19 @@ async def test_tidal_poll_returns_control_before_ordinary_provider_request(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_deezer_secret_crosses_only_request_and_never_returns(tmp_path: Path) -> None:
+    secret = "stage133-ipc-test-secret"
+    client = _client(tmp_path)
+    try:
+        result = await client.authorize_deezer_arl(SensitiveValue(secret))
+    finally:
+        await client.close()
+
+    assert result.persisted is True
+    assert secret not in repr(result)
+
+
+@pytest.mark.asyncio
 async def test_source_check_uses_normalized_ipc_response(tmp_path: Path) -> None:
     client = _client(tmp_path)
     try:
@@ -307,7 +328,13 @@ def test_worker_sets_protobuf_mode_before_upstream_imports() -> None:
 
 def test_main_process_provider_modules_have_no_upstream_imports() -> None:
     provider_root = Path(__file__).parents[2] / "app" / "providers" / "onthespot"
-    for filename in ("__init__.py", "process.py", "provider.py", "../tidal_authorization.py"):
+    for filename in (
+        "__init__.py",
+        "process.py",
+        "provider.py",
+        "../deezer_authorization.py",
+        "../tidal_authorization.py",
+    ):
         source = (provider_root / filename).read_text(encoding="utf-8")
         assert "import onthespot" not in source
         assert "from onthespot" not in source

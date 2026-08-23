@@ -17,6 +17,9 @@ from app.core.provider_accounts import (
     ProviderAuthorizationStartStatus,
     ProviderDisconnectOutcome,
     ProviderDisconnectOutcomeStatus,
+    ProviderSecretInput,
+    ProviderSensitiveInputChallenge,
+    SensitiveValue,
 )
 from app.providers.account_management import (
     MANAGED_PROVIDER_ORDER,
@@ -104,9 +107,18 @@ class ProviderAccountManagementService:
         self,
         actor_user_id: int,
         provider: MusicProviderName,
-        method: ProviderAuthorizationMethod = ProviderAuthorizationMethod.BROWSER_DEVICE_LINK,
+        method: ProviderAuthorizationMethod | None = None,
     ) -> ProviderAuthorizationStartOutcome:
         await self.authorize(actor_user_id)
+        if method is None:
+            methods = self._coordinator.available_methods(provider)
+            method = (
+                ProviderAuthorizationMethod.BROWSER_DEVICE_LINK
+                if ProviderAuthorizationMethod.BROWSER_DEVICE_LINK in methods
+                else methods[0]
+                if len(methods) == 1
+                else ProviderAuthorizationMethod.BROWSER_DEVICE_LINK
+            )
         request = ProviderAuthorizationRequest(provider, method)
         if await self._coordinator.is_active(provider):
             return await self._coordinator.start(request)
@@ -116,6 +128,34 @@ class ProviderAccountManagementService:
                 provider, ProviderAuthorizationStartStatus.ALREADY_READY
             )
         return await self._coordinator.start(request)
+
+    async def pending_sensitive_challenge(
+        self, actor_user_id: int, provider: MusicProviderName
+    ) -> ProviderSensitiveInputChallenge | None:
+        await self.authorize(actor_user_id)
+        return await self._coordinator.pending_sensitive_challenge(provider)
+
+    async def submit_sensitive_secret(
+        self,
+        actor_user_id: int,
+        provider: MusicProviderName,
+        flow_id: str,
+        secret: SensitiveValue,
+    ) -> ProviderAuthorizationOutcome:
+        await self.authorize(actor_user_id)
+        return await self._coordinator.submit_sensitive_secret(
+            provider, flow_id, ProviderSecretInput(provider, secret)
+        )
+
+    async def fail_sensitive_input(
+        self,
+        actor_user_id: int,
+        provider: MusicProviderName,
+        flow_id: str,
+        code: ProviderAccountErrorCode,
+    ) -> ProviderAuthorizationOutcome:
+        await self.authorize(actor_user_id)
+        return await self._coordinator.fail_sensitive_input(provider, flow_id, code)
 
     async def wait_authorization(
         self, actor_user_id: int, provider: MusicProviderName, flow_id: str

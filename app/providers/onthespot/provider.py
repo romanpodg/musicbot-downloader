@@ -38,6 +38,7 @@ from app.core.models import (
     TrackSearchCandidate,
     TrackSearchRequest,
 )
+from app.core.provider_accounts import SensitiveValue
 from app.providers.base import (
     AlbumReference,
     MediaReference,
@@ -45,6 +46,7 @@ from app.providers.base import (
     ProviderAvailability,
     TrackReference,
 )
+from app.providers.deezer_authorization import DeezerArlAuthorizationResult
 from app.providers.onthespot.capabilities import ONTHESPOT_CAPABILITIES
 from app.providers.onthespot.process import OnTheSpotProcessClient, get_shared_process_client
 from app.providers.tidal_authorization import (
@@ -190,6 +192,11 @@ class OnTheSpotProvider(MusicProvider):
         """Reload configured accounts and normal runtime sessions inside the child."""
 
         await self._process_client.refresh_provider_health()
+
+    async def authorize_deezer_arl(
+        self, credential: SensitiveValue
+    ) -> DeezerArlAuthorizationResult:
+        return await self._process_client.authorize_deezer_arl(credential)
 
     async def start_tidal_device_authorization(self) -> TidalDeviceAuthorizationStart:
         return await self._process_client.start_tidal_device_authorization()

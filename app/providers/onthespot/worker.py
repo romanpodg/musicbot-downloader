@@ -33,6 +33,7 @@ from app.providers.onthespot.capabilities import ONTHESPOT_CAPABILITIES
 from app.providers.onthespot.ipc import (
     CHECK_PROVIDER_HEALTH_METHOD,
     CHECK_SOURCE_METHOD,
+    DEEZER_ARL_AUTHORIZE_METHOD,
     DOWNLOAD_NATIVE_METHOD,
     GET_METADATA_METHOD,
     GET_TRACK_METADATA_METHOD,
@@ -108,6 +109,10 @@ _TIDAL_DEFAULT_EXPIRY_SECONDS = 300
 _TIDAL_MAX_EXPIRY_SECONDS = 900
 _TIDAL_DEFAULT_INTERVAL_SECONDS = 3
 _TIDAL_MAX_INTERVAL_SECONDS = 30
+_DEEZER_GATEWAY_URL = "https://www.deezer.com/ajax/gw-light.php"
+_DEEZER_HTTP_TIMEOUT = (5.0, 10.0)
+_DEEZER_ARL_MAX_LENGTH = 2048
+_DEEZER_COOKIE_VALUE = re.compile(r"^[\x21\x23-\x2b\x2d-\x3a\x3c-\x5b\x5d-\x7e]+$")
 
 
 @dataclass(slots=True)
@@ -118,6 +123,15 @@ class _TidalDeviceFlow:
     next_poll_at_monotonic: float
     terminal_status: str | None = None
     terminal_error_code: str | None = None
+
+
+@dataclass(slots=True)
+class _DeezerValidatedSession:
+    session: Any = field(repr=False)
+    api_token: str = field(repr=False)
+    license_token: str = field(repr=False)
+    account_type: str
+    bitrate: str
 
 
 class WorkerError(Exception):
@@ -147,6 +161,7 @@ class OnTheSpotWorker:
                 self._registry = importlib.import_module("onthespot.api.registry")
                 self._config = importlib.import_module("onthespot.otsconfig").config
                 self._runtime = importlib.import_module("onthespot.runtimedata")
+                self._install_secure_deezer_login_adapter()
                 self._accounts.AccountPoolLoader(gui=False).run()
             self._initialized = True
         except Exception as exc:
@@ -514,10 +529,174 @@ class OnTheSpotWorker:
                     if callable(close):
                         close()
                 self._runtime.account_pool.clear()
+                self._install_secure_deezer_login_adapter()
                 self._accounts.AccountPoolLoader(gui=False).run()
         except Exception as exc:
             raise WorkerError("provider_unavailable") from exc
         return {"refreshed": True}
+
+    def deezer_arl_authorize(self, arl: str) -> dict[str, str]:
+        """Validate through HTTPS before writing an OnTheSpot-owned account record."""
+
+        if not self._initialized:
+            self.initialize()
+        normalized = _normalize_deezer_arl(arl)
+        if normalized is None:
+            return _deezer_failure("DEEZER_ARL_INVALID_FORMAT")
+        validated, error_code = self._open_secure_deezer_session(normalized)
+        if validated is None:
+            return _deezer_failure(error_code or "DEEZER_AUTH_INVALID_RESPONSE")
+        close = getattr(validated.session, "close", None)
+        if callable(close):
+            close()
+
+        current = self._config.get("accounts", [])
+        if not isinstance(current, list):
+            return _deezer_failure("DEEZER_AUTH_PERSIST_FAILED")
+        updated = list(current)
+        duplicate_index: int | None = None
+        for index, account in enumerate(updated):
+            if not isinstance(account, Mapping) or account.get("service") != "deezer":
+                continue
+            login = account.get("login")
+            if isinstance(login, Mapping) and login.get("arl") == normalized:
+                duplicate_index = index
+                break
+        if duplicate_index is not None:
+            duplicate = updated[duplicate_index]
+            if isinstance(duplicate, Mapping) and duplicate.get("active") is True:
+                return {"status": "persisted"}
+            activated = dict(duplicate)
+            activated["active"] = True
+            updated[duplicate_index] = activated
+        else:
+            updated.append(
+                {
+                    "uuid": str(uuid.uuid4()),
+                    "service": "deezer",
+                    "active": True,
+                    "login": {"arl": normalized},
+                }
+            )
+        try:
+            self._config.set("accounts", updated)
+            self._config.save()
+        except Exception:
+            try:
+                self._config.set("accounts", current)
+            except Exception:
+                pass
+            return _deezer_failure("DEEZER_AUTH_PERSIST_FAILED")
+        return {"status": "persisted"}
+
+    def _install_secure_deezer_login_adapter(self) -> None:
+        """Keep every configured Deezer runtime login on the HTTPS-only adapter."""
+
+        login_functions = getattr(self._registry, "SERVICE_LOGIN_FUNCTIONS", None)
+        if not isinstance(login_functions, dict):
+            raise ValueError
+        login_functions["deezer"] = self._secure_deezer_login
+
+    def _secure_deezer_login(self, account: Mapping[str, Any]) -> bool:
+        login = account.get("login")
+        raw_arl = login.get("arl") if isinstance(login, Mapping) else None
+        normalized = _normalize_deezer_arl(raw_arl) if isinstance(raw_arl, str) else None
+        if normalized is None:
+            self._append_deezer_runtime_error(account)
+            return False
+        validated, _ = self._open_secure_deezer_session(normalized)
+        if validated is None:
+            self._append_deezer_runtime_error(account)
+            return False
+        self._runtime.account_pool.append(
+            {
+                "uuid": str(account.get("uuid", "")),
+                "username": "",
+                "service": "deezer",
+                "status": "active",
+                "account_type": validated.account_type,
+                "bitrate": validated.bitrate,
+                "login": {
+                    "arl": normalized,
+                    "api_token": validated.api_token,
+                    "license_token": validated.license_token,
+                    "session": validated.session,
+                },
+            }
+        )
+        return True
+
+    def _open_secure_deezer_session(
+        self, arl: str
+    ) -> tuple[_DeezerValidatedSession | None, str | None]:
+        deezer = importlib.import_module("onthespot.api.deezer")
+        session = deezer.requests.Session()
+        session.headers.update(
+            {
+                "Origin": "https://www.deezer.com",
+                "Accept-Encoding": "utf-8",
+                "Referer": "https://www.deezer.com/login",
+            }
+        )
+        session.cookies.update({"arl": arl, "comeback": "1"})
+        try:
+            response = session.post(
+                _DEEZER_GATEWAY_URL,
+                params={
+                    "api_version": "1.0",
+                    "api_token": "null",
+                    "input": "3",
+                    "method": "deezer.getUserData",
+                },
+                timeout=_DEEZER_HTTP_TIMEOUT,
+            )
+        except deezer.requests.exceptions.Timeout:
+            session.close()
+            return None, "DEEZER_AUTH_TIMEOUT"
+        except deezer.requests.exceptions.RequestException:
+            session.close()
+            return None, "DEEZER_AUTH_NETWORK_ERROR"
+        except Exception:
+            session.close()
+            return None, "DEEZER_AUTH_NETWORK_ERROR"
+        if response.status_code in {401, 403}:
+            session.close()
+            return None, "DEEZER_ARL_INVALID"
+        if response.status_code != 200:
+            session.close()
+            return None, "DEEZER_AUTH_UPSTREAM_ERROR"
+        try:
+            payload = response.json()
+        except Exception:
+            session.close()
+            return None, "DEEZER_AUTH_INVALID_RESPONSE"
+        parsed = _parse_deezer_user_data(payload)
+        if isinstance(parsed, str):
+            session.close()
+            return None, parsed
+        api_token, license_token, account_type, bitrate = parsed
+        return (
+            _DeezerValidatedSession(session, api_token, license_token, account_type, bitrate),
+            None,
+        )
+
+    def _append_deezer_runtime_error(self, account: Mapping[str, Any]) -> None:
+        self._runtime.account_pool.append(
+            {
+                "uuid": str(account.get("uuid", "")),
+                "username": "",
+                "service": "deezer",
+                "status": "error",
+                "account_type": "N/A",
+                "bitrate": "N/A",
+                "login": {
+                    "arl": "",
+                    "api_token": "",
+                    "license_token": "",
+                    "session": "",
+                },
+            }
+        )
 
     def tidal_device_authorization_start(self) -> dict[str, Any]:
         """Create one bounded Tidal device challenge without exposing its device code."""
@@ -978,6 +1157,59 @@ def _tidal_poll_result(
     return result
 
 
+def _normalize_deezer_arl(value: str) -> str | None:
+    if not value or any(ord(character) < 32 or ord(character) == 127 for character in value):
+        return None
+    normalized = value.strip(" ")
+    if (
+        len(normalized) < 8
+        or len(normalized) > _DEEZER_ARL_MAX_LENGTH
+        or _DEEZER_COOKIE_VALUE.fullmatch(normalized) is None
+    ):
+        return None
+    return normalized
+
+
+def _parse_deezer_user_data(
+    payload: object,
+) -> tuple[str, str, str, str] | str:
+    if not isinstance(payload, Mapping):
+        return "DEEZER_AUTH_INVALID_RESPONSE"
+    results = payload.get("results")
+    if not isinstance(results, Mapping):
+        return "DEEZER_AUTH_INVALID_RESPONSE"
+    user = results.get("USER")
+    if not isinstance(user, Mapping):
+        return "DEEZER_AUTH_INVALID_RESPONSE"
+    user_id = user.get("USER_ID")
+    if isinstance(user_id, bool) or not isinstance(user_id, (int, str)):
+        return "DEEZER_AUTH_INVALID_RESPONSE"
+    try:
+        authenticated_user_id = int(user_id)
+    except (TypeError, ValueError):
+        return "DEEZER_AUTH_INVALID_RESPONSE"
+    if authenticated_user_id <= 0:
+        return "DEEZER_ARL_INVALID"
+    options = user.get("OPTIONS")
+    api_token = results.get("checkForm")
+    if not isinstance(options, Mapping) or not isinstance(api_token, str) or not api_token:
+        return "DEEZER_AUTH_INVALID_RESPONSE"
+    license_token = options.get("license_token")
+    if not isinstance(license_token, str) or not license_token:
+        return "DEEZER_AUTH_INVALID_RESPONSE"
+    if options.get("web_lossless"):
+        account_type, bitrate = "premium", "1411k"
+    elif options.get("web_hq"):
+        account_type, bitrate = "premium", "320k"
+    else:
+        account_type, bitrate = "free", "128k"
+    return api_token, license_token, account_type, bitrate
+
+
+def _deezer_failure(error_code: str) -> dict[str, str]:
+    return {"status": "failed", "error_code": error_code}
+
+
 def _tidal_account_from_token_payload(payload: Mapping[str, Any]) -> dict[str, Any] | None:
     access_token = payload.get("access_token")
     refresh_token = payload.get("refresh_token")
@@ -1112,6 +1344,11 @@ def main() -> int:
                 result = worker.check_provider_health(provider)
             elif method == REFRESH_PROVIDER_HEALTH_METHOD:
                 result = worker.refresh_provider_health()
+            elif method == DEEZER_ARL_AUTHORIZE_METHOD:
+                arl = params.get("arl")
+                if set(params) != {"arl"} or not isinstance(arl, str):
+                    raise WorkerError("provider_unavailable")
+                result = worker.deezer_arl_authorize(arl)
             elif method == TIDAL_DEVICE_AUTHORIZATION_START_METHOD:
                 if params:
                     raise WorkerError("provider_unavailable")

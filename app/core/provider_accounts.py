@@ -43,6 +43,15 @@ class ProviderAccountErrorCode(StrEnum):
     TIDAL_AUTH_INVALID_RESPONSE = "TIDAL_AUTH_INVALID_RESPONSE"
     TIDAL_AUTH_PERSIST_FAILED = "TIDAL_AUTH_PERSIST_FAILED"
     TIDAL_AUTH_RELOAD_FAILED = "TIDAL_AUTH_RELOAD_FAILED"
+    DEEZER_ARL_INVALID_FORMAT = "DEEZER_ARL_INVALID_FORMAT"
+    DEEZER_ARL_INVALID = "DEEZER_ARL_INVALID"
+    DEEZER_AUTH_NETWORK_ERROR = "DEEZER_AUTH_NETWORK_ERROR"
+    DEEZER_AUTH_TIMEOUT = "DEEZER_AUTH_TIMEOUT"
+    DEEZER_AUTH_INVALID_RESPONSE = "DEEZER_AUTH_INVALID_RESPONSE"
+    DEEZER_AUTH_UPSTREAM_ERROR = "DEEZER_AUTH_UPSTREAM_ERROR"
+    DEEZER_AUTH_PERSIST_FAILED = "DEEZER_AUTH_PERSIST_FAILED"
+    DEEZER_AUTH_RELOAD_FAILED = "DEEZER_AUTH_RELOAD_FAILED"
+    DEEZER_AUTH_MESSAGE_DELETE_FAILED = "DEEZER_AUTH_MESSAGE_DELETE_FAILED"
     DISCONNECT_UNSUPPORTED = "DISCONNECT_UNSUPPORTED"
     DISCONNECT_FAILED = "DISCONNECT_FAILED"
 
@@ -122,10 +131,18 @@ class ProviderAuthorizationChallenge:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderSensitiveInputChallenge:
+    """Opaque generation for an in-process, non-durable secret-entry flow."""
+
+    provider: MusicProviderName
+    flow_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderAuthorizationStartOutcome:
     provider: MusicProviderName
     status: ProviderAuthorizationStartStatus
-    challenge: ProviderAuthorizationChallenge | None = None
+    challenge: ProviderAuthorizationChallenge | ProviderSensitiveInputChallenge | None = None
     error_code: ProviderAccountErrorCode | None = None
 
 

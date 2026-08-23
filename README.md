@@ -1,8 +1,8 @@
 # Musicbot Downloader
 
 Production-oriented foundation for a future Telegram music downloader service. This repository
-implements Stage 0 through the Stage 12.4 deterministic production-validation baseline plus the
-Stage 13.1 Provider Account Management Foundation: canonical recording identity, ambiguity-safe matching,
+implements Stage 0 through the Stage 12.4 deterministic production-validation baseline plus
+Stages 13.1–13.3 provider account management and authorization: canonical recording identity, ambiguity-safe matching,
 verified cross-provider discovery, runtime provider candidate resolution, quality-dependent
 download planning, safe one-shot execution, persistent asynchronous queue orchestration, and
 durable SingleFlight subscribers, a bot-scoped Telegram completed-result cache, and the
@@ -34,6 +34,8 @@ Current delivery roadmap:
 - Stage 13.1: OWNER-only Provider Account Management Foundation.
 - Stage 13.2: OWNER-only Tidal browser/device authorization with OnTheSpot-owned persistence and
   runtime verification.
+- Stage 13.3: OWNER-only Deezer ARL authorization with immediate Telegram deletion, child-isolated
+  HTTPS validation, OnTheSpot-owned persistence, and secure runtime verification.
 
 Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
 deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage
@@ -42,7 +44,8 @@ validated online SQLite backup, and an OS-level one-runtime lock per SQLite data
 adds repeatable credential-free Linux/container release validation; real Telegram/provider checks
 remain explicitly opt-in. Stage 13.1 adds the provider-account-management architecture and
 OWNER-only Telegram status UI. Stage 13.2 adds only Tidal device authorization; it does not
-complete Stage 13.
+complete Stage 13. Stage 13.3 adds secure Deezer ARL authorization; Spotify credentials and general
+provider-account lifecycle hardening remain future stages.
 
 See [the production deployment guide](docs/production.md) for the container, filesystem,
 migration, preflight, security, backup, restore, and upgrade contract. Stage 12.4 acceptance is
@@ -53,6 +56,9 @@ See [the Stage 13.1 provider-account foundation](docs/stage13.1-provider-account
 authorization, state-model, coordinator, UI, credential-ownership, and explicit non-goal contract.
 See [the Stage 13.2 Tidal authorization contract](docs/stage13.2-tidal-device-authorization.md) for
 the child-isolated polling, OnTheSpot persistence, runtime verification, and lifecycle guarantees.
+See [the Stage 13.3 Deezer authorization contract](docs/stage13.3-deezer-arl-authorization.md) for
+the secret-message deletion gate, HTTPS-only child validation/login, credential ownership, and
+leak-prevention guarantees.
 
 ## Architecture
 

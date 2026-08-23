@@ -23,11 +23,13 @@ from app.core.exceptions import (
     UnsupportedAlbum,
     UnsupportedProvider,
 )
-from app.core.provider_accounts import ProviderAccountErrorCode
+from app.core.provider_accounts import ProviderAccountErrorCode, SensitiveValue
 from app.providers.base import ProviderAvailability
+from app.providers.deezer_authorization import DeezerArlAuthorizationResult
 from app.providers.onthespot.ipc import (
     CHECK_PROVIDER_HEALTH_METHOD,
     CHECK_SOURCE_METHOD,
+    DEEZER_ARL_AUTHORIZE_METHOD,
     DEFAULT_REQUEST_TIMEOUT_SECONDS,
     DOWNLOAD_NATIVE_METHOD,
     GET_METADATA_METHOD,
@@ -64,6 +66,17 @@ _TIDAL_ERROR_CODES = frozenset(
         ProviderAccountErrorCode.TIDAL_AUTH_INVALID_RESPONSE,
         ProviderAccountErrorCode.TIDAL_AUTH_PERSIST_FAILED,
         ProviderAccountErrorCode.TIDAL_AUTH_RELOAD_FAILED,
+    }
+)
+_DEEZER_ERROR_CODES = frozenset(
+    {
+        ProviderAccountErrorCode.DEEZER_ARL_INVALID_FORMAT,
+        ProviderAccountErrorCode.DEEZER_ARL_INVALID,
+        ProviderAccountErrorCode.DEEZER_AUTH_NETWORK_ERROR,
+        ProviderAccountErrorCode.DEEZER_AUTH_TIMEOUT,
+        ProviderAccountErrorCode.DEEZER_AUTH_INVALID_RESPONSE,
+        ProviderAccountErrorCode.DEEZER_AUTH_UPSTREAM_ERROR,
+        ProviderAccountErrorCode.DEEZER_AUTH_PERSIST_FAILED,
     }
 )
 
@@ -191,6 +204,22 @@ class OnTheSpotProcessClient:
         result = await self._request(REFRESH_PROVIDER_HEALTH_METHOD, {})
         if not isinstance(result, dict) or result.get("refreshed") is not True:
             raise ProviderUnavailable()
+
+    async def authorize_deezer_arl(
+        self, credential: SensitiveValue
+    ) -> DeezerArlAuthorizationResult:
+        result = await self._request(
+            DEEZER_ARL_AUTHORIZE_METHOD,
+            {"arl": credential.reveal_to_provider_backend()},
+        )
+        if not isinstance(result, dict):
+            raise ProviderUnavailable()
+        if result == {"status": "persisted"}:
+            return DeezerArlAuthorizationResult(True)
+        if set(result) != {"status", "error_code"} or result.get("status") != "failed":
+            raise ProviderUnavailable()
+        code = _deezer_error_code(result.get("error_code"))
+        return DeezerArlAuthorizationResult(False, code)
 
     async def start_tidal_device_authorization(self) -> TidalDeviceAuthorizationStart:
         result = await self._request(TIDAL_DEVICE_AUTHORIZATION_START_METHOD, {})
@@ -509,4 +538,18 @@ def _tidal_error_code(value: object, *, required: bool = True) -> ProviderAccoun
         return ProviderAccountErrorCode.TIDAL_AUTH_INVALID_RESPONSE
     return (
         code if code in _TIDAL_ERROR_CODES else ProviderAccountErrorCode.TIDAL_AUTH_INVALID_RESPONSE
+    )
+
+
+def _deezer_error_code(value: object) -> ProviderAccountErrorCode:
+    if not isinstance(value, str):
+        return ProviderAccountErrorCode.DEEZER_AUTH_INVALID_RESPONSE
+    try:
+        code = ProviderAccountErrorCode(value)
+    except ValueError:
+        return ProviderAccountErrorCode.DEEZER_AUTH_INVALID_RESPONSE
+    return (
+        code
+        if code in _DEEZER_ERROR_CODES
+        else ProviderAccountErrorCode.DEEZER_AUTH_INVALID_RESPONSE
     )
