@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 import uuid
 from collections.abc import Mapping, Sequence
@@ -22,6 +23,7 @@ from app.core.exceptions import (
     UnsupportedAlbum,
     UnsupportedProvider,
 )
+from app.core.provider_accounts import ProviderAccountErrorCode
 from app.providers.base import ProviderAvailability
 from app.providers.onthespot.ipc import (
     CHECK_PROVIDER_HEALTH_METHOD,
@@ -40,6 +42,29 @@ from app.providers.onthespot.ipc import (
     RESOLVE_ALBUM_METHOD,
     SEARCH_TRACKS_METHOD,
     SHUTDOWN_METHOD,
+    TIDAL_DEVICE_AUTHORIZATION_CANCEL_METHOD,
+    TIDAL_DEVICE_AUTHORIZATION_POLL_METHOD,
+    TIDAL_DEVICE_AUTHORIZATION_START_METHOD,
+)
+from app.providers.tidal_authorization import (
+    TidalDeviceAuthorizationPoll,
+    TidalDeviceAuthorizationStart,
+    TidalDevicePollStatus,
+)
+
+_TIDAL_FLOW_ID = re.compile(r"^[0-9a-f]{16}$")
+_TIDAL_ERROR_CODES = frozenset(
+    {
+        ProviderAccountErrorCode.TIDAL_AUTH_START_FAILED,
+        ProviderAccountErrorCode.TIDAL_AUTH_PENDING,
+        ProviderAccountErrorCode.TIDAL_AUTH_SLOW_DOWN,
+        ProviderAccountErrorCode.TIDAL_AUTH_DENIED,
+        ProviderAccountErrorCode.TIDAL_AUTH_EXPIRED,
+        ProviderAccountErrorCode.TIDAL_AUTH_NETWORK_ERROR,
+        ProviderAccountErrorCode.TIDAL_AUTH_INVALID_RESPONSE,
+        ProviderAccountErrorCode.TIDAL_AUTH_PERSIST_FAILED,
+        ProviderAccountErrorCode.TIDAL_AUTH_RELOAD_FAILED,
+    }
 )
 
 _ERROR_TYPES: dict[str, type[Exception]] = {
@@ -165,6 +190,80 @@ class OnTheSpotProcessClient:
     async def refresh_provider_health(self) -> None:
         result = await self._request(REFRESH_PROVIDER_HEALTH_METHOD, {})
         if not isinstance(result, dict) or result.get("refreshed") is not True:
+            raise ProviderUnavailable()
+
+    async def start_tidal_device_authorization(self) -> TidalDeviceAuthorizationStart:
+        result = await self._request(TIDAL_DEVICE_AUTHORIZATION_START_METHOD, {})
+        if not isinstance(result, dict) or not set(result).issubset(
+            {"status", "flow_id", "verification_url", "expires_in", "interval", "error_code"}
+        ):
+            raise ProviderUnavailable()
+        status = result.get("status")
+        if status == "failed":
+            return TidalDeviceAuthorizationStart(
+                status="failed", error_code=_tidal_error_code(result.get("error_code"))
+            )
+        flow_id = result.get("flow_id")
+        verification_url = result.get("verification_url")
+        expires_in = result.get("expires_in")
+        interval = result.get("interval")
+        if (
+            status != "started"
+            or not isinstance(flow_id, str)
+            or _TIDAL_FLOW_ID.fullmatch(flow_id) is None
+            or not isinstance(verification_url, str)
+            or isinstance(expires_in, bool)
+            or not isinstance(expires_in, (int, float))
+            or isinstance(interval, bool)
+            or not isinstance(interval, (int, float))
+        ):
+            raise ProviderUnavailable()
+        return TidalDeviceAuthorizationStart(
+            status="started",
+            flow_id=flow_id,
+            verification_url=verification_url,
+            expires_in_seconds=float(expires_in),
+            interval_seconds=float(interval),
+        )
+
+    async def poll_tidal_device_authorization(self, flow_id: str) -> TidalDeviceAuthorizationPoll:
+        if _TIDAL_FLOW_ID.fullmatch(flow_id) is None:
+            raise ProviderUnavailable()
+        result = await self._request(TIDAL_DEVICE_AUTHORIZATION_POLL_METHOD, {"flow_id": flow_id})
+        if not isinstance(result, dict) or not set(result).issubset(
+            {"status", "retry_after", "error_code"}
+        ):
+            raise ProviderUnavailable()
+        raw_status = result.get("status")
+        raw_retry = result.get("retry_after")
+        if not isinstance(raw_status, str) or (
+            raw_retry is not None
+            and (
+                isinstance(raw_retry, bool)
+                or not isinstance(raw_retry, (int, float))
+                or raw_retry < 0
+            )
+        ):
+            raise ProviderUnavailable()
+        try:
+            status = TidalDevicePollStatus(raw_status)
+        except ValueError as exc:
+            raise ProviderUnavailable() from exc
+        return TidalDeviceAuthorizationPoll(
+            status=status,
+            retry_after_seconds=float(raw_retry) if raw_retry is not None else None,
+            error_code=_tidal_error_code(result.get("error_code"), required=False),
+        )
+
+    async def cancel_tidal_device_authorization(self, flow_id: str) -> None:
+        if _TIDAL_FLOW_ID.fullmatch(flow_id) is None:
+            raise ProviderUnavailable()
+        result = await self._request(TIDAL_DEVICE_AUTHORIZATION_CANCEL_METHOD, {"flow_id": flow_id})
+        if (
+            not isinstance(result, dict)
+            or set(result) != {"status"}
+            or result.get("status") not in {"cancelled", "released", "not_found"}
+        ):
             raise ProviderUnavailable()
 
     async def prepare_source(self, provider: str, provider_track_id: str) -> Mapping[str, Any]:
@@ -397,3 +496,17 @@ async def close_shared_process_client() -> None:
     client, _shared_client = _shared_client, None
     if client is not None:
         await client.close()
+
+
+def _tidal_error_code(value: object, *, required: bool = True) -> ProviderAccountErrorCode | None:
+    if value is None and not required:
+        return None
+    if not isinstance(value, str):
+        return ProviderAccountErrorCode.TIDAL_AUTH_INVALID_RESPONSE
+    try:
+        code = ProviderAccountErrorCode(value)
+    except ValueError:
+        return ProviderAccountErrorCode.TIDAL_AUTH_INVALID_RESPONSE
+    return (
+        code if code in _TIDAL_ERROR_CODES else ProviderAccountErrorCode.TIDAL_AUTH_INVALID_RESPONSE
+    )

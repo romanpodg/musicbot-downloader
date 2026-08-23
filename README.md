@@ -32,14 +32,17 @@ Current delivery roadmap:
 - Stage 12.3: Operational Audit and Recovery Tooling.
 - Stage 12.4: Final Production Validation and Release Readiness (evidence-gated; see checklist).
 - Stage 13.1: OWNER-only Provider Account Management Foundation.
+- Stage 13.2: OWNER-only Tidal browser/device authorization with OnTheSpot-owned persistence and
+  runtime verification.
 
 Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
 deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage
 12.3 adds a bounded append-only operational audit, offline-safe inspection/recovery tooling,
 validated online SQLite backup, and an OS-level one-runtime lock per SQLite database. Stage 12.4
 adds repeatable credential-free Linux/container release validation; real Telegram/provider checks
-remain explicitly opt-in. Stage 13.1 adds only the provider-account-management architecture and
-OWNER-only Telegram status UI described below; it does not complete Stage 13.
+remain explicitly opt-in. Stage 13.1 adds the provider-account-management architecture and
+OWNER-only Telegram status UI. Stage 13.2 adds only Tidal device authorization; it does not
+complete Stage 13.
 
 See [the production deployment guide](docs/production.md) for the container, filesystem,
 migration, preflight, security, backup, restore, and upgrade contract. Stage 12.4 acceptance is
@@ -48,6 +51,8 @@ an actual Linux production-image build and executed container evidence.
 
 See [the Stage 13.1 provider-account foundation](docs/stage13.1-provider-accounts.md) for its
 authorization, state-model, coordinator, UI, credential-ownership, and explicit non-goal contract.
+See [the Stage 13.2 Tidal authorization contract](docs/stage13.2-tidal-device-authorization.md) for
+the child-isolated polling, OnTheSpot persistence, runtime verification, and lifecycle guarantees.
 
 ## Architecture
 

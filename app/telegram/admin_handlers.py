@@ -12,6 +12,7 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from aiogram.types import User as AiogramUser
 
+from app.core.provider_accounts import ProviderAuthorizationStartStatus
 from app.services.admin_management import (
     AdministratorManagementService,
     AdminManagementError,
@@ -45,6 +46,7 @@ from app.telegram.provider_accounts_presentation import (
     ProviderAccountsPresentation,
     parse_provider_accounts_callback,
 )
+from app.telegram.provider_authorization_ui import ProviderAuthorizationUiManager
 from app.telegram.provider_health_presentation import (
     ProviderHealthCallbackAction,
     ProviderHealthPresentation,
@@ -72,6 +74,7 @@ class AdminHandlerDependencies:
     provider_health_presentation: ProviderHealthPresentation | None = None
     provider_accounts: ProviderAccountManagementService | None = None
     provider_accounts_presentation: ProviderAccountsPresentation | None = None
+    provider_authorization_ui: ProviderAuthorizationUiManager | None = None
 
 
 def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
@@ -591,6 +594,51 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
                 await _edit_or_send(
                     callback,
                     presentation.detail_text(status, locale),
+                    presentation.detail_keyboard(status, locale),
+                )
+            elif parsed.action is ProviderAccountsCallbackAction.CONNECT:
+                if parsed.provider is None:
+                    raise ValueError("provider is required")
+                started = await service.start_authorization(user.id, parsed.provider)
+                if (
+                    started.status is ProviderAuthorizationStartStatus.STARTED
+                    and started.challenge is not None
+                ):
+                    await _edit_or_send(
+                        callback,
+                        presentation.authorization_text(started.challenge, locale),
+                        presentation.authorization_keyboard(started.challenge, locale),
+                    )
+                    if dependencies.provider_authorization_ui is not None:
+                        dependencies.provider_authorization_ui.watch(
+                            callback.message,
+                            actor_user_id=user.id,
+                            provider=parsed.provider,
+                            flow_id=started.challenge.flow_id,
+                            locale=locale,
+                        )
+                else:
+                    status = await service.get_status(user.id, parsed.provider)
+                    await _edit_or_send(
+                        callback,
+                        presentation.detail_text(status, locale),
+                        presentation.detail_keyboard(status, locale),
+                    )
+                    if started.status is ProviderAuthorizationStartStatus.FAILED:
+                        await callback.answer(
+                            presentation.text("admin.tidal_auth_failed", locale), show_alert=True
+                        )
+                        return
+            elif parsed.action is ProviderAccountsCallbackAction.CANCEL:
+                if parsed.provider is None or parsed.flow_id is None:
+                    raise ValueError("provider and flow are required")
+                outcome = await service.cancel_authorization(
+                    user.id, parsed.provider, parsed.flow_id
+                )
+                status = await service.get_status(user.id, parsed.provider)
+                await _edit_or_send(
+                    callback,
+                    presentation.authorization_result_text(status, outcome, locale),
                     presentation.detail_keyboard(status, locale),
                 )
             elif parsed.provider is None:

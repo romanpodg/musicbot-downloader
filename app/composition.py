@@ -10,13 +10,19 @@ from typing import cast
 from aiogram import Dispatcher
 
 from app.config import Settings
+from app.core.enums import MusicProviderName
 from app.core.models import TelegramBotIdentity
+from app.core.provider_accounts import ProviderAuthorizationMethod
 from app.i18n import LocalizationService
 from app.providers.account_management import (
     ProviderAccountRuntimeProbe,
     ProviderRuntimeAccountBackend,
 )
 from app.providers.base import MusicProvider
+from app.providers.tidal_authorization import (
+    TidalDeviceAuthorizationBoundary,
+    TidalDeviceAuthorizationDriver,
+)
 from app.services.admin_management import AdministratorManagementService
 from app.services.admin_overview import AdminOverviewService
 from app.services.artifact_cleanup import (
@@ -65,6 +71,7 @@ from app.telegram.admin_presentation import AdminPresentation
 from app.telegram.handlers import TelegramHandlerDependencies, create_stage9_router
 from app.telegram.presentation import TelegramPresentation
 from app.telegram.provider_accounts_presentation import ProviderAccountsPresentation
+from app.telegram.provider_authorization_ui import ProviderAuthorizationUiManager
 from app.telegram.provider_health_presentation import ProviderHealthPresentation
 from app.telegram.worker_control_presentation import WorkerControlPresentation
 
@@ -131,6 +138,7 @@ class Stage9Components:
     worker_control: RuntimeWorkerControlService
     provider_health: ProviderHealthService
     provider_authorization: ProviderAuthorizationCoordinator
+    provider_authorization_ui: ProviderAuthorizationUiManager
     provider_accounts: ProviderAccountManagementService
     deep_links: DeepLinkRegistryService
     crash_recovery: CrashRecoveryService
@@ -159,6 +167,7 @@ class Stage9Components:
             self.album_coordinator.stop,
             self.delivery_fanout.stop,
             self.queue_manager.stop,
+            self.provider_authorization_ui.close,
             self.provider_authorization.close,
             self.provider.close,
             self.stage8.close,
@@ -300,11 +309,31 @@ async def compose_stage9(
         queue_manager,
     )
     provider_health = ProviderHealthService(cast(ProviderHealthProbe, provider), authorization)
-    provider_authorization = ProviderAuthorizationCoordinator()
+    account_backend = ProviderRuntimeAccountBackend(
+        cast(ProviderAccountRuntimeProbe, provider),
+        authorization_methods={
+            MusicProviderName.TIDAL: (ProviderAuthorizationMethod.BROWSER_DEVICE_LINK,)
+        },
+    )
+    tidal_authorization = TidalDeviceAuthorizationDriver(
+        cast(TidalDeviceAuthorizationBoundary, provider), account_backend
+    )
+    provider_authorization = ProviderAuthorizationCoordinator(
+        {
+            (
+                MusicProviderName.TIDAL,
+                ProviderAuthorizationMethod.BROWSER_DEVICE_LINK,
+            ): tidal_authorization
+        }
+    )
     provider_accounts = ProviderAccountManagementService(
-        ProviderRuntimeAccountBackend(cast(ProviderAccountRuntimeProbe, provider)),
+        account_backend,
         authorization,
         provider_authorization,
+    )
+    provider_accounts_presentation = ProviderAccountsPresentation(i18n)
+    provider_authorization_ui = ProviderAuthorizationUiManager(
+        provider_accounts, provider_accounts_presentation
     )
     dispatcher = Dispatcher()
     dispatcher.include_router(
@@ -320,7 +349,8 @@ async def compose_stage9(
                 provider_health,
                 ProviderHealthPresentation(i18n),
                 provider_accounts,
-                ProviderAccountsPresentation(i18n),
+                provider_accounts_presentation,
+                provider_authorization_ui,
             )
         )
     )
@@ -393,6 +423,7 @@ async def compose_stage9(
         worker_control=worker_control,
         provider_health=provider_health,
         provider_authorization=provider_authorization,
+        provider_authorization_ui=provider_authorization_ui,
         provider_accounts=provider_accounts,
         deep_links=deep_links,
         crash_recovery=crash_recovery,

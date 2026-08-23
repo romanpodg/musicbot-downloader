@@ -10,6 +10,11 @@ from app.core.provider_accounts import (
     ProviderAccountOverview,
     ProviderAccountState,
     ProviderAccountStatus,
+    ProviderAuthorizationMethod,
+    ProviderAuthorizationOutcome,
+    ProviderAuthorizationRequest,
+    ProviderAuthorizationStartOutcome,
+    ProviderAuthorizationStartStatus,
     ProviderDisconnectOutcome,
     ProviderDisconnectOutcomeStatus,
 )
@@ -94,6 +99,35 @@ class ProviderAccountManagementService:
                 ProviderDisconnectOutcomeStatus.FAILED,
                 ProviderAccountErrorCode.DISCONNECT_FAILED,
             )
+
+    async def start_authorization(
+        self,
+        actor_user_id: int,
+        provider: MusicProviderName,
+        method: ProviderAuthorizationMethod = ProviderAuthorizationMethod.BROWSER_DEVICE_LINK,
+    ) -> ProviderAuthorizationStartOutcome:
+        await self.authorize(actor_user_id)
+        request = ProviderAuthorizationRequest(provider, method)
+        if await self._coordinator.is_active(provider):
+            return await self._coordinator.start(request)
+        status = await self._status(provider)
+        if status.state is ProviderAccountState.READY:
+            return ProviderAuthorizationStartOutcome(
+                provider, ProviderAuthorizationStartStatus.ALREADY_READY
+            )
+        return await self._coordinator.start(request)
+
+    async def wait_authorization(
+        self, actor_user_id: int, provider: MusicProviderName, flow_id: str
+    ) -> ProviderAuthorizationOutcome:
+        await self.authorize(actor_user_id)
+        return await self._coordinator.wait(provider, flow_id)
+
+    async def cancel_authorization(
+        self, actor_user_id: int, provider: MusicProviderName, flow_id: str
+    ) -> ProviderAuthorizationOutcome:
+        await self.authorize(actor_user_id)
+        return await self._coordinator.cancel(provider, flow_id)
 
     async def _overview(self) -> ProviderAccountOverview:
         accounts = await asyncio.gather(

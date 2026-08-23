@@ -78,6 +78,30 @@ for line in sys.stdin.buffer:
             "ok": True,
             "result": [] if mode == "malformed_source" else result,
         }
+    elif method == "tidal_device_authorization_start":
+        response = {
+            "id": request_id,
+            "ok": True,
+            "result": {
+                "status": "started",
+                "flow_id": "a" * 16,
+                "verification_url": "https://login.tidal.com/device",
+                "expires_in": 300,
+                "interval": 1,
+            },
+        }
+    elif method == "tidal_device_authorization_poll":
+        response = {
+            "id": request_id,
+            "ok": True,
+            "result": {"status": "pending", "retry_after": 1},
+        }
+    elif method == "tidal_device_authorization_cancel":
+        response = {
+            "id": request_id,
+            "ok": True,
+            "result": {"status": "cancelled"},
+        }
     elif method == "download_native":
         response = {
             "id": request_id,
@@ -201,6 +225,22 @@ async def test_search_operations_share_the_serialized_worker(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_tidal_poll_returns_control_before_ordinary_provider_request(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    try:
+        started = await client.start_tidal_device_authorization()
+        assert started.flow_id is not None
+        pending = await client.poll_tidal_device_authorization(started.flow_id)
+        metadata = await client.get_metadata("https://example.invalid")
+        await client.cancel_tidal_device_authorization(started.flow_id)
+    finally:
+        await client.close()
+
+    assert pending.status.value == "pending"
+    assert metadata["protobuf"] == "python"
+
+
+@pytest.mark.asyncio
 async def test_source_check_uses_normalized_ipc_response(tmp_path: Path) -> None:
     client = _client(tmp_path)
     try:
@@ -267,7 +307,7 @@ def test_worker_sets_protobuf_mode_before_upstream_imports() -> None:
 
 def test_main_process_provider_modules_have_no_upstream_imports() -> None:
     provider_root = Path(__file__).parents[2] / "app" / "providers" / "onthespot"
-    for filename in ("__init__.py", "process.py", "provider.py"):
+    for filename in ("__init__.py", "process.py", "provider.py", "../tidal_authorization.py"):
         source = (provider_root / filename).read_text(encoding="utf-8")
         assert "import onthespot" not in source
         assert "from onthespot" not in source

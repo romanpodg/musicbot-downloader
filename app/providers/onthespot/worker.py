@@ -19,10 +19,14 @@ import importlib.metadata
 import json
 import re
 import sys
+import time
+import uuid
 from collections.abc import Mapping
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
+from urllib.parse import urlsplit
 
 from app.core.enums import MusicProviderName
 from app.providers.onthespot.capabilities import ONTHESPOT_CAPABILITIES
@@ -43,6 +47,9 @@ from app.providers.onthespot.ipc import (
     RESOLVE_ALBUM_METHOD,
     SEARCH_TRACKS_METHOD,
     SHUTDOWN_METHOD,
+    TIDAL_DEVICE_AUTHORIZATION_CANCEL_METHOD,
+    TIDAL_DEVICE_AUTHORIZATION_POLL_METHOD,
+    TIDAL_DEVICE_AUTHORIZATION_START_METHOD,
 )
 
 _AUTHENTICATED_SERVICES = frozenset(
@@ -95,6 +102,22 @@ _MAX_SEARCH_RESULTS = 10
 MAX_ALBUM_TRACKS = 500
 _MAX_ALBUM_TEXT_LENGTH = 1024
 _JOB_ID = re.compile(r"^[0-9a-f]{32}$")
+_TIDAL_FLOW_ID = re.compile(r"^[0-9a-f]{16}$")
+_TIDAL_HTTP_TIMEOUT = (5.0, 10.0)
+_TIDAL_DEFAULT_EXPIRY_SECONDS = 300
+_TIDAL_MAX_EXPIRY_SECONDS = 900
+_TIDAL_DEFAULT_INTERVAL_SECONDS = 3
+_TIDAL_MAX_INTERVAL_SECONDS = 30
+
+
+@dataclass(slots=True)
+class _TidalDeviceFlow:
+    device_code: str = field(repr=False)
+    expires_at_monotonic: float
+    interval_seconds: float
+    next_poll_at_monotonic: float
+    terminal_status: str | None = None
+    terminal_error_code: str | None = None
 
 
 class WorkerError(Exception):
@@ -111,6 +134,7 @@ class OnTheSpotWorker:
         self._registry: Any = None
         self._config: Any = None
         self._runtime: Any = None
+        self._tidal_device_flows: dict[str, _TidalDeviceFlow] = {}
 
     def initialize(self) -> dict[str, Any]:
         if self._initialized:
@@ -495,6 +519,193 @@ class OnTheSpotWorker:
             raise WorkerError("provider_unavailable") from exc
         return {"refreshed": True}
 
+    def tidal_device_authorization_start(self) -> dict[str, Any]:
+        """Create one bounded Tidal device challenge without exposing its device code."""
+
+        if not self._initialized:
+            self.initialize()
+        self._expire_tidal_device_flows()
+        try:
+            with _silence_upstream():
+                tidal = importlib.import_module("onthespot.api.tidal")
+                response = tidal.requests.post(
+                    f"{tidal.AUTH_URL}/device_authorization",
+                    data={"client_id": tidal.CLIENT_ID, "scope": "r_usr+w_usr+w_sub"},
+                    timeout=_TIDAL_HTTP_TIMEOUT,
+                )
+        except Exception:
+            return _tidal_start_failure("TIDAL_AUTH_NETWORK_ERROR")
+        if response.status_code != 200:
+            return _tidal_start_failure("TIDAL_AUTH_START_FAILED")
+        try:
+            payload = response.json()
+        except Exception:
+            return _tidal_start_failure("TIDAL_AUTH_INVALID_RESPONSE")
+        if not isinstance(payload, Mapping):
+            return _tidal_start_failure("TIDAL_AUTH_INVALID_RESPONSE")
+        device_code = payload.get("deviceCode")
+        verification_url = payload.get("verificationUriComplete")
+        if (
+            not isinstance(device_code, str)
+            or not device_code
+            or len(device_code) > 2048
+            or not isinstance(verification_url, str)
+            or not _valid_tidal_verification_url(verification_url)
+        ):
+            return _tidal_start_failure("TIDAL_AUTH_INVALID_RESPONSE")
+        expires_in = _bounded_number(
+            payload.get("expiresIn"),
+            default=_TIDAL_DEFAULT_EXPIRY_SECONDS,
+            minimum=1,
+            maximum=_TIDAL_MAX_EXPIRY_SECONDS,
+        )
+        interval = _bounded_number(
+            payload.get("interval"),
+            default=_TIDAL_DEFAULT_INTERVAL_SECONDS,
+            minimum=1,
+            maximum=_TIDAL_MAX_INTERVAL_SECONDS,
+        )
+        now = time.monotonic()
+        flow_id = uuid.uuid4().hex[:16]
+        self._tidal_device_flows[flow_id] = _TidalDeviceFlow(
+            device_code=device_code,
+            expires_at_monotonic=now + expires_in,
+            interval_seconds=interval,
+            next_poll_at_monotonic=now + interval,
+        )
+        return {
+            "status": "started",
+            "flow_id": flow_id,
+            "verification_url": verification_url,
+            "expires_in": expires_in,
+            "interval": interval,
+        }
+
+    def tidal_device_authorization_poll(self, flow_id: str) -> dict[str, Any]:
+        """Perform at most one token-endpoint request for an existing device flow."""
+
+        flow = self._tidal_device_flows.get(flow_id)
+        if flow is None:
+            return _tidal_poll_result("expired", "TIDAL_AUTH_EXPIRED")
+        if flow.terminal_status is not None:
+            return _tidal_poll_result(flow.terminal_status, flow.terminal_error_code)
+        now = time.monotonic()
+        if now >= flow.expires_at_monotonic:
+            flow.terminal_status = "expired"
+            flow.terminal_error_code = "TIDAL_AUTH_EXPIRED"
+            return _tidal_poll_result(flow.terminal_status, flow.terminal_error_code)
+        if now < flow.next_poll_at_monotonic:
+            return _tidal_poll_result(
+                "pending", retry_after=max(0.0, flow.next_poll_at_monotonic - now)
+            )
+
+        try:
+            with _silence_upstream():
+                tidal = importlib.import_module("onthespot.api.tidal")
+                response = tidal.requests.post(
+                    f"{tidal.AUTH_URL}/token",
+                    data={
+                        "client_id": tidal.CLIENT_ID,
+                        "device_code": flow.device_code,
+                        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                        "scope": "r_usr+w_usr+w_sub",
+                    },
+                    auth=tidal.AUTH,
+                    timeout=_TIDAL_HTTP_TIMEOUT,
+                )
+        except Exception:
+            flow.next_poll_at_monotonic = time.monotonic() + flow.interval_seconds
+            return _tidal_poll_result(
+                "network_error",
+                "TIDAL_AUTH_NETWORK_ERROR",
+                retry_after=flow.interval_seconds,
+            )
+
+        flow.next_poll_at_monotonic = time.monotonic() + flow.interval_seconds
+        try:
+            payload = response.json()
+        except Exception:
+            return self._terminal_tidal_poll(
+                flow, "invalid_response", "TIDAL_AUTH_INVALID_RESPONSE"
+            )
+        if not isinstance(payload, Mapping):
+            return self._terminal_tidal_poll(
+                flow, "invalid_response", "TIDAL_AUTH_INVALID_RESPONSE"
+            )
+        if response.status_code != 200:
+            error = payload.get("error")
+            if error == "authorization_pending":
+                return _tidal_poll_result("pending", retry_after=flow.interval_seconds)
+            if error == "slow_down" or response.status_code == 429:
+                flow.interval_seconds = min(flow.interval_seconds + 5, _TIDAL_MAX_INTERVAL_SECONDS)
+                flow.next_poll_at_monotonic = time.monotonic() + flow.interval_seconds
+                return _tidal_poll_result(
+                    "slow_down",
+                    "TIDAL_AUTH_SLOW_DOWN",
+                    retry_after=flow.interval_seconds,
+                )
+            if error == "access_denied":
+                return self._terminal_tidal_poll(flow, "denied", "TIDAL_AUTH_DENIED")
+            if error in {"expired_token", "invalid_grant"}:
+                return self._terminal_tidal_poll(flow, "expired", "TIDAL_AUTH_EXPIRED")
+            if response.status_code >= 500:
+                return _tidal_poll_result(
+                    "network_error",
+                    "TIDAL_AUTH_NETWORK_ERROR",
+                    retry_after=flow.interval_seconds,
+                )
+            return self._terminal_tidal_poll(
+                flow, "invalid_response", "TIDAL_AUTH_INVALID_RESPONSE"
+            )
+
+        account = _tidal_account_from_token_payload(payload)
+        if account is None:
+            return self._terminal_tidal_poll(
+                flow, "invalid_response", "TIDAL_AUTH_INVALID_RESPONSE"
+            )
+        try:
+            accounts = self._config.get("accounts")
+            if not isinstance(accounts, list):
+                raise ValueError
+            updated_accounts = accounts.copy()
+            updated_accounts.append(account)
+            self._config.set("accounts", updated_accounts)
+            try:
+                self._config.save()
+            except Exception:
+                self._config.set("accounts", accounts)
+                raise
+        except Exception:
+            return self._terminal_tidal_poll(flow, "persist_failed", "TIDAL_AUTH_PERSIST_FAILED")
+        return self._terminal_tidal_poll(flow, "approved")
+
+    def tidal_device_authorization_cancel(self, flow_id: str) -> dict[str, str]:
+        """Release pending state only; persisted accounts are never touched."""
+
+        flow = self._tidal_device_flows.pop(flow_id, None)
+        if flow is None:
+            return {"status": "not_found"}
+        if flow.terminal_status == "approved":
+            return {"status": "released"}
+        return {"status": "cancelled"}
+
+    def _terminal_tidal_poll(
+        self, flow: _TidalDeviceFlow, status: str, error_code: str | None = None
+    ) -> dict[str, Any]:
+        flow.terminal_status = status
+        flow.terminal_error_code = error_code
+        return _tidal_poll_result(status, error_code)
+
+    def _expire_tidal_device_flows(self) -> None:
+        now = time.monotonic()
+        expired = [
+            flow_id
+            for flow_id, flow in self._tidal_device_flows.items()
+            if flow.terminal_status != "approved" and now >= flow.expires_at_monotonic
+        ]
+        for flow_id in expired:
+            self._tidal_device_flows.pop(flow_id, None)
+
     def prepare_source(self, provider: str, provider_track_id: str) -> dict[str, Any]:
         """Inspect selected native media without returning URLs, manifests, or credentials."""
 
@@ -735,6 +946,77 @@ def _album_positive_int(value: Any) -> int | None:
     return number if number > 0 else None
 
 
+def _bounded_number(value: object, *, default: int, minimum: int, maximum: int) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return float(default)
+    return float(min(max(value, minimum), maximum))
+
+
+def _valid_tidal_verification_url(value: str) -> bool:
+    if not value or len(value) > 2048:
+        return False
+    parsed = urlsplit(value)
+    host = (parsed.hostname or "").lower()
+    return parsed.scheme == "https" and (host == "tidal.com" or host.endswith(".tidal.com"))
+
+
+def _tidal_start_failure(error_code: str) -> dict[str, str]:
+    return {"status": "failed", "error_code": error_code}
+
+
+def _tidal_poll_result(
+    status: str,
+    error_code: str | None = None,
+    *,
+    retry_after: float | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {"status": status}
+    if error_code is not None:
+        result["error_code"] = error_code
+    if retry_after is not None:
+        result["retry_after"] = retry_after
+    return result
+
+
+def _tidal_account_from_token_payload(payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    access_token = payload.get("access_token")
+    refresh_token = payload.get("refresh_token")
+    expires_in = payload.get("expires_in")
+    user = payload.get("user")
+    if (
+        not isinstance(access_token, str)
+        or not access_token
+        or not isinstance(refresh_token, str)
+        or not refresh_token
+        or isinstance(expires_in, bool)
+        or not isinstance(expires_in, (int, float))
+        or expires_in <= 0
+        or not isinstance(user, Mapping)
+    ):
+        return None
+    username = user.get("username")
+    country_code = user.get("countryCode")
+    if (
+        not isinstance(username, str)
+        or not username
+        or not isinstance(country_code, str)
+        or not country_code
+    ):
+        return None
+    return {
+        "uuid": str(uuid.uuid4()),
+        "service": "tidal",
+        "active": True,
+        "login": {
+            "username": username,
+            "country_code": country_code,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_expiry": expires_in + time.time(),
+        },
+    }
+
+
 def _response(request_id: str | None, *, result: Any = None, error: str | None = None) -> bytes:
     if error is None:
         payload: dict[str, Any] = {"id": request_id, "ok": True, "result": result}
@@ -830,6 +1112,20 @@ def main() -> int:
                 result = worker.check_provider_health(provider)
             elif method == REFRESH_PROVIDER_HEALTH_METHOD:
                 result = worker.refresh_provider_health()
+            elif method == TIDAL_DEVICE_AUTHORIZATION_START_METHOD:
+                if params:
+                    raise WorkerError("provider_unavailable")
+                result = worker.tidal_device_authorization_start()
+            elif method == TIDAL_DEVICE_AUTHORIZATION_POLL_METHOD:
+                flow_id = params.get("flow_id")
+                if not isinstance(flow_id, str) or _TIDAL_FLOW_ID.fullmatch(flow_id) is None:
+                    raise WorkerError("provider_unavailable")
+                result = worker.tidal_device_authorization_poll(flow_id)
+            elif method == TIDAL_DEVICE_AUTHORIZATION_CANCEL_METHOD:
+                flow_id = params.get("flow_id")
+                if not isinstance(flow_id, str) or _TIDAL_FLOW_ID.fullmatch(flow_id) is None:
+                    raise WorkerError("provider_unavailable")
+                result = worker.tidal_device_authorization_cancel(flow_id)
             elif method == PREPARE_SOURCE_METHOD:
                 provider = params.get("provider")
                 provider_track_id = params.get("provider_track_id")

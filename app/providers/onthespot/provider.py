@@ -47,6 +47,10 @@ from app.providers.base import (
 )
 from app.providers.onthespot.capabilities import ONTHESPOT_CAPABILITIES
 from app.providers.onthespot.process import OnTheSpotProcessClient, get_shared_process_client
+from app.providers.tidal_authorization import (
+    TidalDeviceAuthorizationPoll,
+    TidalDeviceAuthorizationStart,
+)
 
 _SPOTIFY_ID = re.compile(r"^[A-Za-z0-9]{22}$")
 _SIMPLE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -186,6 +190,15 @@ class OnTheSpotProvider(MusicProvider):
         """Reload configured accounts and normal runtime sessions inside the child."""
 
         await self._process_client.refresh_provider_health()
+
+    async def start_tidal_device_authorization(self) -> TidalDeviceAuthorizationStart:
+        return await self._process_client.start_tidal_device_authorization()
+
+    async def poll_tidal_device_authorization(self, flow_id: str) -> TidalDeviceAuthorizationPoll:
+        return await self._process_client.poll_tidal_device_authorization(flow_id)
+
+    async def cancel_tidal_device_authorization(self, flow_id: str) -> None:
+        await self._process_client.cancel_tidal_device_authorization(flow_id)
 
     async def check_provider_health(self, provider: MusicProviderName) -> ProviderHealthEntry:
         """Read a sanitized provider-level observation from the isolated worker."""

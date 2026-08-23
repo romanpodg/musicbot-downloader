@@ -5,7 +5,7 @@ These models deliberately contain no upstream account objects or credential fiel
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
@@ -33,6 +33,16 @@ class ProviderAccountErrorCode(StrEnum):
     PROVIDER_UNSUPPORTED = "PROVIDER_UNSUPPORTED"
     AUTHORIZATION_UNSUPPORTED = "AUTHORIZATION_UNSUPPORTED"
     AUTHORIZATION_FAILED = "AUTHORIZATION_FAILED"
+    AUTHORIZATION_STALE_FLOW = "AUTHORIZATION_STALE_FLOW"
+    TIDAL_AUTH_START_FAILED = "TIDAL_AUTH_START_FAILED"
+    TIDAL_AUTH_PENDING = "TIDAL_AUTH_PENDING"
+    TIDAL_AUTH_SLOW_DOWN = "TIDAL_AUTH_SLOW_DOWN"
+    TIDAL_AUTH_DENIED = "TIDAL_AUTH_DENIED"
+    TIDAL_AUTH_EXPIRED = "TIDAL_AUTH_EXPIRED"
+    TIDAL_AUTH_NETWORK_ERROR = "TIDAL_AUTH_NETWORK_ERROR"
+    TIDAL_AUTH_INVALID_RESPONSE = "TIDAL_AUTH_INVALID_RESPONSE"
+    TIDAL_AUTH_PERSIST_FAILED = "TIDAL_AUTH_PERSIST_FAILED"
+    TIDAL_AUTH_RELOAD_FAILED = "TIDAL_AUTH_RELOAD_FAILED"
     DISCONNECT_UNSUPPORTED = "DISCONNECT_UNSUPPORTED"
     DISCONNECT_FAILED = "DISCONNECT_FAILED"
 
@@ -48,6 +58,14 @@ class ProviderAuthorizationOutcomeStatus(StrEnum):
     ALREADY_ACTIVE = "ALREADY_ACTIVE"
     CANCELLED = "CANCELLED"
     READY = "READY"
+    FAILED = "FAILED"
+
+
+class ProviderAuthorizationStartStatus(StrEnum):
+    STARTED = "STARTED"
+    UNSUPPORTED = "UNSUPPORTED"
+    ALREADY_ACTIVE = "ALREADY_ACTIVE"
+    ALREADY_READY = "ALREADY_READY"
     FAILED = "FAILED"
 
 
@@ -89,6 +107,25 @@ class ProviderAuthorizationRequest:
 class ProviderAuthorizationOutcome:
     provider: MusicProviderName
     status: ProviderAuthorizationOutcomeStatus
+    error_code: ProviderAccountErrorCode | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderAuthorizationChallenge:
+    """Sanitized browser challenge; never contains the device code or credentials."""
+
+    provider: MusicProviderName
+    flow_id: str
+    verification_url: str = field(repr=False)
+    expires_at: datetime
+    polling_interval_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderAuthorizationStartOutcome:
+    provider: MusicProviderName
+    status: ProviderAuthorizationStartStatus
+    challenge: ProviderAuthorizationChallenge | None = None
     error_code: ProviderAccountErrorCode | None = None
 
 
