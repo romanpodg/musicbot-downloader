@@ -2,7 +2,7 @@
 
 Production-oriented foundation for a future Telegram music downloader service. This repository
 implements Stage 0 through the Stage 12.4 deterministic production-validation baseline plus
-Stages 13.1–13.4 provider account management and authorization: canonical recording identity, ambiguity-safe matching,
+Stages 13.1–13.5 provider account management and authorization: canonical recording identity, ambiguity-safe matching,
 verified cross-provider discovery, runtime provider candidate resolution, quality-dependent
 download planning, safe one-shot execution, persistent asynchronous queue orchestration, and
 durable SingleFlight subscribers, a bot-scoped Telegram completed-result cache, and the
@@ -42,6 +42,8 @@ Current delivery roadmap:
   recovery, and sanitized readiness for Tidal, Deezer, and both Spotify components.
 - Stage 14: Telegram Bot UX Foundation: localized UX messages, reusable menus, validated navigation
   callbacks, and transport-neutral interaction-state/progress foundations.
+- Stage 15: Track Search Architecture: provider-neutral search models, provider contract, registry,
+  application use case, and `/search` input foundation; provider API integration remains Stage 16.
 
 Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
 deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage
@@ -74,6 +76,8 @@ ownership, startup reconciliation, crash recovery, atomic replacement, reset, re
 and backup/restore guarantees.
 See [the Stage 14 UX contract](docs/stage14-telegram-ux.md) for the Telegram presentation boundary,
 message and keyboard foundations, callback format, navigation state, and compatibility guarantees.
+See [the Stage 15 search architecture](docs/stage15-track-search.md) for the normalized domain
+models, provider contract, registry, use case, and Stage 16 integration seam.
 
 ## Architecture
 

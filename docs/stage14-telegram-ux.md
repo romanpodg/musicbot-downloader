@@ -64,10 +64,11 @@ contains navigation identifiers only, never user data, provider credentials, tok
 details. The versioned namespace leaves independent room for Stage 15 search and Stage 18 download
 callbacks.
 
-The current navigation state is in memory: `IDLE`, `MENU`, `PROCESSING`, and `ERROR`. Reserved
-states are `SEARCHING`, `SELECTING_TRACK`, `DOWNLOADING`, and `UPLOADING`. This state intentionally
-does not replace Stage 9's durable SQLite Track/Album Card and delivery state; those workflows must
-survive restarts and retain their existing owners.
+The current navigation state is in memory: `IDLE`, `MENU`, `SEARCH_INPUT`, `SEARCHING`,
+`SEARCH_RESULTS`, `PROCESSING`, and `ERROR`. `SELECTING_TRACK`, `DOWNLOADING`, and `UPLOADING`
+remain reserved for later selection/delivery work. This state intentionally does not replace Stage
+9's durable SQLite Track/Album Card and delivery state; those workflows must survive restarts and
+retain their existing owners.
 
 ## Error boundary and compatibility
 
@@ -76,5 +77,7 @@ messages. It does not render exception values, stack traces, SQL text, provider 
 credential material. The provider-account boundary remains OWNER-only/private-chat enforced, and
 its sensitive input deletion rule is unchanged.
 
-Stage 14 does not implement track search, search selection, downloads, actual progress updates,
-provider-account management, or any Stage 15+ behavior.
+Stage 14 itself did not implement track search, search selection, downloads, actual progress
+updates, provider-account management, or later behavior. Stage 15 extends this foundation with
+provider-neutral `/search` input and result-state handling; selection and provider APIs remain
+later work.

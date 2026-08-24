@@ -16,8 +16,11 @@ class UxMessage(StrEnum):
     MENU_ACCOUNT = "menu.account"
     MENU_PROVIDERS = "menu.providers"
     MENU_SETTINGS = "menu.settings"
+    SEARCH_PROMPT = "search.prompt"
+    SEARCH_RESULTS = "search.results"
     INVALID_SELECTION = "error.invalid_selection"
     INVALID_REQUEST = "error.invalid_request"
+    SEARCH_UNAVAILABLE = "error.search_unavailable"
     OPERATION_FAILED = "error.operation_failed"
     PRIVATE_ONLY = "system.private_only"
 

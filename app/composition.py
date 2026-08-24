@@ -9,6 +9,7 @@ from typing import cast
 
 from aiogram import Dispatcher
 
+from app.application.search import SearchTracksUseCase
 from app.application.ux import UserUxStateService, UxErrorService, UxFlowService, UxProgressService
 from app.config import Settings
 from app.core.enums import MusicProviderName
@@ -72,6 +73,7 @@ from app.services.telegram_requests import ResolveTrackAdapter, TelegramTrackReq
 from app.services.telegram_upload import TelegramCacheUploadExecutor
 from app.services.telegram_users import TelegramUserService
 from app.services.track_resolution import ResolveTrackService
+from app.services.track_search import TrackSearchProviderRegistry, TrackSearchService
 from app.services.workers import DownloadWorkerBackend, QueueManager, UploadWorkerBackend
 from app.storage import Database
 from app.telegram import AiogramTelegramGateway, TelegramGateway
@@ -287,7 +289,9 @@ async def compose_stage9(
     users = TelegramUserService(database, i18n, owner_id=settings.owner_id)
     ux_states = UserUxStateService()
     ux_progress = UxProgressService(ux_states)
-    ux_flows = UxFlowService(users, ux_states)
+    search_registry = TrackSearchProviderRegistry()
+    search_use_case = SearchTracksUseCase(TrackSearchService(search_registry))
+    ux_flows = UxFlowService(users, ux_states, search_use_case)
     track_resolution = ResolveTrackService(database, provider)
     deep_links = DeepLinkRegistryService(
         database,

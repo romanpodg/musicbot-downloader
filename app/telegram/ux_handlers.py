@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from aiogram import F, Router
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import BaseFilter, Command, CommandStart
 from aiogram.types import CallbackQuery, Message
 from aiogram.types import User as AiogramUser
 
@@ -31,6 +31,21 @@ class UxHandlerDependencies:
     errors: UxErrorService
 
 
+class SearchInputFilter(BaseFilter):
+    """Match only an active Stage 15 search input, preserving later text routers."""
+
+    def __init__(self, flows: UxFlowService) -> None:
+        self._flows = flows
+
+    async def __call__(self, message: Message) -> bool:
+        return (
+            message.from_user is not None
+            and message.text is not None
+            and not message.text.startswith("/")
+            and self._flows.awaiting_search_input(message.from_user.id)
+        )
+
+
 def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
     router = Router(name="stage14-ux")
 
@@ -45,6 +60,31 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
     @router.message(Command("menu"))
     async def menu_command(message: Message) -> None:
         await _handle_message(message, dependencies, dependencies.flows.open_menu)
+
+    @router.message(Command("search"))
+    async def search_command(message: Message) -> None:
+        await _handle_message(message, dependencies, dependencies.flows.begin_search)
+
+    @router.message(SearchInputFilter(dependencies.flows))
+    async def search_input(message: Message) -> None:
+        if message.from_user is None or message.text is None:
+            return
+        try:
+            user = await dependencies.users.observe(_profile(message.from_user))
+            if not await _private_message(message, user, dependencies):
+                return
+            screen = await dependencies.flows.search(_profile(message.from_user), message.text)
+            locale = dependencies.users.locale_for(user)
+            await message.answer(
+                dependencies.messages.get(screen.message_key.removeprefix("ux."), locale),
+                reply_markup=dependencies.keyboards.for_menu(locale, screen.menu),
+            )
+        except Exception as exc:
+            logger.error("Telegram UX search failed")
+            locale = dependencies.messages.default_locale
+            await message.answer(
+                dependencies.messages.get(dependencies.errors.message_name(exc).value, locale)
+            )
 
     @router.callback_query(F.data.startswith("ux1:"))
     async def menu_callback(callback: CallbackQuery) -> None:
