@@ -40,6 +40,8 @@ Current delivery roadmap:
   future catalog/search capability, both child-isolated and OnTheSpot-owned.
 - Stage 13.5: unified startup reconciliation, atomic credential updates, provider reset, crash
   recovery, and sanitized readiness for Tidal, Deezer, and both Spotify components.
+- Stage 14: Telegram Bot UX Foundation: localized UX messages, reusable menus, validated navigation
+  callbacks, and transport-neutral interaction-state/progress foundations.
 
 Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
 deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage
@@ -70,6 +72,8 @@ atomic OnTheSpot persistence, and token-cache invalidation.
 See [the Stage 13.5 lifecycle contract](docs/stage13.5-lifecycle-hardening.md) for credential
 ownership, startup reconciliation, crash recovery, atomic replacement, reset, readiness, filesystem,
 and backup/restore guarantees.
+See [the Stage 14 UX contract](docs/stage14-telegram-ux.md) for the Telegram presentation boundary,
+message and keyboard foundations, callback format, navigation state, and compatibility guarantees.
 
 ## Architecture
 

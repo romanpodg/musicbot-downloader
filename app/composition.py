@@ -9,6 +9,7 @@ from typing import cast
 
 from aiogram import Dispatcher
 
+from app.application.ux import UserUxStateService, UxErrorService, UxFlowService, UxProgressService
 from app.config import Settings
 from app.core.enums import MusicProviderName
 from app.core.models import TelegramBotIdentity
@@ -78,10 +79,13 @@ from app.telegram.admin_handlers import AdminHandlerDependencies, create_admin_r
 from app.telegram.admin_management_presentation import AdminManagementPresentation
 from app.telegram.admin_presentation import AdminPresentation
 from app.telegram.handlers import TelegramHandlerDependencies, create_stage9_router
+from app.telegram.keyboards import UxKeyboardFactory
+from app.telegram.messages import UxMessageService
 from app.telegram.presentation import TelegramPresentation
 from app.telegram.provider_accounts_presentation import ProviderAccountsPresentation
 from app.telegram.provider_authorization_ui import ProviderAuthorizationUiManager
 from app.telegram.provider_health_presentation import ProviderHealthPresentation
+from app.telegram.ux_handlers import UxHandlerDependencies, create_ux_router
 from app.telegram.worker_control_presentation import WorkerControlPresentation
 
 logger = logging.getLogger(__name__)
@@ -153,6 +157,7 @@ class Stage9Components:
     crash_recovery: CrashRecoveryService
     artifact_cleanup: StaleArtifactCleanupService
     cleanup_manager: StaleArtifactCleanupManager
+    ux_progress: UxProgressService
 
     async def start(self) -> None:
         try:
@@ -280,6 +285,9 @@ async def compose_stage9(
     )
     i18n = LocalizationService(settings.supported_locales, settings.default_locale)
     users = TelegramUserService(database, i18n, owner_id=settings.owner_id)
+    ux_states = UserUxStateService()
+    ux_progress = UxProgressService(ux_states)
+    ux_flows = UxFlowService(users, ux_states)
     track_resolution = ResolveTrackService(database, provider)
     deep_links = DeepLinkRegistryService(
         database,
@@ -392,6 +400,17 @@ async def compose_stage9(
         )
     )
     dispatcher.include_router(
+        create_ux_router(
+            UxHandlerDependencies(
+                users,
+                ux_flows,
+                UxMessageService(i18n),
+                UxKeyboardFactory(i18n),
+                UxErrorService(),
+            )
+        )
+    )
+    dispatcher.include_router(
         create_stage9_router(
             TelegramHandlerDependencies(
                 users,
@@ -466,4 +485,5 @@ async def compose_stage9(
         crash_recovery=crash_recovery,
         artifact_cleanup=artifact_cleanup,
         cleanup_manager=cleanup_manager,
+        ux_progress=ux_progress,
     )
