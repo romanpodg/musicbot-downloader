@@ -16,9 +16,11 @@ from aiogram.types import User as AiogramUser
 from app.core.enums import MusicProviderName
 from app.core.provider_accounts import (
     ProviderAccountErrorCode,
+    ProviderAuthorizationMethod,
     ProviderAuthorizationOutcome,
     ProviderAuthorizationOutcomeStatus,
     ProviderAuthorizationStartStatus,
+    ProviderSensitiveInputChallenge,
     SensitiveValue,
 )
 from app.services.admin_management import (
@@ -88,10 +90,13 @@ class AdminHandlerDependencies:
 def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
     router = Router(name="stage10-admin-panel")
     last_sensitive_message_by_chat: dict[int, int] = {}
+    expected_sensitive_flow_by_chat: dict[
+        int, tuple[MusicProviderName, str, ProviderAuthorizationMethod]
+    ] = {}
 
     @router.message(F.text & ~F.text.startswith("/"))
     async def deezer_sensitive_input(message: Message) -> None:
-        """Consume only the authoritative OWNER's current private Deezer generation."""
+        """Consume only an authoritative OWNER's current private secret generation."""
 
         service = dependencies.provider_accounts
         presentation = dependencies.provider_accounts_presentation
@@ -108,7 +113,34 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
             if user is None:
                 raise SkipHandler
             await service.authorize(user.id)
-            challenge = await service.pending_sensitive_challenge(user.id, MusicProviderName.DEEZER)
+            expected = expected_sensitive_flow_by_chat.get(message.chat.id)
+            if expected is not None:
+                provider, expected_flow_id, method = expected
+                challenge = await service.pending_sensitive_challenge(user.id, provider, method)
+                if challenge is None or challenge.flow_id != expected_flow_id:
+                    raise SkipHandler
+            else:
+                candidates = tuple(
+                    candidate
+                    for candidate in (
+                        await service.pending_sensitive_challenge(
+                            user.id,
+                            MusicProviderName.DEEZER,
+                            ProviderAuthorizationMethod.SENSITIVE_SECRET,
+                        ),
+                        await service.pending_sensitive_challenge(
+                            user.id,
+                            MusicProviderName.SPOTIFY,
+                            ProviderAuthorizationMethod.COMPOUND_CREDENTIALS,
+                        ),
+                    )
+                    if candidate is not None
+                )
+                if len(candidates) != 1:
+                    raise SkipHandler
+                challenge = candidates[0]
+                provider = challenge.provider
+                method = challenge.authorization_method
         except AuthorizationError:
             raise SkipHandler from None
         except SkipHandler:
@@ -120,7 +152,7 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
 
         # Recheck the generation immediately before the destructive security gate.
         try:
-            current = await service.pending_sensitive_challenge(user.id, MusicProviderName.DEEZER)
+            current = await service.pending_sensitive_challenge(user.id, provider, method)
         except Exception:
             raise SkipHandler from None
         if current is None or current.flow_id != challenge.flow_id:
@@ -136,55 +168,96 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
             try:
                 await service.fail_sensitive_input(
                     user.id,
-                    MusicProviderName.DEEZER,
+                    provider,
                     challenge.flow_id,
-                    ProviderAccountErrorCode.DEEZER_AUTH_MESSAGE_DELETE_FAILED,
+                    ProviderAccountErrorCode.SPOTIFY_WEBAPI_MESSAGE_DELETE_FAILED
+                    if provider is MusicProviderName.SPOTIFY
+                    else ProviderAccountErrorCode.DEEZER_AUTH_MESSAGE_DELETE_FAILED,
                 )
             except Exception:
                 pass
             try:
-                await message.answer(presentation.text("admin.deezer_auth_delete_failed", locale))
+                await message.answer(
+                    presentation.text(
+                        "admin.spotify_webapi_auth_delete_failed"
+                        if provider is MusicProviderName.SPOTIFY
+                        else "admin.deezer_auth_delete_failed",
+                        locale,
+                    )
+                )
             except Exception:
                 pass
+            expected_sensitive_flow_by_chat.pop(message.chat.id, None)
             return
 
         progress: Message | None = None
         try:
-            progress = await message.answer(presentation.text("admin.deezer_auth_progress", locale))
+            progress = await message.answer(
+                presentation.text(
+                    "admin.spotify_webapi_auth_progress"
+                    if provider is MusicProviderName.SPOTIFY
+                    else "admin.deezer_auth_progress",
+                    locale,
+                )
+            )
         except Exception:
             pass
         try:
-            credential = SensitiveValue(message.text or " ")
-            outcome = await service.submit_sensitive_secret(
-                user.id,
-                MusicProviderName.DEEZER,
-                challenge.flow_id,
-                credential,
-            )
-            del credential
+            if provider is MusicProviderName.SPOTIFY:
+                parsed_credentials = _parse_spotify_webapi_submission(message.text or "")
+                if parsed_credentials is None:
+                    outcome = await service.fail_sensitive_input(
+                        user.id,
+                        provider,
+                        challenge.flow_id,
+                        ProviderAccountErrorCode.SPOTIFY_WEBAPI_INVALID_FORMAT,
+                    )
+                else:
+                    client_id = SensitiveValue(parsed_credentials[0])
+                    client_secret = SensitiveValue(parsed_credentials[1])
+                    outcome = await service.submit_compound_credentials(
+                        user.id,
+                        provider,
+                        challenge.flow_id,
+                        client_id,
+                        client_secret,
+                    )
+                    del client_id, client_secret
+            else:
+                credential = SensitiveValue(message.text or " ")
+                outcome = await service.submit_sensitive_secret(
+                    user.id,
+                    provider,
+                    challenge.flow_id,
+                    credential,
+                )
+                del credential
         except Exception:
             try:
                 outcome = await service.fail_sensitive_input(
                     user.id,
-                    MusicProviderName.DEEZER,
+                    provider,
                     challenge.flow_id,
                     ProviderAccountErrorCode.AUTHORIZATION_FAILED,
                 )
             except Exception:
                 outcome = ProviderAuthorizationOutcome(
-                    MusicProviderName.DEEZER,
+                    provider,
                     ProviderAuthorizationOutcomeStatus.FAILED,
                     ProviderAccountErrorCode.AUTHORIZATION_FAILED,
                 )
         if progress is not None:
             try:
-                status = await service.get_status(user.id, MusicProviderName.DEEZER)
+                status = await service.get_status(user.id, provider)
                 await progress.edit_text(
                     presentation.authorization_result_text(status, outcome, locale),
                     reply_markup=presentation.detail_keyboard(status, locale),
                 )
             except Exception:
                 pass
+        current_expected = expected_sensitive_flow_by_chat.get(message.chat.id)
+        if current_expected is not None and current_expected[1] == challenge.flow_id:
+            expected_sensitive_flow_by_chat.pop(message.chat.id, None)
 
     @router.message(Command("admin"))
     async def admin_command(message: Message) -> None:
@@ -702,10 +775,30 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
                     presentation.detail_text(status, locale),
                     presentation.detail_keyboard(status, locale),
                 )
-            elif parsed.action is ProviderAccountsCallbackAction.CONNECT:
+            elif parsed.action in {
+                ProviderAccountsCallbackAction.CONNECT,
+                ProviderAccountsCallbackAction.CONNECT_PLAYBACK,
+                ProviderAccountsCallbackAction.CONFIGURE_WEB_API,
+            }:
                 if parsed.provider is None:
                     raise ValueError("provider is required")
-                started = await service.start_authorization(user.id, parsed.provider)
+                method = (
+                    ProviderAuthorizationMethod.BROWSER_DEVICE_LINK
+                    if parsed.action is ProviderAccountsCallbackAction.CONNECT_PLAYBACK
+                    else ProviderAuthorizationMethod.COMPOUND_CREDENTIALS
+                    if parsed.action is ProviderAccountsCallbackAction.CONFIGURE_WEB_API
+                    else None
+                )
+                if (
+                    parsed.action
+                    in {
+                        ProviderAccountsCallbackAction.CONNECT_PLAYBACK,
+                        ProviderAccountsCallbackAction.CONFIGURE_WEB_API,
+                    }
+                    and parsed.provider is not MusicProviderName.SPOTIFY
+                ):
+                    raise ValueError("Spotify action requires Spotify provider")
+                started = await service.start_authorization(user.id, parsed.provider, method)
                 if (
                     started.status is ProviderAuthorizationStartStatus.STARTED
                     and started.challenge is not None
@@ -715,6 +808,12 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
                         presentation.authorization_text(started.challenge, locale),
                         presentation.authorization_keyboard(started.challenge, locale),
                     )
+                    if isinstance(started.challenge, ProviderSensitiveInputChallenge):
+                        expected_sensitive_flow_by_chat[callback.message.chat.id] = (
+                            parsed.provider,
+                            started.challenge.flow_id,
+                            started.challenge.authorization_method,
+                        )
                     if dependencies.provider_authorization_ui is not None:
                         dependencies.provider_authorization_ui.watch(
                             callback.message,
@@ -735,6 +834,8 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
                             presentation.text(
                                 "admin.deezer_auth_failed"
                                 if parsed.provider is MusicProviderName.DEEZER
+                                else "admin.spotify_auth_failed"
+                                if parsed.provider is MusicProviderName.SPOTIFY
                                 else "admin.tidal_auth_failed",
                                 locale,
                             ),
@@ -747,6 +848,9 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
                 outcome = await service.cancel_authorization(
                     user.id, parsed.provider, parsed.flow_id
                 )
+                expected = expected_sensitive_flow_by_chat.get(callback.message.chat.id)
+                if expected is not None and expected[1] == parsed.flow_id:
+                    expected_sensitive_flow_by_chat.pop(callback.message.chat.id, None)
                 status = await service.get_status(user.id, parsed.provider)
                 await _edit_or_send(
                     callback,
@@ -785,6 +889,31 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
             )
 
     return router
+
+
+def _parse_spotify_webapi_submission(value: str) -> tuple[str, str] | None:
+    """Accept exactly two bounded lines without ever embedding them in an error."""
+
+    if not value or len(value) > 2 * 1024 + 2:
+        return None
+    normalized = value.replace("\r\n", "\n")
+    if "\r" in normalized:
+        return None
+    parts = normalized.split("\n")
+    if len(parts) != 2:
+        return None
+    client_id, client_secret = (part.strip(" ") for part in parts)
+    if not client_id or not client_secret:
+        return None
+    if len(client_id) > 1024 or len(client_secret) > 1024:
+        return None
+    if any(
+        ord(character) < 32 or ord(character) == 127
+        for field in (client_id, client_secret)
+        for character in field
+    ):
+        return None
+    return client_id, client_secret
 
 
 async def _adjust_worker(

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 from app.core.enums import MusicProviderName
 from app.core.provider_accounts import (
+    ProviderAccountComponent,
     ProviderAccountErrorCode,
     ProviderAccountOverview,
     ProviderAccountState,
@@ -15,6 +17,7 @@ from app.core.provider_accounts import (
     ProviderAuthorizationRequest,
     ProviderAuthorizationStartOutcome,
     ProviderAuthorizationStartStatus,
+    ProviderCompoundCredentialInput,
     ProviderDisconnectOutcome,
     ProviderDisconnectOutcomeStatus,
     ProviderSecretInput,
@@ -123,17 +126,30 @@ class ProviderAccountManagementService:
         if await self._coordinator.is_active(provider):
             return await self._coordinator.start(request)
         status = await self._status(provider)
-        if status.state is ProviderAccountState.READY:
+        playback = status.component_status(ProviderAccountComponent.PLAYBACK)
+        if (
+            method is ProviderAuthorizationMethod.BROWSER_DEVICE_LINK
+            and provider is MusicProviderName.SPOTIFY
+            and playback is not None
+            and playback.state is ProviderAccountState.READY
+        ) or (
+            method is not ProviderAuthorizationMethod.COMPOUND_CREDENTIALS
+            and provider is not MusicProviderName.SPOTIFY
+            and status.state is ProviderAccountState.READY
+        ):
             return ProviderAuthorizationStartOutcome(
                 provider, ProviderAuthorizationStartStatus.ALREADY_READY
             )
         return await self._coordinator.start(request)
 
     async def pending_sensitive_challenge(
-        self, actor_user_id: int, provider: MusicProviderName
+        self,
+        actor_user_id: int,
+        provider: MusicProviderName,
+        method: ProviderAuthorizationMethod | None = None,
     ) -> ProviderSensitiveInputChallenge | None:
         await self.authorize(actor_user_id)
-        return await self._coordinator.pending_sensitive_challenge(provider)
+        return await self._coordinator.pending_sensitive_challenge(provider, method)
 
     async def submit_sensitive_secret(
         self,
@@ -145,6 +161,21 @@ class ProviderAccountManagementService:
         await self.authorize(actor_user_id)
         return await self._coordinator.submit_sensitive_secret(
             provider, flow_id, ProviderSecretInput(provider, secret)
+        )
+
+    async def submit_compound_credentials(
+        self,
+        actor_user_id: int,
+        provider: MusicProviderName,
+        flow_id: str,
+        client_id: SensitiveValue,
+        client_secret: SensitiveValue,
+    ) -> ProviderAuthorizationOutcome:
+        await self.authorize(actor_user_id)
+        return await self._coordinator.submit_compound_credentials(
+            provider,
+            flow_id,
+            ProviderCompoundCredentialInput(provider, client_id, client_secret),
         )
 
     async def fail_sensitive_input(
@@ -182,13 +213,36 @@ class ProviderAccountManagementService:
             return _error_status(provider, ProviderAccountErrorCode.STATUS_CHECK_FAILED)
         if status.provider is not provider:
             return _error_status(provider, ProviderAccountErrorCode.INVALID_BACKEND_RESPONSE)
-        if await self._coordinator.is_active(provider):
+        active_method = await self._coordinator.active_method(provider)
+        if active_method is not None:
+            if provider is MusicProviderName.SPOTIFY and status.components:
+                target = (
+                    ProviderAccountComponent.PLAYBACK
+                    if active_method is ProviderAuthorizationMethod.BROWSER_DEVICE_LINK
+                    else ProviderAccountComponent.WEB_API
+                )
+                components = tuple(
+                    replace(component, state=ProviderAccountState.AUTHORIZING, error_code=None)
+                    if component.component is target
+                    else component
+                    for component in status.components
+                )
+                return replace(
+                    status,
+                    state=(
+                        ProviderAccountState.AUTHORIZING
+                        if target is ProviderAccountComponent.PLAYBACK
+                        else status.state
+                    ),
+                    components=components,
+                )
             return ProviderAccountStatus(
                 provider=provider,
                 state=ProviderAccountState.AUTHORIZING,
                 checked_at=status.checked_at,
                 authorization_methods=status.authorization_methods,
                 disconnect_supported=status.disconnect_supported,
+                components=status.components,
             )
         return status
 

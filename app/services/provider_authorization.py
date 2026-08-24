@@ -18,6 +18,7 @@ from app.core.provider_accounts import (
     ProviderAuthorizationStartOutcome,
     ProviderAuthorizationStartStatus,
     ProviderCompoundCredentialInput,
+    ProviderLocalPairingChallenge,
     ProviderSecretInput,
     ProviderSensitiveInputChallenge,
 )
@@ -34,10 +35,10 @@ class ProviderAuthorizationDriver(Protocol):
 class BrowserDeviceAuthorizationDriver(Protocol):
     async def start(
         self, request: ProviderAuthorizationRequest
-    ) -> ProviderAuthorizationChallenge: ...
+    ) -> ProviderAuthorizationChallenge | ProviderLocalPairingChallenge: ...
 
     async def wait(
-        self, challenge: ProviderAuthorizationChallenge
+        self, challenge: ProviderAuthorizationChallenge | ProviderLocalPairingChallenge
     ) -> ProviderAuthorizationOutcome: ...
 
     async def cancel(self, flow_id: str) -> None: ...
@@ -60,14 +61,15 @@ class _ActiveAuthorization:
     flow_id: str
     task: asyncio.Task[ProviderAuthorizationOutcome]
     driver: ProviderAuthorizationDriver | BrowserDeviceAuthorizationDriver
-    challenge: ProviderAuthorizationChallenge | None = None
+    method: ProviderAuthorizationMethod
+    challenge: ProviderAuthorizationChallenge | ProviderLocalPairingChallenge | None = None
 
 
 @dataclass(slots=True)
 class _ActiveSensitiveAuthorization:
     flow_id: str
     completion: asyncio.Future[ProviderAuthorizationOutcome]
-    driver: SensitiveSecretAuthorizationDriver
+    driver: SensitiveSecretAuthorizationDriver | CompoundCredentialAuthorizationDriver
     challenge: ProviderSensitiveInputChallenge
     submission_task: asyncio.Task[ProviderAuthorizationOutcome] | None = None
 
@@ -81,7 +83,8 @@ class ProviderAuthorizationCoordinator:
             tuple[MusicProviderName, ProviderAuthorizationMethod],
             ProviderAuthorizationDriver
             | BrowserDeviceAuthorizationDriver
-            | SensitiveSecretAuthorizationDriver,
+            | SensitiveSecretAuthorizationDriver
+            | CompoundCredentialAuthorizationDriver,
         ]
         | None = None,
     ) -> None:
@@ -105,6 +108,18 @@ class ProviderAuthorizationCoordinator:
                 sensitive is not None and not sensitive.completion.done()
             )
 
+    async def active_method(
+        self, provider: MusicProviderName
+    ) -> ProviderAuthorizationMethod | None:
+        async with self._lock:
+            active = self._active.get(provider)
+            if active is not None and not active.task.done():
+                return active.method
+            sensitive = self._sensitive_active.get(provider)
+            if sensitive is not None and not sensitive.completion.done():
+                return sensitive.challenge.authorization_method
+            return None
+
     async def start(
         self, request: ProviderAuthorizationRequest
     ) -> ProviderAuthorizationStartOutcome:
@@ -117,6 +132,15 @@ class ProviderAuthorizationCoordinator:
         ):
             return await self._start_sensitive(
                 request, cast(SensitiveSecretAuthorizationDriver, driver)
+            )
+        authorize_credentials = getattr(driver, "authorize_credentials", None)
+        if (
+            request.method is ProviderAuthorizationMethod.COMPOUND_CREDENTIALS
+            and driver is not None
+            and callable(authorize_credentials)
+        ):
+            return await self._start_sensitive(
+                request, cast(CompoundCredentialAuthorizationDriver, driver)
             )
         start_method = getattr(driver, "start", None)
         wait_method = getattr(driver, "wait", None)
@@ -157,7 +181,9 @@ class ProviderAuthorizationCoordinator:
                 self._run_browser_driver(browser_driver, challenge),
                 name=f"provider-authorization-{request.provider.value}-{challenge.flow_id}",
             )
-            active = _ActiveAuthorization(challenge.flow_id, task, browser_driver, challenge)
+            active = _ActiveAuthorization(
+                challenge.flow_id, task, browser_driver, request.method, challenge
+            )
             self._active[request.provider] = active
             self._completed.pop(request.provider, None)
             self._schedule_cleanup(request.provider, active)
@@ -222,13 +248,20 @@ class ProviderAuthorizationCoordinator:
         return await self.wait(request.provider, started.challenge.flow_id)
 
     async def pending_sensitive_challenge(
-        self, provider: MusicProviderName
+        self,
+        provider: MusicProviderName,
+        method: ProviderAuthorizationMethod | None = None,
     ) -> ProviderSensitiveInputChallenge | None:
         """Return only the current generation while it is awaiting a first submission."""
 
         async with self._lock:
             active = self._sensitive_active.get(provider)
-            if active is None or active.completion.done() or active.submission_task is not None:
+            if (
+                active is None
+                or active.completion.done()
+                or active.submission_task is not None
+                or (method is not None and active.challenge.authorization_method is not method)
+            ):
                 return None
             return active.challenge
 
@@ -244,7 +277,13 @@ class ProviderAuthorizationCoordinator:
             return self._stale(provider)
         async with self._lock:
             active = self._sensitive_active.get(provider)
-            if active is None or active.flow_id != flow_id or active.completion.done():
+            if (
+                active is None
+                or active.flow_id != flow_id
+                or active.completion.done()
+                or active.challenge.authorization_method
+                is not ProviderAuthorizationMethod.SENSITIVE_SECRET
+            ):
                 return self._stale(provider)
             if active.submission_task is not None:
                 return ProviderAuthorizationOutcome(
@@ -253,6 +292,35 @@ class ProviderAuthorizationCoordinator:
             task = asyncio.create_task(
                 self._complete_sensitive_submission(active, credential),
                 name=f"provider-sensitive-authorization-{provider.value}-{flow_id}",
+            )
+            active.submission_task = task
+        return await asyncio.shield(task)
+
+    async def submit_compound_credentials(
+        self,
+        provider: MusicProviderName,
+        flow_id: str,
+        credentials: ProviderCompoundCredentialInput,
+    ) -> ProviderAuthorizationOutcome:
+        if credentials.provider is not provider:
+            return self._stale(provider)
+        async with self._lock:
+            active = self._sensitive_active.get(provider)
+            if (
+                active is None
+                or active.flow_id != flow_id
+                or active.completion.done()
+                or active.challenge.authorization_method
+                is not ProviderAuthorizationMethod.COMPOUND_CREDENTIALS
+            ):
+                return self._stale(provider)
+            if active.submission_task is not None:
+                return ProviderAuthorizationOutcome(
+                    provider, ProviderAuthorizationOutcomeStatus.ALREADY_ACTIVE
+                )
+            task = asyncio.create_task(
+                self._complete_sensitive_submission(active, credentials),
+                name=f"provider-compound-authorization-{provider.value}-{flow_id}",
             )
             active.submission_task = task
         return await asyncio.shield(task)
@@ -395,7 +463,7 @@ class ProviderAuthorizationCoordinator:
                 self._run_legacy_driver(driver, request),
                 name=f"provider-authorization-{request.provider.value}",
             )
-            active = _ActiveAuthorization("", task, driver)
+            active = _ActiveAuthorization("", task, driver, request.method)
             self._active[request.provider] = active
             self._schedule_cleanup(request.provider, active)
         return await asyncio.shield(task)
@@ -426,7 +494,7 @@ class ProviderAuthorizationCoordinator:
     async def _start_sensitive(
         self,
         request: ProviderAuthorizationRequest,
-        driver: SensitiveSecretAuthorizationDriver,
+        driver: SensitiveSecretAuthorizationDriver | CompoundCredentialAuthorizationDriver,
     ) -> ProviderAuthorizationStartOutcome:
         async with self._lock:
             existing = self._active.get(request.provider)
@@ -438,7 +506,7 @@ class ProviderAuthorizationCoordinator:
                     request.provider, ProviderAuthorizationStartStatus.ALREADY_ACTIVE
                 )
             flow_id = uuid.uuid4().hex[:16]
-            challenge = ProviderSensitiveInputChallenge(request.provider, flow_id)
+            challenge = ProviderSensitiveInputChallenge(request.provider, flow_id, request.method)
             completion = asyncio.get_running_loop().create_future()
             active = _ActiveSensitiveAuthorization(flow_id, completion, driver, challenge)
             self._sensitive_active[request.provider] = active
@@ -455,11 +523,18 @@ class ProviderAuthorizationCoordinator:
 
     async def _run_sensitive_driver(
         self,
-        driver: SensitiveSecretAuthorizationDriver,
-        credential: ProviderSecretInput,
+        driver: SensitiveSecretAuthorizationDriver | CompoundCredentialAuthorizationDriver,
+        credential: ProviderSecretInput | ProviderCompoundCredentialInput,
     ) -> ProviderAuthorizationOutcome:
         try:
-            outcome = await driver.authorize_secret(credential)
+            if isinstance(credential, ProviderSecretInput):
+                outcome = await cast(SensitiveSecretAuthorizationDriver, driver).authorize_secret(
+                    credential
+                )
+            else:
+                outcome = await cast(
+                    CompoundCredentialAuthorizationDriver, driver
+                ).authorize_credentials(credential)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -479,7 +554,7 @@ class ProviderAuthorizationCoordinator:
     async def _complete_sensitive_submission(
         self,
         active: _ActiveSensitiveAuthorization,
-        credential: ProviderSecretInput,
+        credential: ProviderSecretInput | ProviderCompoundCredentialInput,
     ) -> ProviderAuthorizationOutcome:
         outcome = await self._run_sensitive_driver(active.driver, credential)
         async with self._lock:
@@ -518,7 +593,7 @@ class ProviderAuthorizationCoordinator:
     async def _run_browser_driver(
         self,
         driver: BrowserDeviceAuthorizationDriver,
-        challenge: ProviderAuthorizationChallenge,
+        challenge: ProviderAuthorizationChallenge | ProviderLocalPairingChallenge,
     ) -> ProviderAuthorizationOutcome:
         try:
             outcome = await driver.wait(challenge)

@@ -732,7 +732,10 @@ async def test_runtime_composition_starts_and_stops_without_leaked_tasks(
     assert components.provider_authorization.available_methods(MusicProviderName.TIDAL) == (
         ProviderAuthorizationMethod.BROWSER_DEVICE_LINK,
     )
-    assert components.provider_authorization.available_methods(MusicProviderName.SPOTIFY) == ()
+    assert components.provider_authorization.available_methods(MusicProviderName.SPOTIFY) == (
+        ProviderAuthorizationMethod.BROWSER_DEVICE_LINK,
+        ProviderAuthorizationMethod.COMPOUND_CREDENTIALS,
+    )
     assert isinstance(components.provider_accounts, ProviderAccountManagementService)
     await components.start()
     await asyncio.sleep(0)

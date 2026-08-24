@@ -21,6 +21,19 @@ class ProviderAccountState(StrEnum):
     UNSUPPORTED = "UNSUPPORTED"
 
 
+class ProviderAccountComponent(StrEnum):
+    PLAYBACK = "PLAYBACK"
+    WEB_API = "WEB_API"
+
+
+class ProviderOperationalState(StrEnum):
+    AVAILABLE = "AVAILABLE"
+    RATE_LIMITED = "RATE_LIMITED"
+    QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
+    FORBIDDEN = "FORBIDDEN"
+    UNKNOWN = "UNKNOWN"
+
+
 class ProviderAccountErrorCode(StrEnum):
     AUTH_NOT_CONFIGURED = "AUTH_NOT_CONFIGURED"
     SESSION_UNAVAILABLE = "SESSION_UNAVAILABLE"
@@ -52,6 +65,25 @@ class ProviderAccountErrorCode(StrEnum):
     DEEZER_AUTH_PERSIST_FAILED = "DEEZER_AUTH_PERSIST_FAILED"
     DEEZER_AUTH_RELOAD_FAILED = "DEEZER_AUTH_RELOAD_FAILED"
     DEEZER_AUTH_MESSAGE_DELETE_FAILED = "DEEZER_AUTH_MESSAGE_DELETE_FAILED"
+    SPOTIFY_PLAYBACK_START_FAILED = "SPOTIFY_PLAYBACK_START_FAILED"
+    SPOTIFY_PLAYBACK_DISCOVERY_UNAVAILABLE = "SPOTIFY_PLAYBACK_DISCOVERY_UNAVAILABLE"
+    SPOTIFY_PLAYBACK_PENDING = "SPOTIFY_PLAYBACK_PENDING"
+    SPOTIFY_PLAYBACK_PREMIUM_REQUIRED = "SPOTIFY_PLAYBACK_PREMIUM_REQUIRED"
+    SPOTIFY_PLAYBACK_UNSUPPORTED_ACCOUNT_TYPE = "SPOTIFY_PLAYBACK_UNSUPPORTED_ACCOUNT_TYPE"
+    SPOTIFY_PLAYBACK_PERSIST_FAILED = "SPOTIFY_PLAYBACK_PERSIST_FAILED"
+    SPOTIFY_PLAYBACK_RELOAD_FAILED = "SPOTIFY_PLAYBACK_RELOAD_FAILED"
+    SPOTIFY_PLAYBACK_CANCELLED = "SPOTIFY_PLAYBACK_CANCELLED"
+    SPOTIFY_WEBAPI_INVALID_FORMAT = "SPOTIFY_WEBAPI_INVALID_FORMAT"
+    SPOTIFY_WEBAPI_INVALID_CREDENTIALS = "SPOTIFY_WEBAPI_INVALID_CREDENTIALS"
+    SPOTIFY_WEBAPI_MESSAGE_DELETE_FAILED = "SPOTIFY_WEBAPI_MESSAGE_DELETE_FAILED"
+    SPOTIFY_WEBAPI_NETWORK_ERROR = "SPOTIFY_WEBAPI_NETWORK_ERROR"
+    SPOTIFY_WEBAPI_TIMEOUT = "SPOTIFY_WEBAPI_TIMEOUT"
+    SPOTIFY_WEBAPI_FORBIDDEN = "SPOTIFY_WEBAPI_FORBIDDEN"
+    SPOTIFY_WEBAPI_RATE_LIMITED = "SPOTIFY_WEBAPI_RATE_LIMITED"
+    SPOTIFY_WEBAPI_QUOTA_EXCEEDED = "SPOTIFY_WEBAPI_QUOTA_EXCEEDED"
+    SPOTIFY_WEBAPI_INVALID_RESPONSE = "SPOTIFY_WEBAPI_INVALID_RESPONSE"
+    SPOTIFY_WEBAPI_UPSTREAM_ERROR = "SPOTIFY_WEBAPI_UPSTREAM_ERROR"
+    SPOTIFY_WEBAPI_PERSIST_FAILED = "SPOTIFY_WEBAPI_PERSIST_FAILED"
     DISCONNECT_UNSUPPORTED = "DISCONNECT_UNSUPPORTED"
     DISCONNECT_FAILED = "DISCONNECT_FAILED"
 
@@ -85,6 +117,14 @@ class ProviderDisconnectOutcomeStatus(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderAccountComponentStatus:
+    component: ProviderAccountComponent
+    state: ProviderAccountState
+    error_code: ProviderAccountErrorCode | None = None
+    operational_state: ProviderOperationalState | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderAccountStatus:
     """Provider-neutral state safe for presentation, logs, and repr output."""
 
@@ -94,10 +134,16 @@ class ProviderAccountStatus:
     authorization_methods: tuple[ProviderAuthorizationMethod, ...] = ()
     error_code: ProviderAccountErrorCode | None = None
     disconnect_supported: bool = False
+    components: tuple[ProviderAccountComponentStatus, ...] = ()
 
     @property
     def authorization_supported(self) -> bool:
         return bool(self.authorization_methods)
+
+    def component_status(
+        self, component: ProviderAccountComponent
+    ) -> ProviderAccountComponentStatus | None:
+        return next((item for item in self.components if item.component is component), None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,13 +182,30 @@ class ProviderSensitiveInputChallenge:
 
     provider: MusicProviderName
     flow_id: str
+    authorization_method: ProviderAuthorizationMethod = ProviderAuthorizationMethod.SENSITIVE_SECRET
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderLocalPairingChallenge:
+    """Sanitized local discovery challenge; contains no session or credential data."""
+
+    provider: MusicProviderName
+    flow_id: str
+    expires_at: datetime
+    polling_interval_seconds: float
+    advertised_host: str
 
 
 @dataclass(frozen=True, slots=True)
 class ProviderAuthorizationStartOutcome:
     provider: MusicProviderName
     status: ProviderAuthorizationStartStatus
-    challenge: ProviderAuthorizationChallenge | ProviderSensitiveInputChallenge | None = None
+    challenge: (
+        ProviderAuthorizationChallenge
+        | ProviderSensitiveInputChallenge
+        | ProviderLocalPairingChallenge
+        | None
+    ) = None
     error_code: ProviderAccountErrorCode | None = None
 
 
@@ -183,8 +246,8 @@ class ProviderSecretInput:
 
 @dataclass(frozen=True, slots=True)
 class ProviderCompoundCredentialInput:
-    """Separate opaque playback and API credentials for a future driver."""
+    """Opaque Spotify Developer credential pair."""
 
     provider: MusicProviderName
-    playback_credential: SensitiveValue
-    api_credential: SensitiveValue
+    client_id: SensitiveValue
+    client_secret: SensitiveValue

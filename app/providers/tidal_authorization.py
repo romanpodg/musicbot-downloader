@@ -17,6 +17,7 @@ from app.core.provider_accounts import (
     ProviderAuthorizationOutcome,
     ProviderAuthorizationOutcomeStatus,
     ProviderAuthorizationRequest,
+    ProviderLocalPairingChallenge,
 )
 from app.providers.account_management import ProviderAccountBackend
 
@@ -114,7 +115,11 @@ class TidalDeviceAuthorizationDriver:
             polling_interval_seconds=started.interval_seconds,
         )
 
-    async def wait(self, challenge: ProviderAuthorizationChallenge) -> ProviderAuthorizationOutcome:
+    async def wait(
+        self, challenge: ProviderAuthorizationChallenge | ProviderLocalPairingChallenge
+    ) -> ProviderAuthorizationOutcome:
+        if not isinstance(challenge, ProviderAuthorizationChallenge):
+            return _failed(ProviderAccountErrorCode.AUTHORIZATION_UNSUPPORTED)
         delay = challenge.polling_interval_seconds
         transient_failures = 0
         cancelled = False

@@ -16,8 +16,10 @@ os.environ["LOG_LEVEL"] = "20"
 
 import importlib
 import importlib.metadata
+import ipaddress
 import json
 import re
+import socket
 import sys
 import time
 import uuid
@@ -48,6 +50,11 @@ from app.providers.onthespot.ipc import (
     RESOLVE_ALBUM_METHOD,
     SEARCH_TRACKS_METHOD,
     SHUTDOWN_METHOD,
+    SPOTIFY_COMPONENT_STATUS_METHOD,
+    SPOTIFY_PLAYBACK_PAIRING_CANCEL_METHOD,
+    SPOTIFY_PLAYBACK_PAIRING_POLL_METHOD,
+    SPOTIFY_PLAYBACK_PAIRING_START_METHOD,
+    SPOTIFY_WEBAPI_AUTHORIZE_METHOD,
     TIDAL_DEVICE_AUTHORIZATION_CANCEL_METHOD,
     TIDAL_DEVICE_AUTHORIZATION_POLL_METHOD,
     TIDAL_DEVICE_AUTHORIZATION_START_METHOD,
@@ -113,6 +120,13 @@ _DEEZER_GATEWAY_URL = "https://www.deezer.com/ajax/gw-light.php"
 _DEEZER_HTTP_TIMEOUT = (5.0, 10.0)
 _DEEZER_ARL_MAX_LENGTH = 2048
 _DEEZER_COOKIE_VALUE = re.compile(r"^[\x21\x23-\x2b\x2d-\x3a\x3c-\x5b\x5d-\x7e]+$")
+_SPOTIFY_FLOW_ID = re.compile(r"^[0-9a-f]{16}$")
+_SPOTIFY_PAIRING_EXPIRY_SECONDS = 300.0
+_SPOTIFY_PAIRING_INTERVAL_SECONDS = 1.0
+_SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
+_SPOTIFY_SEARCH_URL = "https://api.spotify.com/v1/search"
+_SPOTIFY_HTTP_TIMEOUT = (5.0, 10.0)
+_SPOTIFY_CREDENTIAL_MAX_LENGTH = 1024
 
 
 @dataclass(slots=True)
@@ -134,6 +148,21 @@ class _DeezerValidatedSession:
     bitrate: str
 
 
+@dataclass(slots=True)
+class _SpotifyPlaybackPairing:
+    flow_id: str
+    server: Any = field(repr=False)
+    temporary_credentials_path: Path = field(repr=False)
+    expires_at_monotonic: float
+
+
+@dataclass(slots=True)
+class _SpotifyWebApiValidation:
+    token: str | None = field(default=None, repr=False)
+    operational_state: str = "UNKNOWN"
+    error_code: str | None = None
+
+
 class WorkerError(Exception):
     def __init__(self, code: str) -> None:
         super().__init__(code)
@@ -149,6 +178,11 @@ class OnTheSpotWorker:
         self._config: Any = None
         self._runtime: Any = None
         self._tidal_device_flows: dict[str, _TidalDeviceFlow] = {}
+        self._spotify_playback_pairing: _SpotifyPlaybackPairing | None = None
+        self._spotify_playback_terminal: dict[str, tuple[str, str | None]] = {}
+        self._spotify_webapi_state = "NOT_CONFIGURED"
+        self._spotify_webapi_operational_state = "UNKNOWN"
+        self._spotify_webapi_error_code: str | None = None
 
     def initialize(self) -> dict[str, Any]:
         if self._initialized:
@@ -163,6 +197,7 @@ class OnTheSpotWorker:
                 self._runtime = importlib.import_module("onthespot.runtimedata")
                 self._install_secure_deezer_login_adapter()
                 self._accounts.AccountPoolLoader(gui=False).run()
+                self._refresh_spotify_webapi_readiness()
             self._initialized = True
         except Exception as exc:
             raise WorkerError("provider_unavailable") from exc
@@ -499,6 +534,12 @@ class OnTheSpotWorker:
         selected = _selected_account(active_accounts, token)
         if provider == "apple_music" and selected.get("account_type") != "premium":
             return _health_result("AUTH_REQUIRED", True, True, "SUBSCRIPTION_REQUIRED")
+        if provider == "spotify":
+            account_type = selected.get("account_type")
+            if account_type == "free":
+                return _health_result("AUTH_REQUIRED", True, True, "SUBSCRIPTION_REQUIRED")
+            if account_type != "premium":
+                return _health_result("ERROR", True, True, "SESSION_UNVERIFIED")
         if provider == "qobuz":
             # v1.8.1 login only pings qobuz.com and trusts the saved token.
             return _health_result("UNKNOWN", True, True, "SESSION_UNVERIFIED")
@@ -520,6 +561,15 @@ class OnTheSpotWorker:
                 self._config.set(
                     "active_account_number", fresh_config.get("active_account_number", 0)
                 )
+                self._config.set(
+                    "spotify_webapi_override_client_id",
+                    fresh_config.get("spotify_webapi_override_client_id", ""),
+                )
+                self._config.set(
+                    "spotify_webapi_override_client_secret",
+                    fresh_config.get("spotify_webapi_override_client_secret", ""),
+                )
+                self._invalidate_spotify_oauth_cache()
                 for runtime_account in self._runtime.account_pool:
                     if not isinstance(runtime_account, Mapping):
                         continue
@@ -531,9 +581,406 @@ class OnTheSpotWorker:
                 self._runtime.account_pool.clear()
                 self._install_secure_deezer_login_adapter()
                 self._accounts.AccountPoolLoader(gui=False).run()
+                self._refresh_spotify_webapi_readiness()
         except Exception as exc:
             raise WorkerError("provider_unavailable") from exc
         return {"refreshed": True}
+
+    def spotify_component_status(self) -> dict[str, Any]:
+        """Return independent sanitized playback and Web API readiness facts."""
+
+        playback_health = self.check_provider_health("spotify")
+        playback_state = {
+            "READY": "READY",
+            "AUTH_REQUIRED": "AUTH_REQUIRED",
+            "UNKNOWN": "ERROR",
+            "ERROR": "ERROR",
+            "UNAVAILABLE": "ERROR",
+        }.get(str(playback_health.get("status")), "ERROR")
+        playback_error = playback_health.get("error_code")
+        if playback_error == "AUTH_NOT_CONFIGURED":
+            playback_state = "AUTH_REQUIRED"
+        playback: dict[str, str] = {"state": playback_state}
+        if isinstance(playback_error, str):
+            playback_error = {
+                "SUBSCRIPTION_REQUIRED": "SPOTIFY_PLAYBACK_PREMIUM_REQUIRED",
+                "SESSION_UNVERIFIED": "SPOTIFY_PLAYBACK_UNSUPPORTED_ACCOUNT_TYPE",
+            }.get(playback_error, playback_error)
+            playback["error_code"] = playback_error
+        web_api: dict[str, str] = {
+            "state": self._spotify_webapi_state,
+            "operational_state": self._spotify_webapi_operational_state,
+        }
+        if self._spotify_webapi_error_code is not None:
+            web_api["error_code"] = self._spotify_webapi_error_code
+        return {"playback": playback, "web_api": web_api}
+
+    def spotify_playback_pairing_start(self) -> dict[str, Any]:
+        """Start one temporary librespot server and return without waiting for a session."""
+
+        if not self._initialized:
+            self.initialize()
+        self._expire_spotify_playback_pairing()
+        if self._spotify_playback_pairing is not None:
+            return _spotify_failure("SPOTIFY_PLAYBACK_START_FAILED")
+        active_premium = any(
+            isinstance(account, Mapping)
+            and account.get("service") == "spotify"
+            and account.get("status") == "active"
+            and account.get("account_type") == "premium"
+            for account in self._runtime.account_pool
+        )
+        if active_premium:
+            return _spotify_failure("SPOTIFY_PLAYBACK_START_FAILED")
+        host_ip = _spotify_connect_host_ip()
+        if host_ip is None or not _is_local_ipv4_address(host_ip):
+            return _spotify_failure("SPOTIFY_PLAYBACK_DISCOVERY_UNAVAILABLE")
+        port = _spotify_connect_port()
+        if port is None:
+            return _spotify_failure("SPOTIFY_PLAYBACK_DISCOVERY_UNAVAILABLE")
+
+        flow_id = uuid.uuid4().hex[:16]
+        temporary_dir = Path(os.environ.get("MUSICBOT_TEMP_DIR", "./temp")) / "spotify-pairing"
+        temporary_path = temporary_dir / f"{flow_id}.json"
+        try:
+            temporary_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with _silence_upstream():
+                server = self._create_spotify_zeroconf_server(host_ip, port, temporary_path)
+        except Exception:
+            _remove_spotify_pairing_file(temporary_path)
+            return _spotify_failure("SPOTIFY_PLAYBACK_DISCOVERY_UNAVAILABLE")
+        self._spotify_playback_pairing = _SpotifyPlaybackPairing(
+            flow_id,
+            server,
+            temporary_path,
+            time.monotonic() + _SPOTIFY_PAIRING_EXPIRY_SECONDS,
+        )
+        self._spotify_playback_terminal.pop(flow_id, None)
+        return {
+            "status": "started",
+            "flow_id": flow_id,
+            "advertised_host": f"{host_ip}:{port}",
+            "expires_in": _SPOTIFY_PAIRING_EXPIRY_SECONDS,
+            "interval": _SPOTIFY_PAIRING_INTERVAL_SECONDS,
+        }
+
+    def spotify_playback_pairing_poll(self, flow_id: str) -> dict[str, str]:
+        """Inspect the current generation once; never wait for Spotify selection."""
+
+        terminal = self._spotify_playback_terminal.get(flow_id)
+        if terminal is not None:
+            return _spotify_poll_result(*terminal)
+        pairing = self._spotify_playback_pairing
+        if pairing is None or pairing.flow_id != flow_id:
+            return _spotify_poll_result("expired", "SPOTIFY_PLAYBACK_CANCELLED")
+        if time.monotonic() >= pairing.expires_at_monotonic:
+            return self._finish_spotify_playback_pairing(
+                pairing, "expired", "SPOTIFY_PLAYBACK_CANCELLED"
+            )
+        try:
+            with _silence_upstream():
+                valid = pairing.server.has_valid_session()
+        except Exception:
+            return self._finish_spotify_playback_pairing(
+                pairing, "failed", "SPOTIFY_PLAYBACK_START_FAILED"
+            )
+        if not valid:
+            return _spotify_poll_result("pending", "SPOTIFY_PLAYBACK_PENDING")
+
+        session = getattr(pairing.server, "_ZeroconfServer__session", None)
+        try:
+            account_type = session.get_user_attribute("type") if session is not None else None
+        except Exception:
+            account_type = None
+        if account_type == "free":
+            return self._finish_spotify_playback_pairing(
+                pairing, "failed", "SPOTIFY_PLAYBACK_PREMIUM_REQUIRED"
+            )
+        if account_type != "premium":
+            return self._finish_spotify_playback_pairing(
+                pairing, "failed", "SPOTIFY_PLAYBACK_UNSUPPORTED_ACCOUNT_TYPE"
+            )
+        login = _read_spotify_pairing_credentials(pairing.temporary_credentials_path)
+        if login is None:
+            return self._finish_spotify_playback_pairing(
+                pairing, "failed", "SPOTIFY_PLAYBACK_PERSIST_FAILED"
+            )
+        current = self._config.get("accounts", [])
+        if not isinstance(current, list):
+            return self._finish_spotify_playback_pairing(
+                pairing, "failed", "SPOTIFY_PLAYBACK_PERSIST_FAILED"
+            )
+        updated = list(current)
+        duplicate_index: int | None = None
+        for index, account in enumerate(updated):
+            if not isinstance(account, Mapping) or account.get("service") != "spotify":
+                continue
+            existing_login = account.get("login")
+            if (
+                isinstance(existing_login, Mapping)
+                and existing_login.get("username") == login["username"]
+                and existing_login.get("credentials") == login["credentials"]
+                and existing_login.get("type") == login["type"]
+            ):
+                duplicate_index = index
+                break
+        if duplicate_index is not None:
+            duplicate = updated[duplicate_index]
+            if isinstance(duplicate, Mapping) and duplicate.get("active") is not True:
+                activated = dict(duplicate)
+                activated["active"] = True
+                updated[duplicate_index] = activated
+        else:
+            updated.append(
+                {
+                    "uuid": str(uuid.uuid4()),
+                    "service": "spotify",
+                    "active": True,
+                    "login": login,
+                }
+            )
+        if updated != current:
+            try:
+                self._config.set("accounts", updated)
+                self._config.save()
+            except Exception:
+                try:
+                    self._config.set("accounts", current)
+                except Exception:
+                    pass
+                return self._finish_spotify_playback_pairing(
+                    pairing, "failed", "SPOTIFY_PLAYBACK_PERSIST_FAILED"
+                )
+        return self._finish_spotify_playback_pairing(pairing, "approved", None)
+
+    def spotify_playback_pairing_cancel(self, flow_id: str) -> dict[str, str]:
+        """Idempotently close only the matching generation."""
+
+        pairing = self._spotify_playback_pairing
+        if pairing is not None and pairing.flow_id == flow_id:
+            self._close_spotify_playback_pairing(pairing)
+            self._spotify_playback_terminal[flow_id] = (
+                "expired",
+                "SPOTIFY_PLAYBACK_CANCELLED",
+            )
+            return {"status": "cancelled"}
+        if flow_id in self._spotify_playback_terminal:
+            self._spotify_playback_terminal.pop(flow_id, None)
+            return {"status": "released"}
+        return {"status": "not_found"}
+
+    def spotify_webapi_authorize(self, client_id: str, client_secret: str) -> dict[str, str]:
+        """Validate a Developer pair before replacing the two OnTheSpot config keys."""
+
+        if not self._initialized:
+            self.initialize()
+        normalized_id = _normalize_spotify_webapi_credential(client_id)
+        normalized_secret = _normalize_spotify_webapi_credential(client_secret)
+        if normalized_id is None or normalized_secret is None:
+            return _spotify_webapi_failure("SPOTIFY_WEBAPI_INVALID_FORMAT")
+        validation = self._validate_spotify_webapi_credentials(normalized_id, normalized_secret)
+        if validation.token is None:
+            self._spotify_webapi_state = "ERROR"
+            self._spotify_webapi_operational_state = validation.operational_state
+            self._spotify_webapi_error_code = validation.error_code
+            return _spotify_webapi_failure(
+                validation.error_code or "SPOTIFY_WEBAPI_INVALID_RESPONSE"
+            )
+        previous_id = self._config.get("spotify_webapi_override_client_id", "")
+        previous_secret = self._config.get("spotify_webapi_override_client_secret", "")
+        try:
+            self._config.set("spotify_webapi_override_client_id", normalized_id)
+            self._config.set("spotify_webapi_override_client_secret", normalized_secret)
+            self._config.save()
+            if (
+                self._config.get("spotify_webapi_override_client_id", "") != normalized_id
+                or self._config.get("spotify_webapi_override_client_secret", "")
+                != normalized_secret
+            ):
+                raise ValueError
+        except Exception:
+            try:
+                self._config.set("spotify_webapi_override_client_id", previous_id)
+                self._config.set("spotify_webapi_override_client_secret", previous_secret)
+            except Exception:
+                pass
+            return _spotify_webapi_failure("SPOTIFY_WEBAPI_PERSIST_FAILED")
+        self._invalidate_spotify_oauth_cache()
+        self._spotify_webapi_state = "READY"
+        self._spotify_webapi_operational_state = validation.operational_state
+        self._spotify_webapi_error_code = validation.error_code
+        return {
+            "status": "persisted",
+            "operational_state": validation.operational_state,
+        }
+
+    def _create_spotify_zeroconf_server(self, host_ip: str, port: int, temporary_path: Path) -> Any:
+        spotify = importlib.import_module("onthespot.api.spotify")
+        zeroconf_server = spotify.ZeroconfServer
+        zeroconf_server._ZeroconfServer__default_get_info_fields["clientID"] = (
+            "65b708073fc0480ea92a077233ca87bd"
+        )
+        builder = zeroconf_server.Builder()
+        builder.device_name = "OnTheSpot"
+        builder.conf.stored_credentials_file = os.fspath(temporary_path)
+
+        original_hostname = zeroconf_server.get_useful_hostname
+        zeroconf_server.get_useful_hostname = lambda _server: host_ip
+        try:
+            builder.set_listen_port(port)
+            return builder.create()
+        finally:
+            zeroconf_server.get_useful_hostname = original_hostname
+
+    def _finish_spotify_playback_pairing(
+        self,
+        pairing: _SpotifyPlaybackPairing,
+        status: str,
+        error_code: str | None,
+    ) -> dict[str, str]:
+        self._close_spotify_playback_pairing(pairing)
+        self._spotify_playback_terminal[pairing.flow_id] = (status, error_code)
+        return _spotify_poll_result(status, error_code)
+
+    def _close_spotify_playback_pairing(self, pairing: _SpotifyPlaybackPairing) -> None:
+        if self._spotify_playback_pairing is pairing:
+            self._spotify_playback_pairing = None
+        _close_pinned_zeroconf_server(pairing.server)
+        _remove_spotify_pairing_file(pairing.temporary_credentials_path)
+
+    def _expire_spotify_playback_pairing(self) -> None:
+        pairing = self._spotify_playback_pairing
+        if pairing is not None and time.monotonic() >= pairing.expires_at_monotonic:
+            self._finish_spotify_playback_pairing(pairing, "expired", "SPOTIFY_PLAYBACK_CANCELLED")
+
+    def _validate_spotify_webapi_credentials(
+        self, client_id: str, client_secret: str
+    ) -> _SpotifyWebApiValidation:
+        requests = importlib.import_module("requests")
+        try:
+            response = requests.post(
+                _SPOTIFY_TOKEN_URL,
+                auth=(client_id, client_secret),
+                data={"grant_type": "client_credentials"},
+                timeout=_SPOTIFY_HTTP_TIMEOUT,
+            )
+        except requests.exceptions.Timeout:
+            return _SpotifyWebApiValidation(error_code="SPOTIFY_WEBAPI_TIMEOUT")
+        except requests.exceptions.RequestException:
+            return _SpotifyWebApiValidation(error_code="SPOTIFY_WEBAPI_NETWORK_ERROR")
+        except Exception:
+            return _SpotifyWebApiValidation(error_code="SPOTIFY_WEBAPI_NETWORK_ERROR")
+        if response.status_code in {400, 401}:
+            return _SpotifyWebApiValidation(error_code="SPOTIFY_WEBAPI_INVALID_CREDENTIALS")
+        if response.status_code == 403:
+            return _SpotifyWebApiValidation(
+                operational_state="FORBIDDEN", error_code="SPOTIFY_WEBAPI_FORBIDDEN"
+            )
+        if response.status_code == 429:
+            return _SpotifyWebApiValidation(
+                operational_state="RATE_LIMITED",
+                error_code="SPOTIFY_WEBAPI_RATE_LIMITED",
+            )
+        if response.status_code >= 500:
+            return _SpotifyWebApiValidation(error_code="SPOTIFY_WEBAPI_UPSTREAM_ERROR")
+        if response.status_code != 200:
+            return _SpotifyWebApiValidation(error_code="SPOTIFY_WEBAPI_INVALID_RESPONSE")
+        try:
+            payload = response.json()
+        except Exception:
+            return _SpotifyWebApiValidation(error_code="SPOTIFY_WEBAPI_INVALID_RESPONSE")
+        if not isinstance(payload, Mapping):
+            return _SpotifyWebApiValidation(error_code="SPOTIFY_WEBAPI_INVALID_RESPONSE")
+        access_token = payload.get("access_token")
+        token_type = payload.get("token_type")
+        expires_in = payload.get("expires_in")
+        if (
+            not isinstance(access_token, str)
+            or not access_token
+            or not isinstance(token_type, str)
+            or token_type.lower() != "bearer"
+            or isinstance(expires_in, bool)
+            or not isinstance(expires_in, (int, float))
+            or expires_in <= 0
+        ):
+            return _SpotifyWebApiValidation(error_code="SPOTIFY_WEBAPI_INVALID_RESPONSE")
+        operational_state, error_code = self._probe_spotify_search(requests, access_token)
+        return _SpotifyWebApiValidation(access_token, operational_state, error_code)
+
+    def _probe_spotify_search(self, requests: Any, access_token: str) -> tuple[str, str | None]:
+        try:
+            response = requests.get(
+                _SPOTIFY_SEARCH_URL,
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"q": "test", "type": "track", "limit": 1},
+                timeout=_SPOTIFY_HTTP_TIMEOUT,
+            )
+        except requests.exceptions.Timeout:
+            return "UNKNOWN", "SPOTIFY_WEBAPI_TIMEOUT"
+        except requests.exceptions.RequestException:
+            return "UNKNOWN", "SPOTIFY_WEBAPI_NETWORK_ERROR"
+        except Exception:
+            return "UNKNOWN", "SPOTIFY_WEBAPI_NETWORK_ERROR"
+        if response.status_code == 200:
+            try:
+                payload = response.json()
+            except Exception:
+                return "UNKNOWN", "SPOTIFY_WEBAPI_INVALID_RESPONSE"
+            if not isinstance(payload, Mapping) or not isinstance(payload.get("tracks"), Mapping):
+                return "UNKNOWN", "SPOTIFY_WEBAPI_INVALID_RESPONSE"
+            return "AVAILABLE", None
+        reason = _spotify_response_reason(response)
+        if reason == "QUOTA_EXCEEDED":
+            return "QUOTA_EXCEEDED", "SPOTIFY_WEBAPI_QUOTA_EXCEEDED"
+        if response.status_code == 429:
+            return "RATE_LIMITED", "SPOTIFY_WEBAPI_RATE_LIMITED"
+        if response.status_code == 403:
+            return "FORBIDDEN", "SPOTIFY_WEBAPI_FORBIDDEN"
+        if response.status_code >= 500:
+            return "UNKNOWN", "SPOTIFY_WEBAPI_UPSTREAM_ERROR"
+        return "UNKNOWN", "SPOTIFY_WEBAPI_INVALID_RESPONSE"
+
+    def _refresh_spotify_webapi_readiness(self) -> None:
+        client_id = self._config.get("spotify_webapi_override_client_id", "")
+        client_secret = self._config.get("spotify_webapi_override_client_secret", "")
+        if not client_id and not client_secret:
+            self._spotify_webapi_state = "NOT_CONFIGURED"
+            self._spotify_webapi_operational_state = "UNKNOWN"
+            self._spotify_webapi_error_code = None
+            return
+        normalized_id = _normalize_spotify_webapi_credential(str(client_id)) if client_id else None
+        normalized_secret = (
+            _normalize_spotify_webapi_credential(str(client_secret)) if client_secret else None
+        )
+        if normalized_id is None or normalized_secret is None:
+            self._spotify_webapi_state = "ERROR"
+            self._spotify_webapi_operational_state = "UNKNOWN"
+            self._spotify_webapi_error_code = "SPOTIFY_WEBAPI_INVALID_FORMAT"
+            return
+        validation = self._validate_spotify_webapi_credentials(normalized_id, normalized_secret)
+        self._spotify_webapi_state = "READY" if validation.token is not None else "ERROR"
+        self._spotify_webapi_operational_state = validation.operational_state
+        self._spotify_webapi_error_code = validation.error_code
+
+    @staticmethod
+    def _invalidate_spotify_oauth_cache() -> None:
+        try:
+            spotify = importlib.import_module("onthespot.api.spotify")
+            cache = spotify._oauth_token_cache
+            lock = spotify._oauth_token_lock
+            with lock:
+                cache["access_token"] = None
+                cache["expires_at"] = 0
+                cache["client_id"] = None
+        except Exception:
+            raise WorkerError("provider_unavailable") from None
+
+    def shutdown(self) -> None:
+        pairing = self._spotify_playback_pairing
+        if pairing is not None:
+            self._close_spotify_playback_pairing(pairing)
+        self._spotify_playback_terminal.clear()
+        self._tidal_device_flows.clear()
 
     def deezer_arl_authorize(self, arl: str) -> dict[str, str]:
         """Validate through HTTPS before writing an OnTheSpot-owned account record."""
@@ -1170,6 +1617,148 @@ def _normalize_deezer_arl(value: str) -> str | None:
     return normalized
 
 
+def _normalize_spotify_webapi_credential(value: str) -> str | None:
+    if not value or len(value) > _SPOTIFY_CREDENTIAL_MAX_LENGTH:
+        return None
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        return None
+    normalized = value.strip(" ")
+    return normalized if normalized else None
+
+
+def _spotify_connect_host_ip() -> str | None:
+    raw = os.environ.get("SPOTIFY_CONNECT_HOST_IP", "").strip()
+    try:
+        address = ipaddress.ip_address(raw)
+    except ValueError:
+        return None
+    if (
+        not isinstance(address, ipaddress.IPv4Address)
+        or address.is_loopback
+        or address.is_unspecified
+        or address.is_multicast
+    ):
+        return None
+    return str(address)
+
+
+def _spotify_connect_port() -> int | None:
+    try:
+        port = int(os.environ.get("SPOTIFY_CONNECT_PORT", "24879"))
+    except ValueError:
+        return None
+    return port if 1025 <= port <= 65535 else None
+
+
+def _is_local_ipv4_address(host_ip: str) -> bool:
+    try:
+        ifaddr = importlib.import_module("ifaddr")
+        for adapter in ifaddr.get_adapters():
+            for address in adapter.ips:
+                value = address.ip
+                if isinstance(value, str) and value == host_ip:
+                    return True
+    except Exception:
+        pass
+    try:
+        return host_ip in socket.gethostbyname_ex(socket.gethostname())[2]
+    except OSError:
+        return False
+
+
+def _read_spotify_pairing_credentials(path: Path) -> dict[str, str] | None:
+    try:
+        with path.open(encoding="utf-8") as stream:
+            payload = json.load(stream)
+    except Exception:
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    username = payload.get("username")
+    credentials = payload.get("credentials")
+    credential_type = payload.get("type")
+    if not all(
+        isinstance(value, str) and value and len(value) <= 16_384
+        for value in (username, credentials, credential_type)
+    ):
+        return None
+    return {
+        "username": str(username),
+        "credentials": str(credentials),
+        "type": str(credential_type),
+    }
+
+
+def _remove_spotify_pairing_file(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    try:
+        path.parent.rmdir()
+    except OSError:
+        pass
+
+
+def _close_pinned_zeroconf_server(server: Any) -> None:
+    """Compensate for librespot 0.0.10 HttpRunner.close() being a no-op."""
+
+    try:
+        close_session = getattr(server, "close_session", None)
+        if callable(close_session):
+            close_session()
+    except Exception:
+        pass
+    runner = getattr(server, "_ZeroconfServer__runner", None)
+    if runner is not None:
+        try:
+            runner._HttpRunner__should_stop = True
+            listener = getattr(runner, "_HttpRunner__socket", None)
+            if listener is not None:
+                try:
+                    listener.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                listener.close()
+        except Exception:
+            pass
+    try:
+        discovery = getattr(server, "_ZeroconfServer__zeroconf", None)
+        if discovery is not None:
+            discovery.close()
+    except Exception:
+        pass
+
+
+def _spotify_response_reason(response: Any) -> str | None:
+    try:
+        payload = response.json()
+    except Exception:
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    error = payload.get("error")
+    if not isinstance(error, Mapping):
+        return None
+    reason = error.get("reason")
+    return reason if isinstance(reason, str) else None
+
+
+def _spotify_failure(error_code: str) -> dict[str, str]:
+    return {"status": "failed", "error_code": error_code}
+
+
+def _spotify_poll_result(status: str, error_code: str | None) -> dict[str, str]:
+    result = {"status": status}
+    if error_code is not None:
+        result["error_code"] = error_code
+    return result
+
+
+def _spotify_webapi_failure(error_code: str) -> dict[str, str]:
+    return {"status": "failed", "error_code": error_code}
+
+
 def _parse_deezer_user_data(
     payload: object,
 ) -> tuple[str, str, str, str] | str:
@@ -1349,6 +1938,34 @@ def main() -> int:
                 if set(params) != {"arl"} or not isinstance(arl, str):
                     raise WorkerError("provider_unavailable")
                 result = worker.deezer_arl_authorize(arl)
+            elif method == SPOTIFY_COMPONENT_STATUS_METHOD:
+                if params:
+                    raise WorkerError("provider_unavailable")
+                result = worker.spotify_component_status()
+            elif method == SPOTIFY_PLAYBACK_PAIRING_START_METHOD:
+                if params:
+                    raise WorkerError("provider_unavailable")
+                result = worker.spotify_playback_pairing_start()
+            elif method == SPOTIFY_PLAYBACK_PAIRING_POLL_METHOD:
+                flow_id = params.get("flow_id")
+                if not isinstance(flow_id, str) or _SPOTIFY_FLOW_ID.fullmatch(flow_id) is None:
+                    raise WorkerError("provider_unavailable")
+                result = worker.spotify_playback_pairing_poll(flow_id)
+            elif method == SPOTIFY_PLAYBACK_PAIRING_CANCEL_METHOD:
+                flow_id = params.get("flow_id")
+                if not isinstance(flow_id, str) or _SPOTIFY_FLOW_ID.fullmatch(flow_id) is None:
+                    raise WorkerError("provider_unavailable")
+                result = worker.spotify_playback_pairing_cancel(flow_id)
+            elif method == SPOTIFY_WEBAPI_AUTHORIZE_METHOD:
+                client_id = params.get("client_id")
+                client_secret = params.get("client_secret")
+                if (
+                    set(params) != {"client_id", "client_secret"}
+                    or not isinstance(client_id, str)
+                    or not isinstance(client_secret, str)
+                ):
+                    raise WorkerError("provider_unavailable")
+                result = worker.spotify_webapi_authorize(client_id, client_secret)
             elif method == TIDAL_DEVICE_AUTHORIZATION_START_METHOD:
                 if params:
                     raise WorkerError("provider_unavailable")
@@ -1384,6 +2001,7 @@ def main() -> int:
                     raise WorkerError("unsupported_provider")
                 result = worker.download_native(provider, provider_track_id, job_id, plan_rank)
             elif method == SHUTDOWN_METHOD:
+                worker.shutdown()
                 protocol_stdout.write(_response(request_id, result={"stopped": True}))
                 protocol_stdout.flush()
                 return 0

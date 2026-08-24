@@ -23,7 +23,11 @@ from app.core.exceptions import (
     UnsupportedAlbum,
     UnsupportedProvider,
 )
-from app.core.provider_accounts import ProviderAccountErrorCode, SensitiveValue
+from app.core.provider_accounts import (
+    ProviderAccountErrorCode,
+    ProviderOperationalState,
+    SensitiveValue,
+)
 from app.providers.base import ProviderAvailability
 from app.providers.deezer_authorization import DeezerArlAuthorizationResult
 from app.providers.onthespot.ipc import (
@@ -44,9 +48,20 @@ from app.providers.onthespot.ipc import (
     RESOLVE_ALBUM_METHOD,
     SEARCH_TRACKS_METHOD,
     SHUTDOWN_METHOD,
+    SPOTIFY_COMPONENT_STATUS_METHOD,
+    SPOTIFY_PLAYBACK_PAIRING_CANCEL_METHOD,
+    SPOTIFY_PLAYBACK_PAIRING_POLL_METHOD,
+    SPOTIFY_PLAYBACK_PAIRING_START_METHOD,
+    SPOTIFY_WEBAPI_AUTHORIZE_METHOD,
     TIDAL_DEVICE_AUTHORIZATION_CANCEL_METHOD,
     TIDAL_DEVICE_AUTHORIZATION_POLL_METHOD,
     TIDAL_DEVICE_AUTHORIZATION_START_METHOD,
+)
+from app.providers.spotify_authorization import (
+    SpotifyPlaybackPairingPoll,
+    SpotifyPlaybackPairingStart,
+    SpotifyPlaybackPollStatus,
+    SpotifyWebApiAuthorizationResult,
 )
 from app.providers.tidal_authorization import (
     TidalDeviceAuthorizationPoll,
@@ -55,6 +70,7 @@ from app.providers.tidal_authorization import (
 )
 
 _TIDAL_FLOW_ID = re.compile(r"^[0-9a-f]{16}$")
+_SPOTIFY_FLOW_ID = re.compile(r"^[0-9a-f]{16}$")
 _TIDAL_ERROR_CODES = frozenset(
     {
         ProviderAccountErrorCode.TIDAL_AUTH_START_FAILED,
@@ -78,6 +94,9 @@ _DEEZER_ERROR_CODES = frozenset(
         ProviderAccountErrorCode.DEEZER_AUTH_UPSTREAM_ERROR,
         ProviderAccountErrorCode.DEEZER_AUTH_PERSIST_FAILED,
     }
+)
+_SPOTIFY_ERROR_CODES = frozenset(
+    code for code in ProviderAccountErrorCode if code.value.startswith("SPOTIFY_")
 )
 
 _ERROR_TYPES: dict[str, type[Exception]] = {
@@ -220,6 +239,102 @@ class OnTheSpotProcessClient:
             raise ProviderUnavailable()
         code = _deezer_error_code(result.get("error_code"))
         return DeezerArlAuthorizationResult(False, code)
+
+    async def spotify_component_status(self) -> Mapping[str, Any]:
+        result = await self._request(SPOTIFY_COMPONENT_STATUS_METHOD, {})
+        if not isinstance(result, dict):
+            raise ProviderUnavailable()
+        return result
+
+    async def start_spotify_playback_pairing(self) -> SpotifyPlaybackPairingStart:
+        result = await self._request(SPOTIFY_PLAYBACK_PAIRING_START_METHOD, {})
+        if not isinstance(result, dict) or not set(result).issubset(
+            {"status", "flow_id", "advertised_host", "expires_in", "interval", "error_code"}
+        ):
+            raise ProviderUnavailable()
+        if result.get("status") == "failed":
+            return SpotifyPlaybackPairingStart(
+                "failed", error_code=_spotify_error_code(result.get("error_code"))
+            )
+        flow_id = result.get("flow_id")
+        advertised_host = result.get("advertised_host")
+        expires_in = result.get("expires_in")
+        interval = result.get("interval")
+        if (
+            result.get("status") != "started"
+            or not isinstance(flow_id, str)
+            or _SPOTIFY_FLOW_ID.fullmatch(flow_id) is None
+            or not isinstance(advertised_host, str)
+            or not advertised_host
+            or isinstance(expires_in, bool)
+            or not isinstance(expires_in, (int, float))
+            or isinstance(interval, bool)
+            or not isinstance(interval, (int, float))
+        ):
+            raise ProviderUnavailable()
+        return SpotifyPlaybackPairingStart(
+            "started",
+            flow_id,
+            advertised_host,
+            float(expires_in),
+            float(interval),
+        )
+
+    async def poll_spotify_playback_pairing(self, flow_id: str) -> SpotifyPlaybackPairingPoll:
+        if _SPOTIFY_FLOW_ID.fullmatch(flow_id) is None:
+            raise ProviderUnavailable()
+        result = await self._request(SPOTIFY_PLAYBACK_PAIRING_POLL_METHOD, {"flow_id": flow_id})
+        if not isinstance(result, dict) or not set(result).issubset({"status", "error_code"}):
+            raise ProviderUnavailable()
+        raw_status = result.get("status")
+        if not isinstance(raw_status, str):
+            raise ProviderUnavailable()
+        try:
+            status = SpotifyPlaybackPollStatus(raw_status)
+        except ValueError as exc:
+            raise ProviderUnavailable() from exc
+        return SpotifyPlaybackPairingPoll(
+            status, _spotify_error_code(result.get("error_code"), required=False)
+        )
+
+    async def cancel_spotify_playback_pairing(self, flow_id: str) -> None:
+        if _SPOTIFY_FLOW_ID.fullmatch(flow_id) is None:
+            raise ProviderUnavailable()
+        result = await self._request(SPOTIFY_PLAYBACK_PAIRING_CANCEL_METHOD, {"flow_id": flow_id})
+        if (
+            not isinstance(result, dict)
+            or set(result) != {"status"}
+            or result.get("status") not in {"cancelled", "released", "not_found"}
+        ):
+            raise ProviderUnavailable()
+
+    async def authorize_spotify_webapi_credentials(
+        self, client_id: SensitiveValue, client_secret: SensitiveValue
+    ) -> SpotifyWebApiAuthorizationResult:
+        result = await self._request(
+            SPOTIFY_WEBAPI_AUTHORIZE_METHOD,
+            {
+                "client_id": client_id.reveal_to_provider_backend(),
+                "client_secret": client_secret.reveal_to_provider_backend(),
+            },
+        )
+        if not isinstance(result, dict):
+            raise ProviderUnavailable()
+        if result.get("status") == "persisted" and set(result) == {
+            "status",
+            "operational_state",
+        }:
+            try:
+                operational = ProviderOperationalState(result["operational_state"])
+            except (KeyError, ValueError) as exc:
+                raise ProviderUnavailable() from exc
+            return SpotifyWebApiAuthorizationResult(True, operational)
+        if set(result) != {"status", "error_code"} or result.get("status") != "failed":
+            raise ProviderUnavailable()
+        return SpotifyWebApiAuthorizationResult(
+            False,
+            error_code=_spotify_error_code(result.get("error_code")),
+        )
 
     async def start_tidal_device_authorization(self) -> TidalDeviceAuthorizationStart:
         result = await self._request(TIDAL_DEVICE_AUTHORIZATION_START_METHOD, {})
@@ -552,4 +667,20 @@ def _deezer_error_code(value: object) -> ProviderAccountErrorCode:
         code
         if code in _DEEZER_ERROR_CODES
         else ProviderAccountErrorCode.DEEZER_AUTH_INVALID_RESPONSE
+    )
+
+
+def _spotify_error_code(value: object, *, required: bool = True) -> ProviderAccountErrorCode | None:
+    if value is None and not required:
+        return None
+    if not isinstance(value, str):
+        return ProviderAccountErrorCode.SPOTIFY_PLAYBACK_START_FAILED
+    try:
+        code = ProviderAccountErrorCode(value)
+    except ValueError:
+        return ProviderAccountErrorCode.SPOTIFY_PLAYBACK_START_FAILED
+    return (
+        code
+        if code in _SPOTIFY_ERROR_CODES
+        else ProviderAccountErrorCode.SPOTIFY_PLAYBACK_START_FAILED
     )

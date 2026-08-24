@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Final, Protocol
 
 from app.core.enums import MusicProviderName, ProviderHealthErrorCode, ProviderHealthStatus
 from app.core.models import ProviderHealthEntry
 from app.core.provider_accounts import (
+    ProviderAccountComponentStatus,
     ProviderAccountErrorCode,
     ProviderAccountState,
     ProviderAccountStatus,
@@ -33,6 +35,10 @@ class ProviderAccountRuntimeProbe(Protocol):
     async def refresh_provider_health_state(self) -> None: ...
 
     async def check_provider_health(self, provider: MusicProviderName) -> ProviderHealthEntry: ...
+
+    async def get_spotify_account_components(
+        self,
+    ) -> tuple[ProviderAccountComponentStatus, ...]: ...
 
 
 class ProviderAccountBackendError(Exception):
@@ -83,7 +89,18 @@ class ProviderRuntimeAccountBackend:
             return _failed_status(provider, ProviderAccountErrorCode.STATUS_CHECK_FAILED)
         if health.provider is not provider:
             return _failed_status(provider, ProviderAccountErrorCode.INVALID_BACKEND_RESPONSE)
-        return _normalize_health(health, self._authorization_methods.get(provider, ()))
+        status = _normalize_health(health, self._authorization_methods.get(provider, ()))
+        if provider is MusicProviderName.SPOTIFY:
+            component_probe = getattr(self._probe, "get_spotify_account_components", None)
+            if not callable(component_probe):
+                return status
+            try:
+                async with asyncio.timeout(PROVIDER_ACCOUNT_STATUS_TIMEOUT_SECONDS):
+                    components = await component_probe()
+            except Exception:
+                return _failed_status(provider, ProviderAccountErrorCode.STATUS_CHECK_FAILED)
+            return replace(status, components=components)
+        return status
 
     async def reload_account_state(self) -> None:
         try:

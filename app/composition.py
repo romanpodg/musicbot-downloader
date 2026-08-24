@@ -23,6 +23,11 @@ from app.providers.deezer_authorization import (
     DeezerArlAuthorizationBoundary,
     DeezerArlAuthorizationDriver,
 )
+from app.providers.spotify_authorization import (
+    SpotifyAuthorizationBoundary,
+    SpotifyPlaybackAuthorizationDriver,
+    SpotifyWebApiAuthorizationDriver,
+)
 from app.providers.tidal_authorization import (
     TidalDeviceAuthorizationBoundary,
     TidalDeviceAuthorizationDriver,
@@ -318,6 +323,10 @@ async def compose_stage9(
         authorization_methods={
             MusicProviderName.TIDAL: (ProviderAuthorizationMethod.BROWSER_DEVICE_LINK,),
             MusicProviderName.DEEZER: (ProviderAuthorizationMethod.SENSITIVE_SECRET,),
+            MusicProviderName.SPOTIFY: (
+                ProviderAuthorizationMethod.BROWSER_DEVICE_LINK,
+                ProviderAuthorizationMethod.COMPOUND_CREDENTIALS,
+            ),
         },
     )
     tidal_authorization = TidalDeviceAuthorizationDriver(
@@ -325,6 +334,13 @@ async def compose_stage9(
     )
     deezer_authorization = DeezerArlAuthorizationDriver(
         cast(DeezerArlAuthorizationBoundary, provider), account_backend
+    )
+    spotify_boundary = cast(SpotifyAuthorizationBoundary, provider)
+    spotify_playback_authorization = SpotifyPlaybackAuthorizationDriver(
+        spotify_boundary, account_backend
+    )
+    spotify_webapi_authorization = SpotifyWebApiAuthorizationDriver(
+        spotify_boundary, account_backend
     )
     provider_authorization = ProviderAuthorizationCoordinator(
         {
@@ -336,6 +352,14 @@ async def compose_stage9(
                 MusicProviderName.DEEZER,
                 ProviderAuthorizationMethod.SENSITIVE_SECRET,
             ): deezer_authorization,
+            (
+                MusicProviderName.SPOTIFY,
+                ProviderAuthorizationMethod.BROWSER_DEVICE_LINK,
+            ): spotify_playback_authorization,
+            (
+                MusicProviderName.SPOTIFY,
+                ProviderAuthorizationMethod.COMPOUND_CREDENTIALS,
+            ): spotify_webapi_authorization,
         }
     )
     provider_accounts = ProviderAccountManagementService(

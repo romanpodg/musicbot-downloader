@@ -150,6 +150,26 @@ Dockerfile inspection alone; retain the actual workflow/container logs as eviden
 - External Telegram/provider credential checks were not executed. Deterministic verdict:
   `READY WITH EXTERNAL VERIFICATION PENDING`.
 
+### 2026-08-24 Stage 13.4 local deterministic validation
+
+- Candidate: clean Stage 13.3 commit `a5e80e3` plus the preserved, documented Stage 13.4
+  working tree.
+- Deferred Stage 13.3 production-container gate was rerun first: 542 passed, 0 skipped,
+  4 external deselected, 0 failed; `STAGE12_4_CONTAINER_VALIDATION=PASS`.
+- Host: Python 3.12; 583 passed, 4 platform-inapplicable skips, 4 external deselected,
+  0 failed. The skipped FFmpeg and symlink cases passed in the Linux image.
+- Production image: `sha256:4b0a3ff9899d7f48fffe9515c54ed707c18a573b569514cbe3fb5d5c36993dff`,
+  `linux/amd64`, 342,361,220 bytes, Python 3.12.14, UID/GID `10001:10001`.
+- Validation image: `sha256:b77d5772a826d7db1d8f1528b5efa8d655c0fe218278b73fadf3bd452ff6387b`,
+  `linux/amd64`, 422,996,374 bytes.
+- Linux validation image: 587 passed, 0 skipped, 4 external deselected, 0 failed.
+- Alembic fresh upgrade, current/head agreement, autogenerate check, downgrade/re-upgrade,
+  application preflight, operations status, durable-state recreation, live-WAL backup/restore,
+  lock behavior, and read-only-root checks passed.
+- Script result: `STAGE12_4_CONTAINER_VALIDATION=PASS`.
+- External Telegram, Spotify pairing, and Spotify Web API credential checks were not executed.
+  Deterministic verdict: `READY WITH EXTERNAL VERIFICATION PENDING`.
+
 ## Licensing / distribution review
 
 The locked direct runtime set resolves aiogram (MIT), aiosqlite (MIT), Alembic (MIT), FastAPI

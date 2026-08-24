@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from ipaddress import IPv4Address, ip_address
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -34,6 +35,7 @@ def _normalize_log_level(value: Any) -> Any:
 
 LocaleTuple = Annotated[tuple[str, ...], NoDecode, BeforeValidator(_parse_locales)]
 OptionalOwnerId = Annotated[int | None, BeforeValidator(_empty_to_none)]
+OptionalText = Annotated[str | None, BeforeValidator(_empty_to_none)]
 
 
 def _parse_chat_id(value: Any) -> Any:
@@ -98,6 +100,8 @@ class Settings(BaseSettings):
     internal_api_token: SecretStr = SecretStr("")
 
     app_log_level: AppLogLevel = "INFO"
+    spotify_connect_host_ip: OptionalText = None
+    spotify_connect_port: int = Field(default=24879, ge=1025, le=65535)
 
     @field_validator("owner_id")
     @classmethod
@@ -112,6 +116,22 @@ class Settings(BaseSettings):
         if value == 0:
             raise ValueError("TELEGRAM_CACHE_CHAT_ID must not be zero")
         return value
+
+    @field_validator("spotify_connect_host_ip")
+    @classmethod
+    def validate_spotify_connect_host_ip(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        try:
+            address = ip_address(normalized)
+        except ValueError as exc:
+            raise ValueError("SPOTIFY_CONNECT_HOST_IP must be an IPv4 address") from exc
+        if not isinstance(address, IPv4Address):
+            raise ValueError("SPOTIFY_CONNECT_HOST_IP must be an IPv4 address")
+        if address.is_loopback or address.is_unspecified or address.is_multicast:
+            raise ValueError("SPOTIFY_CONNECT_HOST_IP must be a reachable unicast address")
+        return str(address)
 
     @model_validator(mode="after")
     def validate_cross_field_constraints(self) -> Settings:

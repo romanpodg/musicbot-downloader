@@ -38,7 +38,14 @@ from app.core.models import (
     TrackSearchCandidate,
     TrackSearchRequest,
 )
-from app.core.provider_accounts import SensitiveValue
+from app.core.provider_accounts import (
+    ProviderAccountComponent,
+    ProviderAccountComponentStatus,
+    ProviderAccountErrorCode,
+    ProviderAccountState,
+    ProviderOperationalState,
+    SensitiveValue,
+)
 from app.providers.base import (
     AlbumReference,
     MediaReference,
@@ -49,6 +56,11 @@ from app.providers.base import (
 from app.providers.deezer_authorization import DeezerArlAuthorizationResult
 from app.providers.onthespot.capabilities import ONTHESPOT_CAPABILITIES
 from app.providers.onthespot.process import OnTheSpotProcessClient, get_shared_process_client
+from app.providers.spotify_authorization import (
+    SpotifyPlaybackPairingPoll,
+    SpotifyPlaybackPairingStart,
+    SpotifyWebApiAuthorizationResult,
+)
 from app.providers.tidal_authorization import (
     TidalDeviceAuthorizationPoll,
     TidalDeviceAuthorizationStart,
@@ -197,6 +209,59 @@ class OnTheSpotProvider(MusicProvider):
         self, credential: SensitiveValue
     ) -> DeezerArlAuthorizationResult:
         return await self._process_client.authorize_deezer_arl(credential)
+
+    async def get_spotify_account_components(
+        self,
+    ) -> tuple[ProviderAccountComponentStatus, ...]:
+        raw = await self._process_client.spotify_component_status()
+        if set(raw) != {"playback", "web_api"}:
+            raise ProviderUnavailable()
+        components: list[ProviderAccountComponentStatus] = []
+        for name, component in (
+            (ProviderAccountComponent.PLAYBACK, raw["playback"]),
+            (ProviderAccountComponent.WEB_API, raw["web_api"]),
+        ):
+            if not isinstance(component, Mapping) or not set(component).issubset(
+                {"state", "error_code", "operational_state"}
+            ):
+                raise ProviderUnavailable()
+            raw_state = component.get("state")
+            raw_error = component.get("error_code")
+            raw_operational = component.get("operational_state")
+            if (
+                not isinstance(raw_state, str)
+                or (raw_error is not None and not isinstance(raw_error, str))
+                or (raw_operational is not None and not isinstance(raw_operational, str))
+            ):
+                raise ProviderUnavailable()
+            try:
+                state = ProviderAccountState(raw_state)
+                error = ProviderAccountErrorCode(raw_error) if raw_error is not None else None
+                operational = (
+                    ProviderOperationalState(raw_operational)
+                    if raw_operational is not None
+                    else None
+                )
+            except ValueError as exc:
+                raise ProviderUnavailable() from exc
+            components.append(ProviderAccountComponentStatus(name, state, error, operational))
+        return tuple(components)
+
+    async def start_spotify_playback_pairing(self) -> SpotifyPlaybackPairingStart:
+        return await self._process_client.start_spotify_playback_pairing()
+
+    async def poll_spotify_playback_pairing(self, flow_id: str) -> SpotifyPlaybackPairingPoll:
+        return await self._process_client.poll_spotify_playback_pairing(flow_id)
+
+    async def cancel_spotify_playback_pairing(self, flow_id: str) -> None:
+        await self._process_client.cancel_spotify_playback_pairing(flow_id)
+
+    async def authorize_spotify_webapi_credentials(
+        self, client_id: SensitiveValue, client_secret: SensitiveValue
+    ) -> SpotifyWebApiAuthorizationResult:
+        return await self._process_client.authorize_spotify_webapi_credentials(
+            client_id, client_secret
+        )
 
     async def start_tidal_device_authorization(self) -> TidalDeviceAuthorizationStart:
         return await self._process_client.start_tidal_device_authorization()
