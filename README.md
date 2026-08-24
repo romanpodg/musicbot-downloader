@@ -43,7 +43,10 @@ Current delivery roadmap:
 - Stage 14: Telegram Bot UX Foundation: localized UX messages, reusable menus, validated navigation
   callbacks, and transport-neutral interaction-state/progress foundations.
 - Stage 15: Track Search Architecture: provider-neutral search models, provider contract, registry,
-  application use case, and `/search` input foundation; provider API integration remains Stage 16.
+  application use case, and `/search` input foundation.
+- Stage 16: Provider Search Integration: sequential Spotify, Deezer, and Tidal catalog search
+  adapters over the existing isolated provider runtime, with provider-specific mapping into
+  normalized search Tracks.
 
 Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
 deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage
@@ -77,7 +80,9 @@ and backup/restore guarantees.
 See [the Stage 14 UX contract](docs/stage14-telegram-ux.md) for the Telegram presentation boundary,
 message and keyboard foundations, callback format, navigation state, and compatibility guarantees.
 See [the Stage 15 search architecture](docs/stage15-track-search.md) for the normalized domain
-models, provider contract, registry, use case, and Stage 16 integration seam.
+models, provider contract, registry, use case, and provider integration seam. See [the Stage 16
+provider search integration](docs/stage16-provider-search-integration.md) for adapter isolation,
+registry registration, response mapping, and availability handling.
 
 ## Architecture
 

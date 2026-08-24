@@ -25,6 +25,11 @@ from app.providers.deezer_authorization import (
     DeezerArlAuthorizationBoundary,
     DeezerArlAuthorizationDriver,
 )
+from app.providers.search_adapters import (
+    DeezerSearchAdapter,
+    SpotifySearchAdapter,
+    TidalSearchAdapter,
+)
 from app.providers.spotify_authorization import (
     SpotifyAuthorizationBoundary,
     SpotifyPlaybackAuthorizationDriver,
@@ -289,7 +294,13 @@ async def compose_stage9(
     users = TelegramUserService(database, i18n, owner_id=settings.owner_id)
     ux_states = UserUxStateService()
     ux_progress = UxProgressService(ux_states)
-    search_registry = TrackSearchProviderRegistry()
+    search_registry = TrackSearchProviderRegistry(
+        (
+            SpotifySearchAdapter(provider),
+            DeezerSearchAdapter(provider),
+            TidalSearchAdapter(provider),
+        )
+    )
     search_use_case = SearchTracksUseCase(TrackSearchService(search_registry))
     ux_flows = UxFlowService(users, ux_states, search_use_case)
     track_resolution = ResolveTrackService(database, provider)
