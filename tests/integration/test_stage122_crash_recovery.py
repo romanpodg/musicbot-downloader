@@ -471,6 +471,7 @@ async def test_component_startup_order_is_recovery_cleanup_then_workers() -> Non
     fake = SimpleNamespace(
         crash_recovery=SimpleNamespace(recover_startup=operation("recovery")),
         artifact_cleanup=SimpleNamespace(sweep=operation("startup-cleanup")),
+        provider_accounts=SimpleNamespace(reconcile_startup=operation("provider-reconciliation")),
         queue_manager=SimpleNamespace(start=operation("queue")),
         delivery_fanout=SimpleNamespace(start=operation("delivery")),
         album_coordinator=SimpleNamespace(start=operation("album")),
@@ -480,6 +481,7 @@ async def test_component_startup_order_is_recovery_cleanup_then_workers() -> Non
     assert order == [
         "recovery",
         "startup-cleanup",
+        "provider-reconciliation",
         "queue",
         "delivery",
         "album",

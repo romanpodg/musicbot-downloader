@@ -8,6 +8,7 @@ reach parent application logs.
 
 from __future__ import annotations
 
+import builtins
 import errno
 import os
 
@@ -24,7 +25,7 @@ import sys
 import time
 import uuid
 from collections.abc import Mapping
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
@@ -45,7 +46,9 @@ from app.providers.onthespot.ipc import (
     MAX_MESSAGE_BYTES,
     PREPARE_SOURCE_METHOD,
     PROTOCOL_VERSION,
+    RECONCILE_PROVIDER_LIFECYCLE_METHOD,
     REFRESH_PROVIDER_HEALTH_METHOD,
+    RESET_PROVIDER_AUTHENTICATION_METHOD,
     RESOLVE_ALBUM_ID_METHOD,
     RESOLVE_ALBUM_METHOD,
     SEARCH_TRACKS_METHOD,
@@ -183,19 +186,26 @@ class OnTheSpotWorker:
         self._spotify_webapi_state = "NOT_CONFIGURED"
         self._spotify_webapi_operational_state = "UNKNOWN"
         self._spotify_webapi_error_code: str | None = None
+        self._startup_temporary_artifacts_cleaned = 0
 
     def initialize(self) -> dict[str, Any]:
         if self._initialized:
             return self._initialization_result()
         self._validate_config_location()
+        self._prepare_config_directory()
+        self._startup_temporary_artifacts_cleaned = (
+            self._cleanup_stale_pairing_artifacts() + self._cleanup_stale_config_artifacts()
+        )
         try:
-            with _silence_upstream():
+            with _silence_upstream(), _atomic_onthespot_config_writes():
                 self._accounts = importlib.import_module("onthespot.accounts")
                 self._parse = importlib.import_module("onthespot.parse_item")
                 self._registry = importlib.import_module("onthespot.api.registry")
                 self._config = importlib.import_module("onthespot.otsconfig").config
+                self._secure_provider_storage()
+                self._install_atomic_config_save_adapter()
                 self._runtime = importlib.import_module("onthespot.runtimedata")
-                self._install_secure_deezer_login_adapter()
+                self._install_secure_login_adapters()
                 self._accounts.AccountPoolLoader(gui=False).run()
                 self._refresh_spotify_webapi_readiness()
             self._initialized = True
@@ -512,7 +522,28 @@ class OnTheSpotWorker:
         ]
         if not active_accounts:
             if requires_auth:
-                code = "SESSION_UNAVAILABLE" if configured else "AUTH_NOT_CONFIGURED"
+                code = "AUTH_NOT_CONFIGURED"
+                if configured:
+                    runtime_error = next(
+                        (
+                            account.get("lifecycle_error")
+                            for account in self._runtime.account_pool
+                            if isinstance(account, Mapping)
+                            and account.get("service") == provider
+                            and account.get("status") == "error"
+                            and account.get("lifecycle_error")
+                            in {
+                                "CREDENTIAL_EXPIRED",
+                                "CREDENTIAL_INVALID",
+                                "CREDENTIAL_REVOKED",
+                            }
+                        ),
+                        None,
+                    )
+                    if isinstance(runtime_error, str):
+                        code = runtime_error
+                    else:
+                        code = "SESSION_UNAVAILABLE"
                 return _health_result("AUTH_REQUIRED", True, True, code)
             return _health_result("UNAVAILABLE", False, True, "RUNTIME_UNAVAILABLE")
 
@@ -552,9 +583,8 @@ class OnTheSpotWorker:
             self.initialize()
         try:
             with _silence_upstream():
-                config_module = importlib.import_module("onthespot.otsconfig")
-                fresh_config = config_module.Config()
-                fresh_accounts = fresh_config.get("accounts")
+                fresh_config = self._read_persisted_configuration()
+                fresh_accounts = fresh_config.get("accounts", [])
                 if not isinstance(fresh_accounts, list):
                     raise ValueError
                 self._config.set("accounts", fresh_accounts)
@@ -569,22 +599,210 @@ class OnTheSpotWorker:
                     "spotify_webapi_override_client_secret",
                     fresh_config.get("spotify_webapi_override_client_secret", ""),
                 )
-                self._invalidate_spotify_oauth_cache()
-                for runtime_account in self._runtime.account_pool:
-                    if not isinstance(runtime_account, Mapping):
-                        continue
-                    login = runtime_account.get("login")
-                    session = login.get("session") if isinstance(login, Mapping) else None
-                    close = getattr(session, "close", None)
-                    if callable(close):
-                        close()
-                self._runtime.account_pool.clear()
-                self._install_secure_deezer_login_adapter()
-                self._accounts.AccountPoolLoader(gui=False).run()
-                self._refresh_spotify_webapi_readiness()
+                self._rebuild_runtime_pool()
+                self._secure_provider_storage()
         except Exception as exc:
             raise WorkerError("provider_unavailable") from exc
         return {"refreshed": True}
+
+    def reconcile_provider_lifecycle(self) -> dict[str, int | str]:
+        """Reload durable truth and report only a sanitized startup recovery outcome."""
+
+        if not self._initialized:
+            self.initialize()
+        self.refresh_provider_health()
+        cleaned = self._startup_temporary_artifacts_cleaned
+        self._startup_temporary_artifacts_cleaned = 0
+        return {"status": "reconciled", "cleaned_temporary_artifacts": cleaned}
+
+    def reset_provider_authentication(self, provider: str) -> dict[str, str]:
+        """Atomically remove one managed provider's OnTheSpot-owned authentication state."""
+
+        if provider not in {"tidal", "deezer", "spotify"}:
+            return {"status": "failed", "error_code": "DISCONNECT_UNSUPPORTED"}
+        if not self._initialized:
+            self.initialize()
+        current = self._config.get("accounts", [])
+        if not isinstance(current, list):
+            return {"status": "failed", "error_code": "DISCONNECT_FAILED"}
+        updated = [
+            account
+            for account in current
+            if not isinstance(account, Mapping) or account.get("service") != provider
+        ]
+        updates: dict[str, Any] = {"accounts": updated}
+        active_index = self._config.get("active_account_number", 0)
+        if isinstance(active_index, int) and not isinstance(active_index, bool):
+            selected = current[active_index] if 0 <= active_index < len(current) else None
+            if selected in updated:
+                updates["active_account_number"] = updated.index(selected)
+            elif updated:
+                updates["active_account_number"] = 0
+            else:
+                updates["active_account_number"] = 0
+        if provider == "spotify":
+            updates.update(
+                {
+                    "spotify_webapi_override_client_id": "",
+                    "spotify_webapi_override_client_secret": "",
+                }
+            )
+        try:
+            self._persist_config_updates(updates)
+        except Exception:
+            return {"status": "failed", "error_code": "DISCONNECT_FAILED"}
+
+        if provider == "tidal":
+            self._tidal_device_flows.clear()
+        elif provider == "spotify":
+            pairing = self._spotify_playback_pairing
+            if pairing is not None:
+                self._close_spotify_playback_pairing(pairing)
+            self._spotify_playback_terminal.clear()
+        try:
+            with _silence_upstream():
+                self._rebuild_runtime_pool()
+            health = self.check_provider_health(provider)
+            if health != {
+                "status": "AUTH_REQUIRED",
+                "requires_authentication": True,
+                "download_supported": True,
+                "error_code": "AUTH_NOT_CONFIGURED",
+            }:
+                raise ValueError
+            if provider == "spotify" and self._spotify_webapi_state != "NOT_CONFIGURED":
+                raise ValueError
+        except Exception:
+            return {"status": "failed", "error_code": "DISCONNECT_FAILED"}
+        return {"status": "disconnected"}
+
+    def _rebuild_runtime_pool(self) -> None:
+        self._invalidate_spotify_oauth_cache()
+        for runtime_account in self._runtime.account_pool:
+            if not isinstance(runtime_account, Mapping):
+                continue
+            login = runtime_account.get("login")
+            session = login.get("session") if isinstance(login, Mapping) else None
+            close = getattr(session, "close", None)
+            if callable(close):
+                close()
+        self._runtime.account_pool.clear()
+        self._install_secure_login_adapters()
+        self._accounts.AccountPoolLoader(gui=False).run()
+        self._refresh_spotify_webapi_readiness()
+
+    def _read_persisted_configuration(self) -> dict[str, Any]:
+        path = self._config_path()
+        with path.open("r", encoding="utf-8") as handle:
+            value = json.load(handle)
+        if not isinstance(value, dict):
+            raise ValueError
+        return value
+
+    def _persist_config_updates(self, updates: Mapping[str, Any]) -> None:
+        raw = getattr(self._config, "_Config__config", None)
+        raw_path = getattr(self._config, "_Config__cfg_path", None)
+        if isinstance(raw, dict) and isinstance(raw_path, str):
+            prepared = dict(raw)
+            prepared.update(updates)
+            _atomic_write_private_json(self._config_path(), prepared)
+            for key, value in updates.items():
+                self._config.set(key, value)
+            self._secure_provider_storage()
+            return
+
+        previous = {key: self._config.get(key) for key in updates}
+        try:
+            for key, value in updates.items():
+                self._config.set(key, value)
+            self._config.save()
+            if any(self._config.get(key) != value for key, value in updates.items()):
+                raise ValueError
+        except Exception:
+            for key, value in previous.items():
+                try:
+                    self._config.set(key, value)
+                except Exception:
+                    pass
+            raise
+
+    def _install_atomic_config_save_adapter(self) -> None:
+        def save() -> None:
+            raw = getattr(self._config, "_Config__config", None)
+            if not isinstance(raw, dict):
+                raise ValueError
+            _atomic_write_private_json(self._config_path(), raw)
+            self._secure_provider_storage()
+
+        self._config.save = save
+
+    def _config_path(self) -> Path:
+        raw_path = getattr(self._config, "_Config__cfg_path", None)
+        if not isinstance(raw_path, str) or not raw_path:
+            raise ValueError
+        path = Path(raw_path).expanduser().resolve()
+        configured = os.environ.get("ONTHESPOTDIR")
+        if not configured:
+            raise ValueError
+        root = Path(configured).expanduser().resolve()
+        if path.parent != root:
+            raise ValueError
+        return path
+
+    def _secure_provider_storage(self) -> None:
+        path = self._config_path()
+        path.parent.chmod(0o700)
+        if path.exists():
+            path.chmod(0o600)
+
+    @staticmethod
+    def _cleanup_stale_pairing_artifacts() -> int:
+        root = Path(os.environ.get("MUSICBOT_TEMP_DIR", "./temp")).expanduser().resolve()
+        directory = root / "spotify-pairing"
+        if not directory.exists() or not directory.is_dir():
+            return 0
+        cleaned = 0
+        for candidate in directory.iterdir():
+            if candidate.is_dir() and not candidate.is_symlink():
+                continue
+            try:
+                candidate.unlink()
+            except FileNotFoundError:
+                continue
+            cleaned += 1
+        try:
+            directory.chmod(0o700)
+        except OSError:
+            pass
+        return cleaned
+
+    @staticmethod
+    def _prepare_config_directory() -> None:
+        configured = os.environ.get("ONTHESPOTDIR")
+        if not configured:
+            return
+        root = Path(configured).expanduser().resolve()
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        root.chmod(0o700)
+
+    @staticmethod
+    def _cleanup_stale_config_artifacts() -> int:
+        configured = os.environ.get("ONTHESPOTDIR")
+        if not configured:
+            return 0
+        root = Path(configured).expanduser().resolve()
+        if not root.is_dir():
+            return 0
+        cleaned = 0
+        for candidate in root.glob(".otsconfig.json.*.tmp"):
+            if candidate.is_dir() and not candidate.is_symlink():
+                continue
+            try:
+                candidate.unlink()
+            except FileNotFoundError:
+                continue
+            cleaned += 1
+        return cleaned
 
     def spotify_component_status(self) -> dict[str, Any]:
         """Return independent sanitized playback and Web API readiness facts."""
@@ -600,6 +818,14 @@ class OnTheSpotWorker:
         playback_error = playback_health.get("error_code")
         if playback_error == "AUTH_NOT_CONFIGURED":
             playback_state = "AUTH_REQUIRED"
+        elif playback_error == "SESSION_UNAVAILABLE":
+            playback_state = "DEGRADED"
+        elif playback_error == "CREDENTIAL_EXPIRED":
+            playback_state = "EXPIRED"
+        elif playback_error == "CREDENTIAL_INVALID":
+            playback_state = "INVALID"
+        elif playback_error == "CREDENTIAL_REVOKED":
+            playback_state = "REVOKED"
         playback: dict[str, str] = {"state": playback_state}
         if isinstance(playback_error, str):
             playback_error = {
@@ -741,13 +967,8 @@ class OnTheSpotWorker:
             )
         if updated != current:
             try:
-                self._config.set("accounts", updated)
-                self._config.save()
+                self._persist_config_updates({"accounts": updated})
             except Exception:
-                try:
-                    self._config.set("accounts", current)
-                except Exception:
-                    pass
                 return self._finish_spotify_playback_pairing(
                     pairing, "failed", "SPOTIFY_PLAYBACK_PERSIST_FAILED"
                 )
@@ -780,30 +1001,17 @@ class OnTheSpotWorker:
             return _spotify_webapi_failure("SPOTIFY_WEBAPI_INVALID_FORMAT")
         validation = self._validate_spotify_webapi_credentials(normalized_id, normalized_secret)
         if validation.token is None:
-            self._spotify_webapi_state = "ERROR"
-            self._spotify_webapi_operational_state = validation.operational_state
-            self._spotify_webapi_error_code = validation.error_code
             return _spotify_webapi_failure(
                 validation.error_code or "SPOTIFY_WEBAPI_INVALID_RESPONSE"
             )
-        previous_id = self._config.get("spotify_webapi_override_client_id", "")
-        previous_secret = self._config.get("spotify_webapi_override_client_secret", "")
         try:
-            self._config.set("spotify_webapi_override_client_id", normalized_id)
-            self._config.set("spotify_webapi_override_client_secret", normalized_secret)
-            self._config.save()
-            if (
-                self._config.get("spotify_webapi_override_client_id", "") != normalized_id
-                or self._config.get("spotify_webapi_override_client_secret", "")
-                != normalized_secret
-            ):
-                raise ValueError
+            self._persist_config_updates(
+                {
+                    "spotify_webapi_override_client_id": normalized_id,
+                    "spotify_webapi_override_client_secret": normalized_secret,
+                }
+            )
         except Exception:
-            try:
-                self._config.set("spotify_webapi_override_client_id", previous_id)
-                self._config.set("spotify_webapi_override_client_secret", previous_secret)
-            except Exception:
-                pass
             return _spotify_webapi_failure("SPOTIFY_WEBAPI_PERSIST_FAILED")
         self._invalidate_spotify_oauth_cache()
         self._spotify_webapi_state = "READY"
@@ -953,12 +1161,17 @@ class OnTheSpotWorker:
             _normalize_spotify_webapi_credential(str(client_secret)) if client_secret else None
         )
         if normalized_id is None or normalized_secret is None:
-            self._spotify_webapi_state = "ERROR"
+            self._spotify_webapi_state = "INVALID"
             self._spotify_webapi_operational_state = "UNKNOWN"
             self._spotify_webapi_error_code = "SPOTIFY_WEBAPI_INVALID_FORMAT"
             return
         validation = self._validate_spotify_webapi_credentials(normalized_id, normalized_secret)
-        self._spotify_webapi_state = "READY" if validation.token is not None else "ERROR"
+        if validation.token is not None:
+            self._spotify_webapi_state = "READY"
+        elif validation.error_code == "SPOTIFY_WEBAPI_INVALID_CREDENTIALS":
+            self._spotify_webapi_state = "INVALID"
+        else:
+            self._spotify_webapi_state = "DEGRADED"
         self._spotify_webapi_operational_state = validation.operational_state
         self._spotify_webapi_error_code = validation.error_code
 
@@ -1026,23 +1239,157 @@ class OnTheSpotWorker:
                 }
             )
         try:
-            self._config.set("accounts", updated)
-            self._config.save()
+            self._persist_config_updates({"accounts": updated})
         except Exception:
-            try:
-                self._config.set("accounts", current)
-            except Exception:
-                pass
             return _deezer_failure("DEEZER_AUTH_PERSIST_FAILED")
         return {"status": "persisted"}
 
-    def _install_secure_deezer_login_adapter(self) -> None:
-        """Keep every configured Deezer runtime login on the HTTPS-only adapter."""
+    def _install_secure_login_adapters(self) -> None:
+        """Install bounded adapters for provider logins that handle durable secrets."""
 
         login_functions = getattr(self._registry, "SERVICE_LOGIN_FUNCTIONS", None)
         if not isinstance(login_functions, dict):
             raise ValueError
         login_functions["deezer"] = self._secure_deezer_login
+        login_functions["tidal"] = self._secure_tidal_login
+
+    def _install_secure_deezer_login_adapter(self) -> None:
+        """Compatibility entry point retained for focused Stage 13.3 tests."""
+
+        self._install_secure_login_adapters()
+
+    def _secure_tidal_login(self, account: Mapping[str, Any]) -> bool:
+        login = account.get("login")
+        if not isinstance(login, Mapping):
+            self._append_tidal_runtime_error(account, "CREDENTIAL_INVALID")
+            return False
+        access_token = login.get("access_token")
+        refresh_token = login.get("refresh_token")
+        country_code = login.get("country_code")
+        username = login.get("username")
+        token_expiry = login.get("token_expiry")
+        if (
+            not isinstance(access_token, str)
+            or not access_token
+            or not isinstance(refresh_token, str)
+            or not refresh_token
+            or not isinstance(country_code, str)
+            or not country_code
+            or not isinstance(username, str)
+            or not username
+            or isinstance(token_expiry, bool)
+            or not isinstance(token_expiry, (int, float))
+        ):
+            self._append_tidal_runtime_error(account, "CREDENTIAL_INVALID")
+            return False
+
+        if time.time() >= float(token_expiry):
+            try:
+                tidal = importlib.import_module("onthespot.api.tidal")
+                response = tidal.requests.post(
+                    f"{tidal.AUTH_URL}/token",
+                    data={
+                        "client_id": tidal.CLIENT_ID,
+                        "refresh_token": refresh_token,
+                        "grant_type": "refresh_token",
+                        "scope": "r_usr+w_usr+w_sub",
+                    },
+                    auth=tidal.AUTH,
+                    timeout=_TIDAL_HTTP_TIMEOUT,
+                )
+            except Exception:
+                self._append_tidal_runtime_error(account)
+                return False
+            if response.status_code != 200:
+                lifecycle_error = (
+                    "CREDENTIAL_EXPIRED" if response.status_code in {400, 401, 403} else None
+                )
+                self._append_tidal_runtime_error(account, lifecycle_error)
+                return False
+            try:
+                payload = response.json()
+            except Exception:
+                self._append_tidal_runtime_error(account, "CREDENTIAL_INVALID")
+                return False
+            if not isinstance(payload, Mapping):
+                self._append_tidal_runtime_error(account, "CREDENTIAL_INVALID")
+                return False
+            refreshed_access = payload.get("access_token")
+            expires_in = payload.get("expires_in")
+            refreshed_refresh = payload.get("refresh_token", refresh_token)
+            if (
+                not isinstance(refreshed_access, str)
+                or not refreshed_access
+                or isinstance(expires_in, bool)
+                or not isinstance(expires_in, (int, float))
+                or expires_in <= 0
+                or not isinstance(refreshed_refresh, str)
+                or not refreshed_refresh
+            ):
+                self._append_tidal_runtime_error(account, "CREDENTIAL_INVALID")
+                return False
+            updated_account = dict(account)
+            updated_login = dict(login)
+            updated_login.update(
+                {
+                    "access_token": refreshed_access,
+                    "refresh_token": refreshed_refresh,
+                    "token_expiry": time.time() + float(expires_in),
+                }
+            )
+            updated_account["login"] = updated_login
+            current = self._config.get("accounts", [])
+            if not isinstance(current, list):
+                self._append_tidal_runtime_error(account)
+                return False
+            matched = any(
+                isinstance(candidate, Mapping) and candidate.get("uuid") == account.get("uuid")
+                for candidate in current
+            )
+            if not matched:
+                self._append_tidal_runtime_error(account, "CREDENTIAL_INVALID")
+                return False
+            updated_accounts = [
+                updated_account
+                if isinstance(candidate, Mapping) and candidate.get("uuid") == account.get("uuid")
+                else candidate
+                for candidate in current
+            ]
+            try:
+                self._persist_config_updates({"accounts": updated_accounts})
+            except Exception:
+                self._append_tidal_runtime_error(account)
+                return False
+            access_token = refreshed_access
+
+        self._runtime.account_pool.append(
+            {
+                "uuid": str(account.get("uuid", "")),
+                "username": username,
+                "service": "tidal",
+                "status": "active",
+                "account_type": "premium",
+                "bitrate": "1411k",
+                "login": {"access_token": access_token, "country_code": country_code},
+            }
+        )
+        return True
+
+    def _append_tidal_runtime_error(
+        self, account: Mapping[str, Any], lifecycle_error: str | None = None
+    ) -> None:
+        runtime: dict[str, Any] = {
+            "uuid": str(account.get("uuid", "")),
+            "username": "",
+            "service": "tidal",
+            "status": "error",
+            "account_type": "N/A",
+            "bitrate": "N/A",
+            "login": {"access_token": "", "country_code": ""},
+        }
+        if lifecycle_error is not None:
+            runtime["lifecycle_error"] = lifecycle_error
+        self._runtime.account_pool.append(runtime)
 
     def _secure_deezer_login(self, account: Mapping[str, Any]) -> bool:
         login = account.get("login")
@@ -1051,9 +1398,9 @@ class OnTheSpotWorker:
         if normalized is None:
             self._append_deezer_runtime_error(account)
             return False
-        validated, _ = self._open_secure_deezer_session(normalized)
+        validated, error_code = self._open_secure_deezer_session(normalized)
         if validated is None:
-            self._append_deezer_runtime_error(account)
+            self._append_deezer_runtime_error(account, error_code)
             return False
         self._runtime.account_pool.append(
             {
@@ -1127,13 +1474,19 @@ class OnTheSpotWorker:
             None,
         )
 
-    def _append_deezer_runtime_error(self, account: Mapping[str, Any]) -> None:
+    def _append_deezer_runtime_error(
+        self, account: Mapping[str, Any], error_code: str | None = None
+    ) -> None:
+        lifecycle_error = (
+            "CREDENTIAL_REVOKED" if error_code == "DEEZER_ARL_INVALID" else "CREDENTIAL_INVALID"
+        )
         self._runtime.account_pool.append(
             {
                 "uuid": str(account.get("uuid", "")),
                 "username": "",
                 "service": "deezer",
                 "status": "error",
+                "lifecycle_error": lifecycle_error,
                 "account_type": "N/A",
                 "bitrate": "N/A",
                 "login": {
@@ -1294,13 +1647,25 @@ class OnTheSpotWorker:
             if not isinstance(accounts, list):
                 raise ValueError
             updated_accounts = accounts.copy()
-            updated_accounts.append(account)
-            self._config.set("accounts", updated_accounts)
-            try:
-                self._config.save()
-            except Exception:
-                self._config.set("accounts", accounts)
-                raise
+            replacement_index: int | None = None
+            new_login = account.get("login")
+            new_username = new_login.get("username") if isinstance(new_login, Mapping) else None
+            for index, existing in enumerate(updated_accounts):
+                if not isinstance(existing, Mapping) or existing.get("service") != "tidal":
+                    continue
+                existing_login = existing.get("login")
+                if (
+                    isinstance(existing_login, Mapping)
+                    and existing_login.get("username") == new_username
+                ):
+                    replacement_index = index
+                    account["uuid"] = str(existing.get("uuid", account["uuid"]))
+                    break
+            if replacement_index is None:
+                updated_accounts.append(account)
+            else:
+                updated_accounts[replacement_index] = account
+            self._persist_config_updates({"accounts": updated_accounts})
         except Exception:
             return self._terminal_tidal_poll(flow, "persist_failed", "TIDAL_AUTH_PERSIST_FAILED")
         return self._terminal_tidal_poll(flow, "approved")
@@ -1537,6 +1902,89 @@ class _silence_upstream:
             self._sink.close()
 
 
+class _AtomicReplaceTextFile:
+    def __init__(
+        self,
+        target: Path,
+        mode: str,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        opener: Any,
+    ) -> None:
+        self._target = target
+        self._temporary = target.parent / f".{target.name}.{uuid.uuid4().hex}.tmp"
+        self._stream = opener(self._temporary, mode, *args, **kwargs)
+        self._finished = False
+
+    def __enter__(self) -> _AtomicReplaceTextFile:
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        del exc, traceback
+        if exc_type is None:
+            self.close()
+        else:
+            self._abort()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
+
+    def write(self, value: str) -> int:
+        return int(self._stream.write(value))
+
+    def close(self) -> None:
+        if self._finished:
+            return
+        try:
+            self._stream.flush()
+            os.fsync(self._stream.fileno())
+            self._stream.close()
+            self._temporary.chmod(0o600)
+            os.replace(self._temporary, self._target)
+            self._target.chmod(0o600)
+        except Exception:
+            self._abort()
+            raise
+        self._finished = True
+
+    def _abort(self) -> None:
+        if self._finished:
+            return
+        try:
+            self._stream.close()
+        finally:
+            try:
+                self._temporary.unlink()
+            except FileNotFoundError:
+                pass
+            self._finished = True
+
+
+@contextmanager
+def _atomic_onthespot_config_writes() -> Any:
+    configured = os.environ.get("ONTHESPOTDIR")
+    if not configured:
+        yield
+        return
+    target = (Path(configured).expanduser().resolve() / "otsconfig.json").resolve()
+    original_open = builtins.open
+
+    def guarded_open(file: Any, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+        try:
+            candidate = Path(file).expanduser().resolve()
+        except (TypeError, ValueError, OSError):
+            candidate = None
+        if candidate == target and "w" in mode:
+            return _AtomicReplaceTextFile(target, mode, args, kwargs, original_open)
+        return original_open(file, mode, *args, **kwargs)
+
+    builtins.open = guarded_open
+    try:
+        yield
+    finally:
+        builtins.open = original_open
+
+
 def _wire_value(value: Any) -> str | int | float | bool | None:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -1668,6 +2116,7 @@ def _is_local_ipv4_address(host_ip: str) -> bool:
 
 def _read_spotify_pairing_credentials(path: Path) -> dict[str, str] | None:
     try:
+        path.chmod(0o600)
         with path.open(encoding="utf-8") as stream:
             payload = json.load(stream)
     except Exception:
@@ -1838,6 +2287,31 @@ def _tidal_account_from_token_payload(payload: Mapping[str, Any]) -> dict[str, A
     }
 
 
+def _atomic_write_private_json(path: Path, value: Mapping[str, Any]) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.parent.chmod(0o700)
+    temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            descriptor = None
+            json.dump(value, stream, ensure_ascii=False, indent=4)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.chmod(0o600)
+        os.replace(temporary, path)
+        path.chmod(0o600)
+    except Exception:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def _response(request_id: str | None, *, result: Any = None, error: str | None = None) -> bytes:
     if error is None:
         payload: dict[str, Any] = {"id": request_id, "ok": True, "result": result}
@@ -1933,6 +2407,15 @@ def main() -> int:
                 result = worker.check_provider_health(provider)
             elif method == REFRESH_PROVIDER_HEALTH_METHOD:
                 result = worker.refresh_provider_health()
+            elif method == RECONCILE_PROVIDER_LIFECYCLE_METHOD:
+                if params:
+                    raise WorkerError("provider_unavailable")
+                result = worker.reconcile_provider_lifecycle()
+            elif method == RESET_PROVIDER_AUTHENTICATION_METHOD:
+                provider = params.get("provider")
+                if set(params) != {"provider"} or not isinstance(provider, str):
+                    raise WorkerError("provider_unavailable")
+                result = worker.reset_provider_authentication(provider)
             elif method == DEEZER_ARL_AUTHORIZE_METHOD:
                 arl = params.get("arl")
                 if set(params) != {"arl"} or not isinstance(arl, str):

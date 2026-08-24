@@ -312,6 +312,13 @@ configuration/secrets through a secure operator process. The DB contains users, 
 queues/history, Telegram file IDs, and deep links; audio remains in Telegram. Deleting cache-chat
 messages can invalidate stored Telegram file references.
 
+Provider configuration backup/restore is deliberately separate from SQLite. Stop the application,
+copy the complete `/data/onthespot` state with restrictive ownership/mode, and replace it as one
+operator-controlled unit; do not merge `accounts[]`, duplicate provider records, or restore
+`/tmp/musicbot/spotify-pairing`. On the next single-instance start, Stage 13 lifecycle reconciliation
+reloads the restored configuration, discards stale temporary authorization artifacts, and verifies
+runtime readiness instead of retaining a pre-restore `READY` observation.
+
 Safe single-instance upgrade procedure:
 
 1. create and verify DB/provider/config backups;

@@ -92,6 +92,7 @@ class AccountBackend:
     def __init__(self) -> None:
         self.status_calls: list[MusicProviderName] = []
         self.reload_calls = 0
+        self.disconnect_calls: list[MusicProviderName] = []
         self.failure: Exception | None = None
 
     async def get_account_status(self, provider: MusicProviderName) -> ProviderAccountStatus:
@@ -106,6 +107,7 @@ class AccountBackend:
             raise self.failure
 
     async def disconnect_account(self, provider: MusicProviderName) -> ProviderDisconnectOutcome:
+        self.disconnect_calls.append(provider)
         return ProviderDisconnectOutcome(provider, ProviderDisconnectOutcomeStatus.UNSUPPORTED)
 
 
@@ -190,7 +192,10 @@ async def test_denied_service_calls_never_reach_backend(database: Database) -> N
     for denied in (admin, user, stale_owner):
         with pytest.raises(AuthorizationError):
             await service.get_overview(denied)
+        with pytest.raises(AuthorizationError):
+            await service.disconnect(denied, MusicProviderName.TIDAL)
     assert not backend.status_calls
+    assert not backend.disconnect_calls
     assert backend.reload_calls == 0
     assert len((await service.get_overview(owner)).accounts) == 3
 
@@ -223,7 +228,7 @@ async def test_runtime_status_normalization_and_no_authorization_advertisement()
     assert deezer.state is ProviderAccountState.NOT_CONFIGURED
     assert deezer.error_code is ProviderAccountErrorCode.AUTH_NOT_CONFIGURED
     spotify = await backend.get_account_status(MusicProviderName.SPOTIFY)
-    assert spotify.state is ProviderAccountState.AUTH_REQUIRED
+    assert spotify.state is ProviderAccountState.DEGRADED
     assert spotify.error_code is ProviderAccountErrorCode.SESSION_UNAVAILABLE
     advertised = [
         (await backend.get_account_status(provider)).authorization_supported
@@ -234,14 +239,40 @@ async def test_runtime_status_normalization_and_no_authorization_advertisement()
     assert unsupported.state is ProviderAccountState.UNSUPPORTED
 
 
+async def test_owner_reset_returns_only_the_sanitized_backend_outcome(
+    database: Database,
+) -> None:
+    owner = await _create_user(database, 13251, UserRole.OWNER)
+
+    class ResetBackend(AccountBackend):
+        async def disconnect_account(
+            self, provider: MusicProviderName
+        ) -> ProviderDisconnectOutcome:
+            self.disconnect_calls.append(provider)
+            return ProviderDisconnectOutcome(provider, ProviderDisconnectOutcomeStatus.DISCONNECTED)
+
+    backend = ResetBackend()
+    service = ProviderAccountManagementService(
+        backend,
+        TelegramAuthorizationService(database, owner_id=13251),
+        ProviderAuthorizationCoordinator(),
+    )
+
+    outcome = await service.disconnect(owner, MusicProviderName.DEEZER)
+
+    assert outcome.status is ProviderDisconnectOutcomeStatus.DISCONNECTED
+    assert backend.disconnect_calls == [MusicProviderName.DEEZER]
+    assert "secret" not in repr(outcome).lower()
+
+
 async def test_backend_and_refresh_failures_are_sanitized(database: Database) -> None:
     owner = await _create_user(database, 13301, UserRole.OWNER)
     probe = HealthProbe()
     probe.error = RuntimeError("access_token=top-secret cookie=top-secret arl=top-secret")
     backend = ProviderRuntimeAccountBackend(probe)
     status = await backend.get_account_status(MusicProviderName.TIDAL)
-    assert status.state is ProviderAccountState.ERROR
-    assert status.error_code is ProviderAccountErrorCode.STATUS_CHECK_FAILED
+    assert status.state is ProviderAccountState.RECOVERING
+    assert status.error_code is ProviderAccountErrorCode.RUNTIME_UNAVAILABLE
     assert "top-secret" not in repr(status)
 
     probe.error = None
@@ -464,11 +495,10 @@ async def test_forged_callbacks_private_chat_and_owner_execution(database: Datab
                 wraps=parse_provider_accounts_callback,
             ) as parser:
                 for number, telegram_id in enumerate((13402, 13403, 13404), start=1):
-                    await dispatcher.feed_update(
-                        bot, callback(number, telegram_id, "adm5:d:tidal:forged")
-                    )
+                    await dispatcher.feed_update(bot, callback(number, telegram_id, "adm5:y:tidal"))
                 assert parser.call_count == 0
             assert not backend.status_calls
+            assert not backend.disconnect_calls
 
             await dispatcher.feed_update(bot, callback(4, 13401, "adm5:not-valid"))
             assert not backend.status_calls

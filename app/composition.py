@@ -158,6 +158,7 @@ class Stage9Components:
         try:
             await self.crash_recovery.recover_startup()
             await self.artifact_cleanup.sweep()
+            await self.provider_accounts.reconcile_startup()
             await self.queue_manager.start()
             await self.delivery_fanout.start()
             await self.album_coordinator.start()

@@ -205,6 +205,16 @@ class OnTheSpotProvider(MusicProvider):
 
         await self._process_client.refresh_provider_health()
 
+    async def reconcile_provider_lifecycle(self) -> None:
+        """Reconcile durable configuration, runtime sessions, and stale child artifacts."""
+
+        await self._process_client.reconcile_provider_lifecycle()
+
+    async def reset_provider_authentication(self, provider: MusicProviderName) -> bool:
+        """Remove only one managed provider's child-owned authentication state."""
+
+        return await self._process_client.reset_provider_authentication(provider.value)
+
     async def authorize_deezer_arl(
         self, credential: SensitiveValue
     ) -> DeezerArlAuthorizationResult:

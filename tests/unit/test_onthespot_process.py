@@ -28,6 +28,10 @@ for line in sys.stdin.buffer:
     method = request["method"]
     if mode == "crash" and method == "get_metadata":
         os._exit(7)
+    if mode == "malformed" and method == "get_metadata":
+        sys.stdout.write("{not-json}\n")
+        sys.stdout.flush()
+        continue
     if mode == "hang" and method in {"get_metadata", "check_source", "download_native"}:
         time.sleep(10)
     if mode == "init_fail" and method == "initialize":
@@ -97,6 +101,18 @@ for line in sys.stdin.buffer:
             "id": request_id,
             "ok": True,
             "result": {"status": "persisted"},
+        }
+    elif method == "reconcile_provider_lifecycle":
+        response = {
+            "id": request_id,
+            "ok": True,
+            "result": {"status": "reconciled", "cleaned_temporary_artifacts": 0},
+        }
+    elif method == "reset_provider_authentication":
+        response = {
+            "id": request_id,
+            "ok": True,
+            "result": {"status": "disconnected"},
         }
     elif method == "tidal_device_authorization_poll":
         response = {
@@ -184,16 +200,38 @@ async def test_initialization_failure_is_unavailable(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_worker_crash_is_terminal_and_does_not_respawn(tmp_path: Path) -> None:
+async def test_worker_crash_fails_current_request_then_restarts_without_replay(
+    tmp_path: Path,
+) -> None:
     client = _client(tmp_path, FAKE_WORKER_MODE="crash")
     assert (await client.availability()).available is True
     process_id = client.process_id
     with pytest.raises(ProviderUnavailable):
         await client.get_metadata("https://example.invalid")
+    assert client.process_id is None
+    assert process_id is not None
+    assert client._environment is not None
+    client._environment["FAKE_WORKER_MODE"] = "normal"
+    result = await client.get_metadata("https://example.invalid")
+    assert result["protobuf"] == "python"
+    assert client.process_id is not None and client.process_id != process_id
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_malformed_child_response_is_discarded_and_next_generation_recovers(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path, FAKE_WORKER_MODE="malformed")
+    assert (await client.availability()).available is True
+    first_process_id = client.process_id
     with pytest.raises(ProviderUnavailable):
         await client.get_metadata("https://example.invalid")
     assert client.process_id is None
-    assert process_id is not None
+    assert client._environment is not None
+    client._environment["FAKE_WORKER_MODE"] = "normal"
+    assert (await client.availability()).available is True
+    assert client.process_id is not None and client.process_id != first_process_id
     await client.close()
 
 
@@ -259,6 +297,17 @@ async def test_deezer_secret_crosses_only_request_and_never_returns(tmp_path: Pa
 
     assert result.persisted is True
     assert secret not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_reconciliation_and_reset_use_sanitized_strict_ipc(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    try:
+        await client.reconcile_provider_lifecycle()
+        assert await client.reset_provider_authentication("spotify") is True
+        assert await client.reset_provider_authentication("unsupported") is False
+    finally:
+        await client.close()
 
 
 @pytest.mark.asyncio

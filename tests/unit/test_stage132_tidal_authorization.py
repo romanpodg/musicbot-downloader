@@ -221,6 +221,37 @@ def test_child_success_persists_upstream_schema_exactly_once_without_token_outpu
     assert len(requests.calls) == 2
 
 
+def test_reauthorization_replaces_same_tidal_identity_without_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker, _, config = _worker_with_tidal(monkeypatch, [_device_response(), _token_response()])
+    config.values["accounts"] = [
+        {"service": "existing"},
+        {
+            "uuid": "stable-tidal-uuid",
+            "service": "tidal",
+            "active": True,
+            "login": {
+                "username": "safe-user",
+                "country_code": "US",
+                "access_token": "old",
+                "refresh_token": "old",
+                "token_expiry": 1,
+            },
+        },
+    ]
+    flow_id, _ = _start_and_make_poll_due(worker)
+
+    assert worker.tidal_device_authorization_poll(flow_id) == {"status": "approved"}
+    tidal_accounts = [
+        account for account in config.values["accounts"] if account.get("service") == "tidal"
+    ]
+    assert len(tidal_accounts) == 1
+    assert tidal_accounts[0]["uuid"] == "stable-tidal-uuid"
+    assert tidal_accounts[0]["login"]["refresh_token"] == "child-only-refresh-token"
+    assert config.save_calls == 1
+
+
 def test_child_persistence_failure_rolls_back_in_memory_and_is_sanitized(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

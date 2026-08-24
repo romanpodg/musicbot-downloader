@@ -20,6 +20,7 @@ from app.core.provider_accounts import (
     ProviderAuthorizationOutcome,
     ProviderAuthorizationOutcomeStatus,
     ProviderAuthorizationStartStatus,
+    ProviderDisconnectOutcomeStatus,
     ProviderSensitiveInputChallenge,
     SensitiveValue,
 )
@@ -775,6 +776,37 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
                     presentation.detail_text(status, locale),
                     presentation.detail_keyboard(status, locale),
                 )
+            elif parsed.action is ProviderAccountsCallbackAction.RESET:
+                if parsed.provider is None:
+                    raise ValueError("provider is required")
+                status = await service.get_status(user.id, parsed.provider)
+                if not status.disconnect_supported:
+                    raise ValueError("provider reset is unsupported")
+                await _edit_or_send(
+                    callback,
+                    presentation.reset_confirmation_text(parsed.provider, locale),
+                    presentation.reset_confirmation_keyboard(parsed.provider, locale),
+                )
+            elif parsed.action is ProviderAccountsCallbackAction.CONFIRM_RESET:
+                if parsed.provider is None:
+                    raise ValueError("provider is required")
+                reset_outcome = await service.disconnect(user.id, parsed.provider)
+                status = await service.get_status(user.id, parsed.provider)
+                await _edit_or_send(
+                    callback,
+                    presentation.detail_text(status, locale),
+                    presentation.detail_keyboard(status, locale),
+                )
+                await callback.answer(
+                    presentation.text(
+                        "admin.provider_accounts_reset_done"
+                        if reset_outcome.status is ProviderDisconnectOutcomeStatus.DISCONNECTED
+                        else "admin.provider_accounts_reset_failed",
+                        locale,
+                    ),
+                    show_alert=True,
+                )
+                return
             elif parsed.action in {
                 ProviderAccountsCallbackAction.CONNECT,
                 ProviderAccountsCallbackAction.CONNECT_PLAYBACK,

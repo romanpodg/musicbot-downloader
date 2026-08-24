@@ -19,3 +19,4 @@ data/*
 !data/.gitkeep
 temp/*
 !temp/.gitkeep
+AGENTS.md

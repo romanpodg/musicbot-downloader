@@ -38,6 +38,8 @@ Current delivery roadmap:
   HTTPS validation, OnTheSpot-owned persistence, and secure runtime verification.
 - Stage 13.4: independent OWNER-only Spotify playback pairing and Developer Client Credentials for
   future catalog/search capability, both child-isolated and OnTheSpot-owned.
+- Stage 13.5: unified startup reconciliation, atomic credential updates, provider reset, crash
+  recovery, and sanitized readiness for Tidal, Deezer, and both Spotify components.
 
 Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
 deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage
@@ -47,8 +49,8 @@ adds repeatable credential-free Linux/container release validation; real Telegra
 remain explicitly opt-in. Stage 13.1 adds the provider-account-management architecture and
 OWNER-only Telegram status UI. Stage 13.2 adds only Tidal device authorization; it does not
 complete Stage 13. Stage 13.3 adds secure Deezer ARL authorization. Stage 13.4 adds independent
-Spotify playback and Web API credential setup; general provider-account lifecycle hardening remains
-Stage 13.5.
+Spotify playback and Web API credential setup. Stage 13.5 completes the provider-account lifecycle
+with atomic persistence, recovery, reset, and security hardening.
 
 See [the production deployment guide](docs/production.md) for the container, filesystem,
 migration, preflight, security, backup, restore, and upgrade contract. Stage 12.4 acceptance is
@@ -65,6 +67,9 @@ leak-prevention guarantees.
 See [the Stage 13.4 Spotify credential contract](docs/stage13.4-spotify-credentials.md) for bounded
 local-network playback pairing, independent Client Credentials validation, discovery networking,
 atomic OnTheSpot persistence, and token-cache invalidation.
+See [the Stage 13.5 lifecycle contract](docs/stage13.5-lifecycle-hardening.md) for credential
+ownership, startup reconciliation, crash recovery, atomic replacement, reset, readiness, filesystem,
+and backup/restore guarantees.
 
 ## Architecture
 
@@ -612,10 +617,10 @@ Track URL does not have to be the provider used for acquisition.
 
 Checks run only when an authorized administrator opens or refreshes Provider Health. There is no
 background polling, durable health cache, health history, credential UI, login/logout flow, or
-provider preference. Concurrent refreshes share only the currently running in-process sweep;
-after it completes, the next refresh is fresh. Provider failures are normalized independently,
-with a 60-second bounded session-pool refresh and a 15-second bound per normalized provider
-inspection. Health performs no audio acquisition and never
+provider preference. Concurrent observations share only the currently running in-process sweep;
+after it completes, the next observation is fresh. Provider failures are normalized independently,
+with a 15-second bound per normalized provider inspection. Health is observational: it does not
+reload sessions or mutate credentials. It performs no audio acquisition and never
 invokes Stage 6, FFmpeg, or ffprobe. Telegram cache hits remain independent of provider health and
 current music-provider authentication.
 

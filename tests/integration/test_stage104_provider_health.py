@@ -244,7 +244,7 @@ async def test_all_providers_failure_timeout_freshness_and_no_persistence(
     assert await _table_counts(database) == before
 
 
-async def test_concurrent_refresh_coalesces_and_caller_cancellation_is_isolated(
+async def test_concurrent_observation_coalesces_and_caller_cancellation_is_isolated(
     database: Database,
 ) -> None:
     admin_id = await _create_user(database, 4301, UserRole.ADMIN)
@@ -261,16 +261,16 @@ async def test_concurrent_refresh_coalesces_and_caller_cancellation_is_isolated(
         await cancelled
     snapshot = await survivor
     assert len(snapshot.entries) == len(PROVIDER_ORDER)
-    assert probe.refresh_calls == 1
+    assert probe.refresh_calls == 0
     assert probe.calls.count(MusicProviderName.APPLE_MUSIC) == 1
     assert len(probe.calls) == len(PROVIDER_ORDER)
 
     await service.check_all(admin_id)
     assert len(probe.calls) == len(PROVIDER_ORDER) * 2
-    assert probe.refresh_calls == 2
+    assert probe.refresh_calls == 0
 
 
-async def test_refresh_failure_still_returns_all_sanitized_provider_entries(
+async def test_health_observation_never_invokes_mutating_runtime_refresh(
     database: Database,
 ) -> None:
     admin_id = await _create_user(database, 4351, UserRole.ADMIN)
@@ -283,12 +283,9 @@ async def test_refresh_failure_still_returns_all_sanitized_provider_entries(
     snapshot = await service.check_all(admin_id)
 
     assert tuple(entry.provider for entry in snapshot.entries) == PROVIDER_ORDER
-    assert all(entry.status is ProviderHealthStatus.ERROR for entry in snapshot.entries)
-    assert all(
-        entry.error_code is ProviderHealthErrorCode.PROVIDER_INITIALIZATION_FAILED
-        for entry in snapshot.entries
-    )
-    assert not probe.calls
+    assert all(entry.status is ProviderHealthStatus.READY for entry in snapshot.entries)
+    assert probe.refresh_calls == 0
+    assert tuple(probe.calls) == PROVIDER_ORDER
     assert "secret" not in repr(snapshot)
 
 

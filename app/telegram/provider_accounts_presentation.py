@@ -33,6 +33,8 @@ class ProviderAccountsCallbackAction(StrEnum):
     CONNECT_PLAYBACK = "p"
     CONFIGURE_WEB_API = "w"
     CANCEL = "x"
+    RESET = "z"
+    CONFIRM_RESET = "y"
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +99,8 @@ def parse_provider_accounts_callback(value: str | None) -> ProviderAccountsCallb
         ProviderAccountsCallbackAction.CONNECT,
         ProviderAccountsCallbackAction.CONNECT_PLAYBACK,
         ProviderAccountsCallbackAction.CONFIGURE_WEB_API,
+        ProviderAccountsCallbackAction.RESET,
+        ProviderAccountsCallbackAction.CONFIRM_RESET,
     }:
         return None
     try:
@@ -239,6 +243,20 @@ class ProviderAccountsPresentation:
             )
         )
 
+    def reset_confirmation_text(self, provider: MusicProviderName, locale: str) -> str:
+        return _bounded(
+            "\n\n".join(
+                (
+                    self.text(
+                        "admin.provider_accounts_reset_title",
+                        locale,
+                        provider=self.text(f"provider.{provider.value}", locale),
+                    ),
+                    self.text("admin.provider_accounts_reset_warning", locale),
+                )
+            )
+        )
+
     def authorization_result_text(
         self,
         status: ProviderAccountStatus,
@@ -349,6 +367,11 @@ class ProviderAccountsPresentation:
                 ProviderAccountState.NOT_CONFIGURED,
                 ProviderAccountState.AUTH_REQUIRED,
                 ProviderAccountState.ERROR,
+                ProviderAccountState.DEGRADED,
+                ProviderAccountState.EXPIRED,
+                ProviderAccountState.INVALID,
+                ProviderAccountState.REVOKED,
+                ProviderAccountState.RECOVERING,
             }
             and status.provider is not MusicProviderName.SPOTIFY
             and (
@@ -367,6 +390,17 @@ class ProviderAccountsPresentation:
                         ),
                         callback_data=encode_provider_accounts_callback(
                             ProviderAccountsCallbackAction.CONNECT, status.provider
+                        ),
+                    )
+                ]
+            )
+        if status.disconnect_supported:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=self.text("admin.provider_accounts_reset", locale),
+                        callback_data=encode_provider_accounts_callback(
+                            ProviderAccountsCallbackAction.RESET, status.provider
                         ),
                     )
                 ]
@@ -392,6 +426,30 @@ class ProviderAccountsPresentation:
             ]
         )
         return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    def reset_confirmation_keyboard(
+        self, provider: MusicProviderName, locale: str
+    ) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=self.text("admin.provider_accounts_reset_confirm", locale),
+                        callback_data=encode_provider_accounts_callback(
+                            ProviderAccountsCallbackAction.CONFIRM_RESET, provider
+                        ),
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text=self.text("admin.provider_accounts_back", locale),
+                        callback_data=encode_provider_accounts_callback(
+                            ProviderAccountsCallbackAction.DETAIL, provider
+                        ),
+                    )
+                ],
+            ]
+        )
 
     def authorization_keyboard(
         self,
@@ -491,6 +549,11 @@ def _state_icon(state: ProviderAccountState) -> str:
         ProviderAccountState.AUTHORIZING: "⏳",
         ProviderAccountState.ERROR: "⚠️",
         ProviderAccountState.UNSUPPORTED: "⛔",
+        ProviderAccountState.DEGRADED: "⚠️",
+        ProviderAccountState.EXPIRED: "⌛",
+        ProviderAccountState.INVALID: "❌",
+        ProviderAccountState.REVOKED: "🚫",
+        ProviderAccountState.RECOVERING: "🔄",
     }[state]
 
 

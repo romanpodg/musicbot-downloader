@@ -531,7 +531,7 @@ def test_persisted_values_are_revalidated_and_presence_alone_is_not_ready(
 
     worker._refresh_spotify_webapi_readiness()
 
-    assert worker._spotify_webapi_state == "ERROR"
+    assert worker._spotify_webapi_state == "INVALID"
     assert worker._spotify_webapi_error_code == "SPOTIFY_WEBAPI_INVALID_CREDENTIALS"
     assert config.values["spotify_webapi_override_client_secret"] == CLIENT_SECRET
 
@@ -559,7 +559,7 @@ def test_playback_config_presence_without_runtime_session_is_not_ready() -> None
     result = worker.spotify_component_status()
 
     assert result["playback"] == {
-        "state": "AUTH_REQUIRED",
+        "state": "DEGRADED",
         "error_code": "SESSION_UNAVAILABLE",
     }
     assert PLAYBACK_SECRET not in repr(result)

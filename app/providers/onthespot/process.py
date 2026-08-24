@@ -43,7 +43,9 @@ from app.providers.onthespot.ipc import (
     MATCH_URL_METHOD,
     MAX_MESSAGE_BYTES,
     PREPARE_SOURCE_METHOD,
+    RECONCILE_PROVIDER_LIFECYCLE_METHOD,
     REFRESH_PROVIDER_HEALTH_METHOD,
+    RESET_PROVIDER_AUTHENTICATION_METHOD,
     RESOLVE_ALBUM_ID_METHOD,
     RESOLVE_ALBUM_METHOD,
     SEARCH_TRACKS_METHOD,
@@ -223,6 +225,33 @@ class OnTheSpotProcessClient:
         result = await self._request(REFRESH_PROVIDER_HEALTH_METHOD, {})
         if not isinstance(result, dict) or result.get("refreshed") is not True:
             raise ProviderUnavailable()
+
+    async def reconcile_provider_lifecycle(self) -> None:
+        result = await self._request(RECONCILE_PROVIDER_LIFECYCLE_METHOD, {})
+        if (
+            not isinstance(result, dict)
+            or set(result) != {"status", "cleaned_temporary_artifacts"}
+            or result.get("status") != "reconciled"
+            or isinstance(result.get("cleaned_temporary_artifacts"), bool)
+            or not isinstance(result.get("cleaned_temporary_artifacts"), int)
+            or result["cleaned_temporary_artifacts"] < 0
+        ):
+            raise ProviderUnavailable()
+
+    async def reset_provider_authentication(self, provider: str) -> bool:
+        if provider not in {"tidal", "deezer", "spotify"}:
+            return False
+        result = await self._request(RESET_PROVIDER_AUTHENTICATION_METHOD, {"provider": provider})
+        if not isinstance(result, dict) or not set(result).issubset({"status", "error_code"}):
+            raise ProviderUnavailable()
+        if result == {"status": "disconnected"}:
+            return True
+        if result.get("status") != "failed" or result.get("error_code") not in {
+            "DISCONNECT_FAILED",
+            "DISCONNECT_UNSUPPORTED",
+        }:
+            raise ProviderUnavailable()
+        return False
 
     async def authorize_deezer_arl(
         self, credential: SensitiveValue
@@ -495,16 +524,19 @@ class OnTheSpotProcessClient:
                 raise
 
     async def _ensure_started_locked(self) -> None:
-        if self._closed or self._failed:
+        if self._closed:
             raise ProviderUnavailable()
+        if self._failed:
+            self._failed = False
+            self._started_once = False
         if self._process is not None:
             if self._process.returncode is None:
                 return
-            self._failed = True
-            raise ProviderUnavailable()
+            await self._terminate_locked()
+            self._failed = False
+            self._started_once = False
         if self._started_once:
-            self._failed = True
-            raise ProviderUnavailable()
+            self._started_once = False
 
         self._started_once = True
         try:

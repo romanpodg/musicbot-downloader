@@ -24,7 +24,6 @@ from app.storage.models.base import utc_now
 logger = logging.getLogger(__name__)
 
 PROVIDER_HEALTH_TIMEOUT_SECONDS = 15.0
-PROVIDER_HEALTH_REFRESH_TIMEOUT_SECONDS = 60.0
 
 
 class ProviderHealthProbe(Protocol):
@@ -83,15 +82,6 @@ class ProviderHealthService:
 
     async def _collect(self) -> ProviderHealthSnapshot:
         started = monotonic()
-        try:
-            async with asyncio.timeout(PROVIDER_HEALTH_REFRESH_TIMEOUT_SECONDS):
-                await self._probe.refresh_provider_health_state()
-        except TimeoutError:
-            return self._failed_snapshot(started, ProviderHealthErrorCode.HEALTH_CHECK_TIMEOUT)
-        except Exception:
-            return self._failed_snapshot(
-                started, ProviderHealthErrorCode.PROVIDER_INITIALIZATION_FAILED
-            )
         entries: list[ProviderHealthEntry] = []
         for provider in PROVIDER_ORDER:
             entry_started = monotonic()

@@ -14,6 +14,7 @@ from app.core.provider_accounts import (
     ProviderAccountStatus,
     ProviderAuthorizationMethod,
     ProviderAuthorizationOutcome,
+    ProviderAuthorizationOutcomeStatus,
     ProviderAuthorizationRequest,
     ProviderAuthorizationStartOutcome,
     ProviderAuthorizationStartStatus,
@@ -53,6 +54,15 @@ class ProviderAccountManagementService:
         return await self._authorization.require_permission(
             actor_user_id, AdminPermission.PROVIDER_ACCOUNTS_MANAGE
         )
+
+    async def reconcile_startup(self) -> bool:
+        """Reconcile child-owned durable/runtime truth without making provider failure fatal."""
+
+        try:
+            await self._backend.reconcile_startup()
+        except Exception:
+            return False
+        return True
 
     async def get_overview(self, actor_user_id: int) -> ProviderAccountOverview:
         await self.authorize(actor_user_id)
@@ -97,6 +107,14 @@ class ProviderAccountManagementService:
         self, actor_user_id: int, provider: MusicProviderName
     ) -> ProviderDisconnectOutcome:
         await self.authorize(actor_user_id)
+        if await self._coordinator.is_active(provider):
+            cancellation = await self._coordinator.cancel(provider)
+            if cancellation.status is ProviderAuthorizationOutcomeStatus.ALREADY_ACTIVE:
+                return ProviderDisconnectOutcome(
+                    provider,
+                    ProviderDisconnectOutcomeStatus.FAILED,
+                    ProviderAccountErrorCode.DISCONNECT_FAILED,
+                )
         try:
             return await self._backend.disconnect_account(provider)
         except Exception:
