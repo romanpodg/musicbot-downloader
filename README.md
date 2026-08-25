@@ -47,6 +47,8 @@ Current delivery roadmap:
 - Stage 16: Provider Search Integration: sequential Spotify, Deezer, and Tidal catalog search
   adapters over the existing isolated provider runtime, with provider-specific mapping into
   normalized search Tracks.
+- Stage 17: Track Recognition: deterministic, provider-independent scoring, ranking, confidence
+  decisions, and confirmation preparation for normalized catalog search results.
 
 Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
 deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage
@@ -82,7 +84,9 @@ message and keyboard foundations, callback format, navigation state, and compati
 See [the Stage 15 search architecture](docs/stage15-track-search.md) for the normalized domain
 models, provider contract, registry, use case, and provider integration seam. See [the Stage 16
 provider search integration](docs/stage16-provider-search-integration.md) for adapter isolation,
-registry registration, response mapping, and availability handling.
+registry registration, response mapping, and availability handling. See [the Stage 17 track
+recognition architecture](docs/stage17-track-recognition.md) for the scoring, ranking, confidence,
+and replacement boundaries.
 
 ## Architecture
 

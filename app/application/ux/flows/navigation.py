@@ -78,7 +78,7 @@ class UxFlowService:
         try:
             if self._search_tracks is None:
                 raise RuntimeError("track search use case is not composed")
-            await self._search_tracks.execute(request)
+            await self._search_tracks.recognize(request)
         except Exception:
             self._states.transition(profile.telegram_id, UxState.ERROR)
             raise

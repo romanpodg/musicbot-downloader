@@ -77,6 +77,7 @@ from app.services.telegram_media_requests import TelegramMediaRequestService
 from app.services.telegram_requests import ResolveTrackAdapter, TelegramTrackRequestService
 from app.services.telegram_upload import TelegramCacheUploadExecutor
 from app.services.telegram_users import TelegramUserService
+from app.services.track_recognition import RuleBasedRecognitionEngine, TrackRecognitionService
 from app.services.track_resolution import ResolveTrackService
 from app.services.track_search import TrackSearchProviderRegistry, TrackSearchService
 from app.services.workers import DownloadWorkerBackend, QueueManager, UploadWorkerBackend
@@ -301,7 +302,10 @@ async def compose_stage9(
             TidalSearchAdapter(provider),
         )
     )
-    search_use_case = SearchTracksUseCase(TrackSearchService(search_registry))
+    search_use_case = SearchTracksUseCase(
+        TrackSearchService(search_registry),
+        TrackRecognitionService(RuleBasedRecognitionEngine()),
+    )
     ux_flows = UxFlowService(users, ux_states, search_use_case)
     track_resolution = ResolveTrackService(database, provider)
     deep_links = DeepLinkRegistryService(

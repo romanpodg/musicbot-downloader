@@ -26,8 +26,9 @@ for failures.
 `app.core.search` defines immutable, provider-independent `Artist`, `Album`, `Track`,
 `TrackSearchRequest`, and `TrackSearchResult` models. A search `Track` is a normalized catalog
 result and is deliberately distinct from both the persisted canonical `storage.models.Track` and
-the earlier Stage 3 `TrackSearchRequest` used solely for verified source discovery. Cross-provider
-recording matching remains out of scope.
+the earlier Stage 3 `TrackSearchRequest` used solely for verified source discovery. Stage 17 adds
+an in-memory recognition layer after this result boundary; strict persisted-recording matching and
+all source/download selection remain separate concerns.
 
 `app.providers.search.TrackSearchProvider` is the only future adapter contract: an adapter declares
 one `MusicProviderName` and returns normalized `Track` values for a request. It receives no
@@ -49,9 +50,10 @@ localized as “Search is temporarily unavailable.” without raw exception deta
 Stage 14's in-memory state foundation now supports `SEARCH_INPUT`, `SEARCHING`, and
 `SEARCH_RESULTS` alongside `IDLE`. `/search` and the Search menu request a query; a submitted query
 creates `TrackSearchRequest`. Production composition searches the configured Spotify, Deezer, and
-Tidal runtime catalogs through the Stage 16 adapters. Tests cover both injected contract providers
-and the real adapter layer against a mock provider runtime. Search result selection and all download
-states remain outside this stage.
+Tidal runtime catalogs through the Stage 16 adapters. Stage 17 calls recognition after the search
+result boundary but does not add Telegram selection or download actions. Tests cover both injected
+contract providers and the real adapter layer against a mock provider runtime. Search result
+selection and all download states remain outside this stage.
 
 ## Compatibility
 

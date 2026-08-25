@@ -15,6 +15,7 @@ from app.core.search import Artist, Track, TrackSearchRequest
 from app.i18n import LocalizationService
 from app.providers.search import TrackSearchProvider
 from app.services.telegram_users import TelegramUserService
+from app.services.track_recognition import RuleBasedRecognitionEngine, TrackRecognitionService
 from app.services.track_search import TrackSearchProviderRegistry, TrackSearchService
 from app.telegram.keyboards import UxKeyboardFactory
 from app.telegram.messages import UxMessageService
@@ -72,7 +73,10 @@ async def test_stage15_telegram_search_uses_normalized_mock_provider(database) -
     users = TelegramUserService(database, i18n, owner_id=None)
     states = UserUxStateService()
     provider = FakeSearchProvider()
-    use_case = SearchTracksUseCase(TrackSearchService(TrackSearchProviderRegistry((provider,))))
+    use_case = SearchTracksUseCase(
+        TrackSearchService(TrackSearchProviderRegistry((provider,))),
+        TrackRecognitionService(RuleBasedRecognitionEngine()),
+    )
     dispatcher = Dispatcher()
     dispatcher.include_router(
         create_ux_router(
