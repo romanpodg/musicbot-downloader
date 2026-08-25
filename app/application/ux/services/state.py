@@ -18,6 +18,11 @@ class UxState(StrEnum):
     SELECTING_TRACK = "SELECTING_TRACK"
     DOWNLOADING = "DOWNLOADING"
     UPLOADING = "UPLOADING"
+    DOWNLOAD_CONFIRMATION = "DOWNLOAD_CONFIRMATION"
+    DOWNLOAD_QUEUED = "DOWNLOAD_QUEUED"
+    DOWNLOAD_PROCESSING = "DOWNLOAD_PROCESSING"
+    DOWNLOAD_COMPLETED = "DOWNLOAD_COMPLETED"
+    DOWNLOAD_FAILED = "DOWNLOAD_FAILED"
 
 
 _TRANSITIONS: dict[UxState, frozenset[UxState]] = {
@@ -31,7 +36,13 @@ _TRANSITIONS: dict[UxState, frozenset[UxState]] = {
     UxState.PROCESSING: frozenset((UxState.IDLE, UxState.MENU, UxState.ERROR)),
     UxState.ERROR: frozenset((UxState.IDLE, UxState.MENU)),
     UxState.SEARCHING: frozenset(
-        (UxState.SEARCH_RESULTS, UxState.SELECTING_TRACK, UxState.ERROR, UxState.IDLE)
+        (
+            UxState.SEARCH_RESULTS,
+            UxState.SELECTING_TRACK,
+            UxState.DOWNLOAD_CONFIRMATION,
+            UxState.ERROR,
+            UxState.IDLE,
+        )
     ),
     UxState.SEARCH_RESULTS: frozenset(
         (UxState.SEARCH_INPUT, UxState.MENU, UxState.IDLE, UxState.ERROR)
@@ -39,6 +50,28 @@ _TRANSITIONS: dict[UxState, frozenset[UxState]] = {
     UxState.SELECTING_TRACK: frozenset((UxState.PROCESSING, UxState.ERROR, UxState.IDLE)),
     UxState.DOWNLOADING: frozenset((UxState.UPLOADING, UxState.ERROR, UxState.IDLE)),
     UxState.UPLOADING: frozenset((UxState.IDLE, UxState.ERROR)),
+    UxState.DOWNLOAD_CONFIRMATION: frozenset(
+        (UxState.DOWNLOAD_CONFIRMATION, UxState.DOWNLOAD_QUEUED, UxState.IDLE, UxState.ERROR)
+    ),
+    UxState.DOWNLOAD_QUEUED: frozenset(
+        (
+            UxState.DOWNLOAD_QUEUED,
+            UxState.DOWNLOAD_PROCESSING,
+            UxState.DOWNLOAD_COMPLETED,
+            UxState.DOWNLOAD_FAILED,
+            UxState.IDLE,
+        )
+    ),
+    UxState.DOWNLOAD_PROCESSING: frozenset(
+        (
+            UxState.DOWNLOAD_PROCESSING,
+            UxState.DOWNLOAD_COMPLETED,
+            UxState.DOWNLOAD_FAILED,
+            UxState.IDLE,
+        )
+    ),
+    UxState.DOWNLOAD_COMPLETED: frozenset((UxState.IDLE, UxState.MENU)),
+    UxState.DOWNLOAD_FAILED: frozenset((UxState.IDLE, UxState.MENU)),
 }
 
 

@@ -9,6 +9,7 @@ from typing import cast
 
 from aiogram import Dispatcher
 
+from app.application.download import DownloadService, DownloadTrackUseCase
 from app.application.search import SearchTracksUseCase
 from app.application.ux import UserUxStateService, UxErrorService, UxFlowService, UxProgressService
 from app.config import Settings
@@ -51,6 +52,7 @@ from app.services.crash_recovery import CrashRecoveryService
 from app.services.deep_links import DeepLinkRegistryService
 from app.services.delivery import DeliveryPreparationService
 from app.services.download_pipeline import DownloadPipeline, NativeDownloadBoundary
+from app.services.download_requests import ExistingDeliverySubmissionService
 from app.services.media import MediaProbe, Transcoder
 from app.services.provider_accounts import ProviderAccountManagementService
 from app.services.provider_authorization import ProviderAuthorizationCoordinator
@@ -63,6 +65,7 @@ from app.services.queues import (
     UploadQueueService,
     WorkerSettingsService,
 )
+from app.services.recognized_track_resolution import RecognizedTrackResolutionAdapter
 from app.services.runtime_prerequisites import TemporaryDiskGuard
 from app.services.runtime_worker_control import RuntimeWorkerControlService
 from app.services.singleflight import SingleFlightService, SubscriberNotifier
@@ -306,7 +309,6 @@ async def compose_stage9(
         TrackSearchService(search_registry),
         TrackRecognitionService(RuleBasedRecognitionEngine()),
     )
-    ux_flows = UxFlowService(users, ux_states, search_use_case)
     track_resolution = ResolveTrackService(database, provider)
     deep_links = DeepLinkRegistryService(
         database,
@@ -320,6 +322,13 @@ async def compose_stage9(
         telegram_bot_id=stage8.bot_identity.telegram_bot_id,
         wake_event=delivery_wake,
     )
+    download_service = DownloadService(
+        DownloadTrackUseCase(
+            RecognizedTrackResolutionAdapter(track_resolution),
+            ExistingDeliverySubmissionService(database, requests),
+        )
+    )
+    ux_flows = UxFlowService(users, ux_states, search_use_case, download_service)
     albums = TelegramAlbumRequestService(
         database,
         TelegramAlbumResolver(provider),
@@ -418,6 +427,7 @@ async def compose_stage9(
             )
         )
     )
+    telegram_presentation = TelegramPresentation(i18n)
     dispatcher.include_router(
         create_ux_router(
             UxHandlerDependencies(
@@ -426,6 +436,9 @@ async def compose_stage9(
                 UxMessageService(i18n),
                 UxKeyboardFactory(i18n),
                 UxErrorService(),
+                download_service,
+                requests,
+                telegram_presentation,
             )
         )
     )
@@ -434,7 +447,7 @@ async def compose_stage9(
             TelegramHandlerDependencies(
                 users,
                 requests,
-                TelegramPresentation(i18n),
+                telegram_presentation,
                 media_requests,
                 albums,
                 deep_links,

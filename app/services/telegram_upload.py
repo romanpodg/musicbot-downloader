@@ -1,4 +1,4 @@
-"""Production generic UploadExecutor backed by the Telegram completed cache."""
+"""Production completed-artifact delivery backed by the Telegram cache."""
 
 from __future__ import annotations
 
@@ -24,7 +24,14 @@ _UNSAFE_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
-class TelegramCacheUploadExecutor:
+class DeliveryService:
+    """Deliver a completed, validated artifact through the existing Telegram cache mechanism.
+
+    The service owns neither download execution nor queue state. The Stage 7 upload worker gives it
+    a completed artifact, after which the existing Stage 9 fanout sends the cached reference to the
+    requesting user.
+    """
+
     def __init__(
         self,
         database: Database,
@@ -38,7 +45,7 @@ class TelegramCacheUploadExecutor:
         self._gateway = gateway
         self._cache_chat_id = cache_chat_id
 
-    async def upload(self, request: UploadRequest) -> UploadResult:
+    async def deliver(self, request: UploadRequest) -> UploadResult:
         artifact = request.artifact
         if artifact is None:
             raise UploadTerminalError(QueueErrorCode.TELEGRAM_CACHE_METADATA_MISSING.value)
@@ -114,6 +121,13 @@ class TelegramCacheUploadExecutor:
                 QueueErrorCode.TELEGRAM_CACHE_PERSISTENCE_ERROR.value
             ) from exc
         return UploadResult(external_id=str(cached.cache_id))
+
+
+class TelegramCacheUploadExecutor(DeliveryService):
+    """Stage 7 UploadExecutor compatibility adapter over Stage 18 DeliveryService."""
+
+    async def upload(self, request: UploadRequest) -> UploadResult:
+        return await self.deliver(request)
 
 
 def telegram_media_kind(container: NativeContainer | None) -> TelegramMediaKind:

@@ -294,9 +294,14 @@
   "ux.menu.settings": "Настройки: /quality изменяет качество загрузки, а /language — язык интерфейса.",
   "ux.search.prompt": "Введите название трека для поиска.",
   "ux.search.results": "Поиск завершён. Выбор трека появится в следующем обновлении.",
+  "ux.download.confirmation": "Найден трек:\n\n{artist} — {title}\n\nСкачать этот трек?",
+  "ux.download.alternatives": "\n\nДругие возможные совпадения:\n{alternatives}",
+  "ux.download.queued": "⏳ Подготовка загрузки",
+  "ux.download.cancelled": "Загрузка отменена.",
   "ux.error.invalid_selection": "Этот выбор недействителен или устарел.",
   "ux.error.invalid_request": "Этот запрос недействителен. Попробуйте ещё раз.",
   "ux.error.search_unavailable": "Поиск временно недоступен.",
+  "ux.error.download_failed": "❌ Не удалось скачать трек. Попробуйте ещё раз.",
   "ux.error.operation_failed": "❌ Операция не выполнена.\n\nПовторите попытку позже.",
   "ux.system.private_only": "Пожалуйста, используйте эту команду в личном чате с ботом.",
   "ux.button.search": "Поиск",
@@ -305,5 +310,6 @@
   "ux.button.settings": "Настройки",
   "ux.button.back": "Назад",
   "ux.button.confirm": "Подтвердить",
+  "ux.button.download": "Скачать",
   "ux.button.cancel": "Отмена"
 }

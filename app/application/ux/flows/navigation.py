@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from app.application.download import DownloadConfirmation, DownloadService
 from app.application.search import SearchTracksUseCase
 from app.application.ux.services.state import UserUxStateService, UxState
 from app.core.search import TrackSearchRequest
@@ -24,6 +25,7 @@ class UxScreen:
     message_key: str
     state: UxState
     menu: UxMenu | None = None
+    download_confirmation: DownloadConfirmation | None = None
 
 
 class UxFlowService:
@@ -34,10 +36,12 @@ class UxFlowService:
         users: TelegramUserService,
         states: UserUxStateService,
         search_tracks: SearchTracksUseCase | None = None,
+        downloads: DownloadService | None = None,
     ) -> None:
         self._users = users
         self._states = states
         self._search_tracks = search_tracks
+        self._downloads = downloads
 
     async def start(self, profile: TelegramUserProfile) -> UxScreen:
         await self._users.observe(profile)
@@ -78,10 +82,22 @@ class UxFlowService:
         try:
             if self._search_tracks is None:
                 raise RuntimeError("track search use case is not composed")
-            await self._search_tracks.recognize(request)
+            recognition = await self._search_tracks.recognize(request)
         except Exception:
             self._states.transition(profile.telegram_id, UxState.ERROR)
             raise
+        confirmation = (
+            self._downloads.create_confirmation(user_id=profile.telegram_id, result=recognition)
+            if self._downloads is not None
+            else None
+        )
+        if confirmation is not None:
+            return self._screen(
+                profile.telegram_id,
+                "ux.download.confirmation",
+                state=UxState.DOWNLOAD_CONFIRMATION,
+                download_confirmation=confirmation,
+            )
         return self._screen(
             profile.telegram_id,
             "ux.search.results",
@@ -92,11 +108,22 @@ class UxFlowService:
     def awaiting_search_input(self, user_id: int) -> bool:
         return self._states.current(user_id) is UxState.SEARCH_INPUT
 
+    def transition(self, user_id: int, target: UxState) -> UxState:
+        """Apply a transport-neutral state transition after a confirmed UX action."""
+
+        return self._states.transition(user_id, target)
+
     def _screen(
         self,
         user_id: int,
         message_key: str,
         menu: UxMenu | None = None,
         state: UxState = UxState.MENU,
+        download_confirmation: DownloadConfirmation | None = None,
     ) -> UxScreen:
-        return UxScreen(message_key, self._states.transition(user_id, state), menu)
+        return UxScreen(
+            message_key,
+            self._states.transition(user_id, state),
+            menu,
+            download_confirmation,
+        )

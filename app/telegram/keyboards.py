@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from app.application.download import DownloadConfirmation
 from app.application.ux.flows.navigation import UxMenu
 from app.i18n import LocalizationService
 from app.telegram.callbacks import encode_ux_callback
+from app.telegram.download_callbacks import DownloadCallbackAction, encode_download_callback
 
 
 class UxKeyboardFactory:
@@ -47,6 +49,38 @@ class UxKeyboardFactory:
             ]
         )
 
+    def download_confirmation(
+        self, locale: str, confirmation: DownloadConfirmation
+    ) -> InlineKeyboardMarkup:
+        rows = [
+            [
+                InlineKeyboardButton(
+                    text=self._i18n.translate("ux.button.download", locale),
+                    callback_data=encode_download_callback(
+                        DownloadCallbackAction.CONFIRM, confirmation.token
+                    ),
+                ),
+                InlineKeyboardButton(
+                    text=self._i18n.translate("ux.button.cancel", locale),
+                    callback_data=encode_download_callback(
+                        DownloadCallbackAction.CANCEL, confirmation.token
+                    ),
+                ),
+            ]
+        ]
+        rows.extend(
+            [
+                InlineKeyboardButton(
+                    text=_track_label(track.artists[0].name, track.title),
+                    callback_data=encode_download_callback(
+                        DownloadCallbackAction.SELECT, confirmation.token, index
+                    ),
+                )
+            ]
+            for index, track in enumerate(confirmation.alternatives)
+        )
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
     def for_menu(self, locale: str, menu: UxMenu | None) -> InlineKeyboardMarkup | None:
         if menu is UxMenu.MAIN:
             return self.main_menu(locale)
@@ -67,3 +101,7 @@ class UxKeyboardFactory:
             text=self._i18n.translate(key, locale),
             callback_data=encode_ux_callback(action, entity, value),
         )
+
+
+def _track_label(artist: str, title: str) -> str:
+    return f"{artist} — {title}"[:64]

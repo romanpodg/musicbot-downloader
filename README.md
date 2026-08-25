@@ -49,6 +49,8 @@ Current delivery roadmap:
   normalized search Tracks.
 - Stage 17: Track Recognition: deterministic, provider-independent scoring, ranking, confidence
   decisions, and confirmation preparation for normalized catalog search results.
+- Stage 18: Download Flow UX: confirmed recognition selection, existing queue admission, durable
+  delivery reuse, and transport-neutral UX progress mapping.
 
 Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
 deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage
@@ -86,7 +88,9 @@ models, provider contract, registry, use case, and provider integration seam. Se
 provider search integration](docs/stage16-provider-search-integration.md) for adapter isolation,
 registry registration, response mapping, and availability handling. See [the Stage 17 track
 recognition architecture](docs/stage17-track-recognition.md) for the scoring, ranking, confidence,
-and replacement boundaries.
+and replacement boundaries. See [the Stage 18 download-flow UX architecture](docs/stage18-download-flow.md)
+for confirmation, canonical-track admission, queue reuse, delivery separation, UX state, and error
+handling boundaries.
 
 ## Architecture
 
