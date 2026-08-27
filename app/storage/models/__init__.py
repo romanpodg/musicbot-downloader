@@ -12,6 +12,7 @@ from app.storage.models.queue import (
 )
 from app.storage.models.telegram_album import TelegramAlbumItem, TelegramAlbumRequest
 from app.storage.models.telegram_cache import TelegramFileCache
+from app.storage.models.telegram_context import TelegramChannelBinding, TelegramChatPolicy
 from app.storage.models.telegram_delivery import TelegramDeliveryRequest
 from app.storage.models.track import Track
 from app.storage.models.track_source import TrackSource
@@ -28,6 +29,8 @@ __all__ = [
     "Track",
     "TrackSource",
     "TelegramFileCache",
+    "TelegramChannelBinding",
+    "TelegramChatPolicy",
     "TelegramDeliveryRequest",
     "TelegramAlbumItem",
     "TelegramAlbumRequest",

@@ -304,6 +304,7 @@
   "ux.error.download_failed": "❌ Download failed. Please try again.",
   "ux.error.operation_failed": "❌ Operation failed.\n\nPlease try again later.",
   "ux.system.private_only": "Please use this command in a private chat with the bot.",
+  "ux.system.chat_access_denied": "Downloads are not available in this chat or the bot cannot send messages here.",
   "ux.button.search": "Search",
   "ux.button.account": "Account",
   "ux.button.providers": "Providers",

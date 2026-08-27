@@ -28,6 +28,7 @@ class UxMessage(StrEnum):
     SEARCH_UNAVAILABLE = "error.search_unavailable"
     OPERATION_FAILED = "error.operation_failed"
     PRIVATE_ONLY = "system.private_only"
+    CHAT_ACCESS_DENIED = "system.chat_access_denied"
 
 
 _KEYS = {message.value: f"ux.{message.value}" for message in UxMessage}

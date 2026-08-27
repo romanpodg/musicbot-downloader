@@ -16,17 +16,25 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.delivery_targets import (
+    DeliveryTarget,
+    DeliveryTargetType,
+    delivery_target_from_values,
+)
 from app.core.enums import QualityProfile, TelegramDeliveryStatus
 from app.storage.models.base import Base, TimestampMixin, UTCDateTime, utc_now
 
 
-def _enum(enum_type: type[QualityProfile] | type[TelegramDeliveryStatus], name: str) -> Enum:
+def _enum(
+    enum_type: type[QualityProfile] | type[TelegramDeliveryStatus] | type[DeliveryTargetType],
+    name: str,
+) -> Enum:
     return Enum(
         enum_type,
         values_callable=lambda values: [member.value for member in values],
         name=name,
         native_enum=False,
-        length=16 if enum_type is QualityProfile else 24,
+        length=(16 if enum_type in {QualityProfile, DeliveryTargetType} else 24),
         create_constraint=False,
     )
 
@@ -56,6 +64,10 @@ class TelegramDeliveryRequest(TimestampMixin, Base):
             "(source_message_id IS NULL AND album_item_id IS NOT NULL)",
             name="ck_telegram_delivery_origin",
         ),
+        CheckConstraint(
+            "delivery_target_type IN ('PRIVATE_USER', 'GROUP_CHAT', 'CHANNEL')",
+            name="ck_telegram_delivery_target_type",
+        ),
         UniqueConstraint(
             "telegram_bot_id",
             "telegram_chat_id",
@@ -80,6 +92,10 @@ class TelegramDeliveryRequest(TimestampMixin, Base):
         ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
     telegram_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    delivery_chat_id: Mapped[int | None] = mapped_column(BigInteger)
+    delivery_target_type: Mapped[DeliveryTargetType | None] = mapped_column(
+        _enum(DeliveryTargetType, "deliverytargettype")
+    )
     source_message_id: Mapped[int | None] = mapped_column(BigInteger)
     album_item_id: Mapped[int | None] = mapped_column(
         ForeignKey("telegram_album_items.id", ondelete="RESTRICT")
@@ -111,3 +127,14 @@ class TelegramDeliveryRequest(TimestampMixin, Base):
     delivered_message_id: Mapped[int | None] = mapped_column(BigInteger)
     card_message_id: Mapped[int | None] = mapped_column(BigInteger)
     delivered_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+    @property
+    def delivery_target(self) -> DeliveryTarget:
+        return delivery_target_from_values(
+            self.delivery_chat_id if self.delivery_chat_id is not None else self.telegram_chat_id,
+            (
+                self.delivery_target_type
+                if self.delivery_target_type is not None
+                else DeliveryTargetType.PRIVATE_USER
+            ),
+        )

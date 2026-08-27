@@ -9,6 +9,7 @@ from app.application.download import DownloadService, DownloadTrackUseCase
 from app.application.ux.services.errors import UxErrorMessage, UxErrorService
 from app.application.ux.services.progress import DownloadProgressService
 from app.application.ux.services.state import UserUxStateService, UxState
+from app.core.delivery_targets import PrivateUserTarget
 from app.core.download import (
     CancelDownloadRequest,
     DownloadDeliveryTarget,
@@ -28,6 +29,7 @@ from app.core.recognition import (
     TrackCandidate,
 )
 from app.core.search import Artist, Track
+from app.core.telegram_context import TelegramChatType, TelegramContext
 from app.i18n import LocalizationService
 from app.services.metadata import MetadataProcessor
 from app.services.telegram_upload import DeliveryService
@@ -118,7 +120,8 @@ async def test_download_track_use_case_resolves_then_submits_through_existing_po
     submissions = _SubmissionPort()
     use_case = DownloadTrackUseCase(resolver, submissions)
     request = DownloadRequest(42, _track())
-    target = DownloadDeliveryTarget(42, 42, 111)
+    context = TelegramContext(42, 42, TelegramChatType.PRIVATE)
+    target = DownloadDeliveryTarget(42, context, PrivateUserTarget(42), 111)
 
     result = await use_case.execute(request, target=target)
 
@@ -137,32 +140,50 @@ async def test_download_service_requires_owned_confirmation_and_allows_alternati
         DownloadTrackUseCase(resolver, submissions), token_factory=lambda: "a" * 24
     )
     confirmation = service.create_confirmation(
-        user_id=42,
+        context=TelegramContext(42, 42, TelegramChatType.PRIVATE),
         result=_recognition(alternatives=(_track(identifier="around", title="Around the World"),)),
     )
     assert confirmation is not None
     assert (
-        service.select_alternative(user_id=99, token=confirmation.token, alternative_index=0)
+        service.select_alternative(
+            context=TelegramContext(99, 99, TelegramChatType.PRIVATE),
+            token=confirmation.token,
+            alternative_index=0,
+        )
         is None
     )
 
-    selected = service.select_alternative(user_id=42, token=confirmation.token, alternative_index=0)
+    selected = service.select_alternative(
+        context=TelegramContext(42, 42, TelegramChatType.PRIVATE),
+        token=confirmation.token,
+        alternative_index=0,
+    )
     assert selected is not None
     assert selected.selected_track.title == "Around the World"
 
     result = await service.confirm(
-        user_id=42,
+        context=TelegramContext(42, 42, TelegramChatType.PRIVATE),
         token=confirmation.token,
-        target=DownloadDeliveryTarget(42, 42, 111),
+        target=DownloadDeliveryTarget(
+            42,
+            TelegramContext(42, 42, TelegramChatType.PRIVATE),
+            PrivateUserTarget(42),
+            111,
+        ),
     )
     assert result is not None
     assert submissions.received is not None
     assert submissions.received[0].recognized_track.title == "Around the World"
     assert (
         await service.confirm(
-            user_id=42,
+            context=TelegramContext(42, 42, TelegramChatType.PRIVATE),
             token=confirmation.token,
-            target=DownloadDeliveryTarget(42, 42, 111),
+            target=DownloadDeliveryTarget(
+                42,
+                TelegramContext(42, 42, TelegramChatType.PRIVATE),
+                PrivateUserTarget(42),
+                111,
+            ),
         )
         is None
     )
@@ -201,7 +222,9 @@ def test_stage18_confirmation_callbacks_and_states_remain_opaque_and_validated()
     service = DownloadService(
         DownloadTrackUseCase(_Resolver(), _SubmissionPort()), token_factory=lambda: token
     )
-    confirmation = service.create_confirmation(user_id=42, result=_recognition())
+    confirmation = service.create_confirmation(
+        context=TelegramContext(42, 42, TelegramChatType.PRIVATE), result=_recognition()
+    )
     assert confirmation is not None
     keyboard = UxKeyboardFactory(LocalizationService(("en", "ru"), "en")).download_confirmation(
         "en", confirmation

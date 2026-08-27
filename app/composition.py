@@ -75,6 +75,7 @@ from app.services.telegram_album_coordinator import (
 )
 from app.services.telegram_albums import TelegramAlbumRequestService, TelegramAlbumResolver
 from app.services.telegram_cache import TelegramFileCacheService
+from app.services.telegram_context import ChatContextAccessService, DeliveryTargetResolver
 from app.services.telegram_delivery import TelegramDeliveryFanoutManager, TelegramDeliveryWorker
 from app.services.telegram_media_requests import TelegramMediaRequestService
 from app.services.telegram_requests import ResolveTrackAdapter, TelegramTrackRequestService
@@ -328,6 +329,7 @@ async def compose_stage9(
             ExistingDeliverySubmissionService(database, requests),
         )
     )
+    chat_contexts = ChatContextAccessService(database, DeliveryTargetResolver(), stage8.gateway)
     ux_flows = UxFlowService(users, ux_states, search_use_case, download_service)
     albums = TelegramAlbumRequestService(
         database,
@@ -439,6 +441,7 @@ async def compose_stage9(
                 download_service,
                 requests,
                 telegram_presentation,
+                chat_contexts,
             )
         )
     )
@@ -451,6 +454,7 @@ async def compose_stage9(
                 media_requests,
                 albums,
                 deep_links,
+                chat_contexts,
             )
         )
     )

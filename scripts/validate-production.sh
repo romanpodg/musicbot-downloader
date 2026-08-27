@@ -88,7 +88,7 @@ echo '== controlled writable paths =='
 run_data sh -ec \
   "test ! -w /app; test ! -w /root; mkdir -p /tmp/musicbot/check /data/onthespot /data/xdg-config; printf ok > /tmp/musicbot/check/a; mv /tmp/musicbot/check/a /tmp/musicbot/check/b; rm /tmp/musicbot/check/b; rmdir /tmp/musicbot/check; printf ok > /data/onthespot/.stage124; printf ok > /data/xdg-config/.stage124; rm /data/onthespot/.stage124 /data/xdg-config/.stage124"
 
-echo '== existing database 0010 -> 0011 and downgrade/re-upgrade =='
+echo '== existing database 0010 -> current head and downgrade/re-upgrade =='
 docker run --rm "${common[@]}" --volume "$UPGRADE_VOLUME:/data" "$IMAGE" \
   alembic upgrade 20260820_0010
 docker run --rm "${common[@]}" --volume "$UPGRADE_VOLUME:/data" \
@@ -131,7 +131,7 @@ fi
 run_data python -m app.tools.ops backup create /data/release-backup.db --json
 [[ "$(run_data stat -c '%a' /data/release-backup.db)" == "600" ]]
 run_data python -c \
-  "import sqlite3; c=sqlite3.connect('/data/release-backup.db'); assert c.execute('pragma integrity_check').fetchone()==('ok',); assert c.execute('select version_num from alembic_version').fetchone()==('20260820_0011',)"
+  "import sqlite3; c=sqlite3.connect('/data/release-backup.db'); assert c.execute('pragma integrity_check').fetchone()==('ok',); assert c.execute('select version_num from alembic_version').fetchone()==('20260825_0012',)"
 docker stop --time 10 "$WRITER_CONTAINER" >/dev/null
 docker rm "$WRITER_CONTAINER" >/dev/null
 run_fixture mutate

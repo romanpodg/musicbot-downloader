@@ -109,6 +109,26 @@ class AiogramTelegramGateway:
             raise _normalized_error(exc) from None
         return TelegramDeliveryReceipt(message.chat.id, message.message_id)
 
+    async def can_send_messages(self, chat_id: int) -> bool:
+        """Return only a safe capability result; callers do not need raw member details."""
+
+        try:
+            identity = await self.get_bot_identity()
+            member = await self._bot.get_chat_member(chat_id, identity.telegram_bot_id)
+        except TelegramAPIError:
+            return False
+        status = str(getattr(member.status, "value", member.status))
+        if status in {"left", "kicked"}:
+            return False
+        if status == "restricted":
+            return bool(getattr(member, "can_send_messages", False))
+        if status in {"administrator", "creator"}:
+            return (
+                getattr(member, "can_post_messages", True) is not False
+                and getattr(member, "can_send_messages", True) is not False
+            )
+        return status == "member"
+
     async def close(self) -> None:
         await self._bot.session.close()
 

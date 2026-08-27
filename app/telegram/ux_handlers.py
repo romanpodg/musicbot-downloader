@@ -15,11 +15,15 @@ from app.application.download import DownloadConfirmation, DownloadService
 from app.application.ux.flows.navigation import UxFlowService, UxMenu, UxScreen
 from app.application.ux.services.errors import UxErrorService
 from app.application.ux.services.state import UxState
+from app.core.delivery_targets import DeliveryTarget, PrivateUserTarget
 from app.core.download import DownloadDeliveryTarget, DownloadSubmissionState
+from app.core.telegram_context import TelegramChatType, TelegramContext
+from app.services.telegram_context import ChatContextAccessService
 from app.services.telegram_requests import TelegramTrackRequestService
 from app.services.telegram_users import TelegramUserProfile, TelegramUserService
 from app.storage.models import User
 from app.telegram.callbacks import parse_ux_callback
+from app.telegram.context import telegram_context_from_values
 from app.telegram.download_callbacks import DownloadCallbackAction, parse_download_callback
 from app.telegram.keyboards import UxKeyboardFactory
 from app.telegram.messages import UxMessage, UxMessageService
@@ -38,6 +42,7 @@ class UxHandlerDependencies:
     downloads: DownloadService | None = None
     track_requests: TelegramTrackRequestService | None = None
     delivery_presentation: TelegramPresentation | None = None
+    contexts: ChatContextAccessService | None = None
 
 
 class SearchInputFilter(BaseFilter):
@@ -80,9 +85,12 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
             return
         try:
             user = await dependencies.users.observe(_profile(message.from_user))
-            if not await _private_message(message, user, dependencies):
+            context, _ = await _message_access(message, user, dependencies)
+            if context is None:
                 return
-            screen = await dependencies.flows.search(_profile(message.from_user), message.text)
+            screen = await dependencies.flows.search(
+                _profile(message.from_user), message.text, context=context
+            )
             locale = dependencies.users.locale_for(user)
             await message.answer(
                 _screen_text(screen, dependencies, locale),
@@ -107,7 +115,8 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
             return
         try:
             user = await dependencies.users.observe(_profile(callback.from_user))
-            if not await _private_callback(callback, user, dependencies):
+            context, _ = await _callback_access(callback, user, dependencies)
+            if context is None:
                 return
             screen = await dependencies.flows.open_menu(_profile(callback.from_user), menu)
             await _render_callback(
@@ -126,13 +135,12 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
             return
         try:
             user = await dependencies.users.observe(_profile(callback.from_user))
-            if not await _private_callback(callback, user, dependencies):
+            context, target = await _callback_access(callback, user, dependencies)
+            if context is None or target is None:
                 return
             locale = dependencies.users.locale_for(user)
             if parsed.action is DownloadCallbackAction.CANCEL:
-                if not dependencies.downloads.cancel(
-                    user_id=callback.from_user.id, token=parsed.token
-                ):
+                if not dependencies.downloads.cancel(context=context, token=parsed.token):
                     await _invalid_callback(callback, dependencies)
                     return
                 dependencies.flows.transition(callback.from_user.id, UxState.IDLE)
@@ -145,7 +153,7 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
             if parsed.action is DownloadCallbackAction.SELECT:
                 assert parsed.alternative_index is not None
                 confirmation = dependencies.downloads.select_alternative(
-                    user_id=callback.from_user.id,
+                    context=context,
                     token=parsed.token,
                     alternative_index=parsed.alternative_index,
                 )
@@ -159,11 +167,12 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
                 await _invalid_callback(callback, dependencies)
                 return
             submission = await dependencies.downloads.confirm(
-                user_id=callback.from_user.id,
+                context=context,
                 token=parsed.token,
                 target=DownloadDeliveryTarget(
                     user_id=callback.from_user.id,
-                    destination_id=callback.message.chat.id,
+                    context=context,
+                    delivery_target=target,
                     source_message_id=callback.message.message_id,
                 ),
             )
@@ -172,7 +181,11 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
                 return
             if submission.state is DownloadSubmissionState.AWAITING_QUALITY:
                 await _render_initial_quality(
-                    callback, dependencies, locale, submission.delivery_request_id
+                    callback,
+                    dependencies,
+                    locale,
+                    submission.delivery_request_id,
+                    context,
                 )
             else:
                 dependencies.flows.transition(callback.from_user.id, UxState.DOWNLOAD_QUEUED)
@@ -197,7 +210,8 @@ async def _handle_message(
         return
     try:
         user = await dependencies.users.observe(_profile(message.from_user))
-        if not await _private_message(message, user, dependencies):
+        context, _ = await _message_access(message, user, dependencies)
+        if context is None:
             return
         screen = await operation(_profile(message.from_user))
         locale = dependencies.users.locale_for(user)
@@ -332,6 +346,7 @@ async def _render_initial_quality(
     dependencies: UxHandlerDependencies,
     locale: str,
     delivery_request_id: int,
+    context: TelegramContext,
 ) -> None:
     if (
         not isinstance(callback.message, Message)
@@ -340,7 +355,9 @@ async def _render_initial_quality(
     ):
         raise RuntimeError("download quality presentation is not composed")
     card = await dependencies.track_requests.track_card(
-        request_id=delivery_request_id, telegram_user_id=callback.from_user.id
+        request_id=delivery_request_id,
+        telegram_user_id=callback.from_user.id,
+        telegram_chat_id=context.chat_id,
     )
     if card is None:
         raise ValueError("download quality request is no longer available")
@@ -356,23 +373,56 @@ def _profile(user: AiogramUser) -> TelegramUserProfile:
     return TelegramUserProfile(user.id, user.username, user.first_name, user.language_code)
 
 
-async def _private_message(
+async def _message_access(
     message: Message, user: User, dependencies: UxHandlerDependencies
-) -> bool:
-    if message.chat.type == "private":
-        return True
-    locale = dependencies.users.locale_for(user)
-    await message.answer(dependencies.messages.get(UxMessage.PRIVATE_ONLY, locale))
-    return False
+) -> tuple[TelegramContext | None, DeliveryTarget | None]:
+    context = _message_context(message)
+    if context is None:
+        return None, None
+    return await _context_access(context, user, dependencies, message.answer)
 
 
-async def _private_callback(
+async def _callback_access(
     callback: CallbackQuery, user: User, dependencies: UxHandlerDependencies
-) -> bool:
-    if isinstance(callback.message, Message) and callback.message.chat.type == "private":
-        return True
-    locale = dependencies.users.locale_for(user)
-    await callback.answer(
-        dependencies.messages.get(UxMessage.PRIVATE_ONLY, locale), show_alert=True
+) -> tuple[TelegramContext | None, DeliveryTarget | None]:
+    if not isinstance(callback.message, Message):
+        await _invalid_callback(callback, dependencies)
+        return None, None
+    context = telegram_context_from_values(
+        callback.from_user.id, callback.message.chat.id, callback.message.chat.type
     )
-    return False
+    if context is None:
+        await _invalid_callback(callback, dependencies)
+        return None, None
+    return await _context_access(
+        context,
+        user,
+        dependencies,
+        lambda text: callback.answer(text, show_alert=True),
+    )
+
+
+async def _context_access(
+    context: TelegramContext,
+    user: User,
+    dependencies: UxHandlerDependencies,
+    deny: Callable[[str], Awaitable[object]],
+) -> tuple[TelegramContext | None, DeliveryTarget | None]:
+    if dependencies.contexts is None:
+        if context.chat_type is TelegramChatType.PRIVATE:
+            return context, PrivateUserTarget(context.user_id)
+        locale = dependencies.users.locale_for(user)
+        await deny(dependencies.messages.get(UxMessage.PRIVATE_ONLY, locale))
+        return None, None
+    result = await dependencies.contexts.resolve(context, user)
+    if result.allowed:
+        return context, result.target
+    locale = dependencies.users.locale_for(user)
+    await deny(dependencies.messages.get(UxMessage.CHAT_ACCESS_DENIED, locale))
+    return None, None
+
+
+def _message_context(message: Message) -> TelegramContext | None:
+    if message.from_user is None:
+        return None
+    return telegram_context_from_values(message.from_user.id, message.chat.id, message.chat.type)

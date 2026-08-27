@@ -9,6 +9,7 @@ from app.application.download import DownloadConfirmation, DownloadService
 from app.application.search import SearchTracksUseCase
 from app.application.ux.services.state import UserUxStateService, UxState
 from app.core.search import TrackSearchRequest
+from app.core.telegram_context import TelegramContext
 from app.services.telegram_users import TelegramUserProfile, TelegramUserService
 
 
@@ -75,7 +76,11 @@ class UxFlowService:
             menu=UxMenu.SEARCH,
         )
 
-    async def search(self, profile: TelegramUserProfile, query: str) -> UxScreen:
+    async def search(
+        self, profile: TelegramUserProfile, query: str, *, context: TelegramContext
+    ) -> UxScreen:
+        if context.user_id != profile.telegram_id:
+            raise ValueError("search context and Telegram profile differ")
         await self._users.observe(profile)
         request = TrackSearchRequest(query=query)
         self._states.transition(profile.telegram_id, UxState.SEARCHING)
@@ -87,7 +92,7 @@ class UxFlowService:
             self._states.transition(profile.telegram_id, UxState.ERROR)
             raise
         confirmation = (
-            self._downloads.create_confirmation(user_id=profile.telegram_id, result=recognition)
+            self._downloads.create_confirmation(context=context, result=recognition)
             if self._downloads is not None
             else None
         )

@@ -21,12 +21,14 @@ from app.core.exceptions import (
     UnsupportedMediaType,
     UnsupportedProvider,
 )
+from app.core.telegram_context import TelegramChatType
 from app.services.deep_links import DeepLinkRegistryService
 from app.services.telegram_albums import (
     AlbumActionOutcome,
     AlbumActionResult,
     TelegramAlbumRequestService,
 )
+from app.services.telegram_context import ChatContextAccessService
 from app.services.telegram_media_requests import TelegramMediaRequestService
 from app.services.telegram_requests import (
     TelegramTrackRequestService,
@@ -35,6 +37,7 @@ from app.services.telegram_requests import (
 )
 from app.services.telegram_users import TelegramUserProfile, TelegramUserService
 from app.storage.models import User
+from app.telegram.context import telegram_context_from_values
 from app.telegram.presentation import (
     TelegramPresentation,
     parse_album_clear_all,
@@ -67,6 +70,7 @@ class TelegramHandlerDependencies:
     media: TelegramMediaRequestService | None = None
     albums: TelegramAlbumRequestService | None = None
     deep_links: DeepLinkRegistryService | None = None
+    contexts: ChatContextAccessService | None = None
 
 
 def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
@@ -174,9 +178,28 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
             )
             return
         locale = dependencies.users.locale_for(user)
+        if not isinstance(callback.message, Message):
+            await _invalid_callback(callback, dependencies.presentation, locale)
+            return
+        context = telegram_context_from_values(
+            callback.from_user.id, callback.message.chat.id, callback.message.chat.type
+        )
+        if context is None:
+            await _invalid_callback(callback, dependencies.presentation, locale)
+            return
+        if dependencies.contexts is None:
+            if context.chat_type is not TelegramChatType.PRIVATE:
+                await _invalid_callback(callback, dependencies.presentation, locale)
+                return
+        else:
+            access = await dependencies.contexts.resolve(context, user)
+            if not access.allowed:
+                await _invalid_callback(callback, dependencies.presentation, locale)
+                return
         result = await dependencies.requests.choose_first_quality(
             request_id=parsed.request_id,
             telegram_user_id=callback.from_user.id,
+            telegram_chat_id=context.chat_id,
             quality_profile=parsed.quality_profile,
         )
         if not result.accepted:

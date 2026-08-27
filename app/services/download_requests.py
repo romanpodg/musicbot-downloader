@@ -37,16 +37,21 @@ class ExistingDeliverySubmissionService:
 
         delivery = await self._requests.request_track_id(
             user=user,
-            telegram_chat_id=target.destination_id,
+            telegram_chat_id=target.context.chat_id,
+            delivery_target=target.delivery_target,
             source_message_id=target.source_message_id,
             track_id=canonical_track_id,
         )
 
         if request.options.quality_profile is not None:
-            delivery = await self._apply_requested_quality(delivery.id, request, target.user_id)
+            delivery = await self._apply_requested_quality(
+                delivery.id, request, target.user_id, target.context.chat_id
+            )
         elif delivery.status is TelegramDeliveryStatus.AWAITING_ACTION:
             started = await self._requests.start_default_quality(
-                request_id=delivery.id, telegram_user_id=target.user_id
+                request_id=delivery.id,
+                telegram_user_id=target.user_id,
+                telegram_chat_id=target.context.chat_id,
             )
             if started.accepted and started.request is not None:
                 delivery = started.request
@@ -60,11 +65,17 @@ class ExistingDeliverySubmissionService:
         )
 
     async def _apply_requested_quality(
-        self, delivery_request_id: int, request: DownloadRequest, user_id: int
+        self,
+        delivery_request_id: int,
+        request: DownloadRequest,
+        user_id: int,
+        telegram_chat_id: int,
     ) -> TelegramDeliveryRequest:
         assert request.options.quality_profile is not None
         card = await self._requests.track_card(
-            request_id=delivery_request_id, telegram_user_id=user_id
+            request_id=delivery_request_id,
+            telegram_user_id=user_id,
+            telegram_chat_id=telegram_chat_id,
         )
         if card is None:
             raise ValueError("delivery request is no longer available")
@@ -72,18 +83,22 @@ class ExistingDeliverySubmissionService:
             first_quality = await self._requests.choose_first_quality(
                 request_id=delivery_request_id,
                 telegram_user_id=user_id,
+                telegram_chat_id=telegram_chat_id,
                 quality_profile=request.options.quality_profile,
             )
             if first_quality.accepted and first_quality.request is not None:
                 return first_quality.request
         elif card.status is TelegramDeliveryStatus.AWAITING_ACTION:
             opened = await self._requests.open_track_quality(
-                request_id=delivery_request_id, telegram_user_id=user_id
+                request_id=delivery_request_id,
+                telegram_user_id=user_id,
+                telegram_chat_id=telegram_chat_id,
             )
             if opened.accepted:
                 selected_quality = await self._requests.choose_track_quality(
                     request_id=delivery_request_id,
                     telegram_user_id=user_id,
+                    telegram_chat_id=telegram_chat_id,
                     quality_profile=request.options.quality_profile,
                 )
                 if selected_quality.accepted and selected_quality.request is not None:

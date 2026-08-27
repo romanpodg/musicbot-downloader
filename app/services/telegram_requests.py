@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
+from app.core.delivery_targets import DeliveryTarget
 from app.core.enums import QualityProfile, TelegramDeliveryStatus
 from app.core.exceptions import DatabaseConcurrencyError
 from app.providers.base import MusicProvider
@@ -99,6 +100,7 @@ class TelegramTrackRequestService:
         *,
         user: User,
         telegram_chat_id: int,
+        delivery_target: DeliveryTarget | None = None,
         source_message_id: int,
         url: str,
     ) -> TelegramDeliveryRequest:
@@ -110,6 +112,7 @@ class TelegramTrackRequestService:
         return await self.request_track_id(
             user=user,
             telegram_chat_id=telegram_chat_id,
+            delivery_target=delivery_target,
             source_message_id=source_message_id,
             track_id=track_id,
         )
@@ -119,6 +122,7 @@ class TelegramTrackRequestService:
         *,
         user: User,
         telegram_chat_id: int,
+        delivery_target: DeliveryTarget | None = None,
         source_message_id: int,
         track_id: int,
     ) -> TelegramDeliveryRequest:
@@ -144,6 +148,7 @@ class TelegramTrackRequestService:
                     telegram_bot_id=self._telegram_bot_id,
                     user_id=user.id,
                     telegram_chat_id=telegram_chat_id,
+                    delivery_target=delivery_target,
                     source_message_id=source_message_id,
                     track_id=track_id,
                     quality_profile=quality,
@@ -166,6 +171,7 @@ class TelegramTrackRequestService:
         *,
         request_id: int,
         telegram_user_id: int,
+        telegram_chat_id: int | None = None,
         quality_profile: QualityProfile,
     ) -> QualitySelectionResult:
         async with self._database.transaction() as repositories:
@@ -177,6 +183,7 @@ class TelegramTrackRequestService:
                 user_id=user.id,
                 quality_profile=quality_profile,
                 now=utc_now(),
+                telegram_chat_id=telegram_chat_id,
             )
             if request is None:
                 return QualitySelectionResult(
@@ -186,11 +193,18 @@ class TelegramTrackRequestService:
         self.wake()
         return QualitySelectionResult(request, True)
 
-    async def track_card(self, *, request_id: int, telegram_user_id: int) -> TrackCard | None:
+    async def track_card(
+        self, *, request_id: int, telegram_user_id: int, telegram_chat_id: int | None = None
+    ) -> TrackCard | None:
         async with self._database.transaction() as repositories:
             user = await repositories.users.get_by_telegram_id(telegram_user_id)
             request = await repositories.telegram_delivery.get(request_id)
-            if user is None or request is None or request.user_id != user.id:
+            if (
+                user is None
+                or request is None
+                or request.user_id != user.id
+                or (telegram_chat_id is not None and request.telegram_chat_id != telegram_chat_id)
+            ):
                 return None
             track = await repositories.tracks.get_track_by_id(request.track_id)
             if track is None:
@@ -198,7 +212,12 @@ class TelegramTrackRequestService:
             return _track_card(request, track)
 
     async def record_card_message(
-        self, *, request_id: int, telegram_user_id: int, message_id: int
+        self,
+        *,
+        request_id: int,
+        telegram_user_id: int,
+        message_id: int,
+        telegram_chat_id: int | None = None,
     ) -> bool:
         if message_id <= 0:
             return False
@@ -207,25 +226,30 @@ class TelegramTrackRequestService:
             if user is None:
                 return False
             return await repositories.telegram_delivery.record_card_message(
-                request_id=request_id, user_id=user.id, message_id=message_id
+                request_id=request_id,
+                user_id=user.id,
+                message_id=message_id,
+                telegram_chat_id=telegram_chat_id,
             )
 
     async def start_default_quality(
-        self, *, request_id: int, telegram_user_id: int
+        self, *, request_id: int, telegram_user_id: int, telegram_chat_id: int | None = None
     ) -> TrackRequestActionResult:
         return await self._perform_action(
             request_id=request_id,
             telegram_user_id=telegram_user_id,
+            telegram_chat_id=telegram_chat_id,
             action="start_default",
             wake=True,
         )
 
     async def open_track_quality(
-        self, *, request_id: int, telegram_user_id: int
+        self, *, request_id: int, telegram_user_id: int, telegram_chat_id: int | None = None
     ) -> TrackRequestActionResult:
         return await self._perform_action(
             request_id=request_id,
             telegram_user_id=telegram_user_id,
+            telegram_chat_id=telegram_chat_id,
             action="open_quality",
         )
 
@@ -234,22 +258,25 @@ class TelegramTrackRequestService:
         *,
         request_id: int,
         telegram_user_id: int,
+        telegram_chat_id: int | None = None,
         quality_profile: QualityProfile,
     ) -> TrackRequestActionResult:
         return await self._perform_action(
             request_id=request_id,
             telegram_user_id=telegram_user_id,
+            telegram_chat_id=telegram_chat_id,
             action="choose_quality",
             quality_profile=quality_profile,
             wake=True,
         )
 
     async def back_to_track_card(
-        self, *, request_id: int, telegram_user_id: int
+        self, *, request_id: int, telegram_user_id: int, telegram_chat_id: int | None = None
     ) -> TrackRequestActionResult:
         return await self._perform_action(
             request_id=request_id,
             telegram_user_id=telegram_user_id,
+            telegram_chat_id=telegram_chat_id,
             action="back",
         )
 
@@ -258,6 +285,7 @@ class TelegramTrackRequestService:
         *,
         request_id: int,
         telegram_user_id: int,
+        telegram_chat_id: int | None = None,
         action: str,
         quality_profile: QualityProfile | None = None,
         wake: bool = False,
@@ -269,11 +297,17 @@ class TelegramTrackRequestService:
             now = utc_now()
             if action == "start_default":
                 changed = await repositories.telegram_delivery.start_default_quality(
-                    request_id=request_id, user_id=user.id, now=now
+                    request_id=request_id,
+                    user_id=user.id,
+                    now=now,
+                    telegram_chat_id=telegram_chat_id,
                 )
             elif action == "open_quality":
                 changed = await repositories.telegram_delivery.open_track_quality(
-                    request_id=request_id, user_id=user.id, now=now
+                    request_id=request_id,
+                    user_id=user.id,
+                    now=now,
+                    telegram_chat_id=telegram_chat_id,
                 )
             elif action == "choose_quality" and quality_profile is not None:
                 changed = await repositories.telegram_delivery.choose_track_quality(
@@ -281,10 +315,14 @@ class TelegramTrackRequestService:
                     user_id=user.id,
                     quality_profile=quality_profile,
                     now=now,
+                    telegram_chat_id=telegram_chat_id,
                 )
             elif action == "back":
                 changed = await repositories.telegram_delivery.back_to_action(
-                    request_id=request_id, user_id=user.id, now=now
+                    request_id=request_id,
+                    user_id=user.id,
+                    now=now,
+                    telegram_chat_id=telegram_chat_id,
                 )
             else:
                 raise ValueError("invalid track request action")
@@ -294,7 +332,9 @@ class TelegramTrackRequestService:
                 current = await repositories.telegram_delivery.get(request_id)
                 if current is None:
                     outcome = TrackRequestActionOutcome.NOT_FOUND
-                elif current.user_id != user.id:
+                elif current.user_id != user.id or (
+                    telegram_chat_id is not None and current.telegram_chat_id != telegram_chat_id
+                ):
                     outcome = TrackRequestActionOutcome.FORBIDDEN
                 else:
                     outcome = TrackRequestActionOutcome.STALE

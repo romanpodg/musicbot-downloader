@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from app.application.download import DownloadService, DownloadTrackUseCase
+from app.core.delivery_targets import PrivateUserTarget
 from app.core.download import DownloadDeliveryTarget, DownloadSubmissionState
 from app.core.enums import (
     DownloadPlanOperation,
@@ -24,6 +25,7 @@ from app.core.models import (
 )
 from app.core.recognition import RecognitionDecision, RecognitionResult, TrackCandidate
 from app.core.search import Artist, Track
+from app.core.telegram_context import TelegramChatType, TelegramContext
 from app.i18n import LocalizationService
 from app.services.artifacts import DownloadArtifactManager
 from app.services.delivery import DeliveryPreparationService
@@ -180,12 +182,18 @@ async def test_stage18_confirmed_recognition_reuses_queue_workers_and_delivery(
         token_factory=lambda: "b" * 24,
     )
 
-    confirmation = downloads.create_confirmation(user_id=user.telegram_id, result=recognized)
+    context = TelegramContext(user.telegram_id, user.telegram_id, TelegramChatType.PRIVATE)
+    confirmation = downloads.create_confirmation(context=context, result=recognized)
     assert confirmation is not None
     submission = await downloads.confirm(
-        user_id=user.telegram_id,
+        context=context,
         token=confirmation.token,
-        target=DownloadDeliveryTarget(user.telegram_id, user.telegram_id, 700),
+        target=DownloadDeliveryTarget(
+            user.telegram_id,
+            context,
+            PrivateUserTarget(user.telegram_id),
+            700,
+        ),
     )
     assert submission is not None
     assert submission.state is DownloadSubmissionState.QUEUED

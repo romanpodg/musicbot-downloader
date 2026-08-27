@@ -215,7 +215,7 @@ def _verify_durable(expected_username: str) -> None:
         raise RuntimeError(
             f"SQLite pragma mismatch: {journal_mode!r}, {foreign_keys!r}, {busy_timeout!r}"
         )
-    if integrity != "ok" or revision != "20260820_0011":
+    if integrity != "ok" or revision != "20260825_0012":
         raise RuntimeError(f"database validation failed: {integrity!r}, {revision!r}")
     media_suffixes = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".webm"}
     persistent_media = [

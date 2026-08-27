@@ -304,6 +304,7 @@
   "ux.error.download_failed": "❌ Не удалось скачать трек. Попробуйте ещё раз.",
   "ux.error.operation_failed": "❌ Операция не выполнена.\n\nПовторите попытку позже.",
   "ux.system.private_only": "Пожалуйста, используйте эту команду в личном чате с ботом.",
+  "ux.system.chat_access_denied": "Загрузка недоступна в этом чате, либо бот не может отправлять сюда сообщения.",
   "ux.button.search": "Поиск",
   "ux.button.account": "Аккаунт",
   "ux.button.providers": "Провайдеры",

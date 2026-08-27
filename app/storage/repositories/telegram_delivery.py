@@ -9,6 +9,7 @@ from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.delivery_targets import DeliveryTarget, DeliveryTargetType, PrivateUserTarget
 from app.core.enums import QualityProfile, SubscriberStatus, TelegramDeliveryStatus
 from app.storage.models import JobSubscriber, TelegramDeliveryRequest
 
@@ -61,16 +62,20 @@ class TelegramDeliveryRepository:
         telegram_bot_id: int,
         user_id: int,
         telegram_chat_id: int,
+        delivery_target: DeliveryTarget | None = None,
         source_message_id: int,
         track_id: int,
         quality_profile: QualityProfile | None,
         status: TelegramDeliveryStatus,
         now: datetime,
     ) -> TelegramDeliveryRequest:
+        target = delivery_target or PrivateUserTarget(telegram_chat_id)
         request = TelegramDeliveryRequest(
             telegram_bot_id=telegram_bot_id,
             user_id=user_id,
             telegram_chat_id=telegram_chat_id,
+            delivery_chat_id=target.chat_id,
+            delivery_target_type=target.target_type,
             source_message_id=source_message_id,
             track_id=track_id,
             quality_profile=quality_profile,
@@ -99,6 +104,8 @@ class TelegramDeliveryRepository:
             telegram_bot_id=telegram_bot_id,
             user_id=user_id,
             telegram_chat_id=telegram_chat_id,
+            delivery_chat_id=telegram_chat_id,
+            delivery_target_type=DeliveryTargetType.PRIVATE_USER,
             source_message_id=None,
             album_item_id=album_item_id,
             track_id=track_id,
@@ -117,14 +124,18 @@ class TelegramDeliveryRepository:
         user_id: int,
         quality_profile: QualityProfile,
         now: datetime,
+        telegram_chat_id: int | None = None,
     ) -> TelegramDeliveryRequest | None:
+        conditions = [
+            TelegramDeliveryRequest.id == request_id,
+            TelegramDeliveryRequest.user_id == user_id,
+            TelegramDeliveryRequest.status == TelegramDeliveryStatus.AWAITING_QUALITY,
+        ]
+        if telegram_chat_id is not None:
+            conditions.append(TelegramDeliveryRequest.telegram_chat_id == telegram_chat_id)
         result = await self._session.execute(
             update(TelegramDeliveryRequest)
-            .where(
-                TelegramDeliveryRequest.id == request_id,
-                TelegramDeliveryRequest.user_id == user_id,
-                TelegramDeliveryRequest.status == TelegramDeliveryStatus.AWAITING_QUALITY,
-            )
+            .where(*conditions)
             .values(
                 quality_profile=quality_profile,
                 status=TelegramDeliveryStatus.QUEUED,
@@ -136,7 +147,7 @@ class TelegramDeliveryRepository:
         return result.scalar_one_or_none()
 
     async def start_default_quality(
-        self, *, request_id: int, user_id: int, now: datetime
+        self, *, request_id: int, user_id: int, now: datetime, telegram_chat_id: int | None = None
     ) -> TelegramDeliveryRequest | None:
         return await self._transition(
             request_id=request_id,
@@ -144,10 +155,11 @@ class TelegramDeliveryRepository:
             expected=TelegramDeliveryStatus.AWAITING_ACTION,
             target=TelegramDeliveryStatus.QUEUED,
             now=now,
+            telegram_chat_id=telegram_chat_id,
         )
 
     async def open_track_quality(
-        self, *, request_id: int, user_id: int, now: datetime
+        self, *, request_id: int, user_id: int, now: datetime, telegram_chat_id: int | None = None
     ) -> TelegramDeliveryRequest | None:
         return await self._transition(
             request_id=request_id,
@@ -155,6 +167,7 @@ class TelegramDeliveryRepository:
             expected=TelegramDeliveryStatus.AWAITING_ACTION,
             target=TelegramDeliveryStatus.AWAITING_TRACK_QUALITY,
             now=now,
+            telegram_chat_id=telegram_chat_id,
         )
 
     async def choose_track_quality(
@@ -164,6 +177,7 @@ class TelegramDeliveryRepository:
         user_id: int,
         quality_profile: QualityProfile,
         now: datetime,
+        telegram_chat_id: int | None = None,
     ) -> TelegramDeliveryRequest | None:
         return await self._transition(
             request_id=request_id,
@@ -172,10 +186,11 @@ class TelegramDeliveryRepository:
             target=TelegramDeliveryStatus.QUEUED,
             now=now,
             quality_profile=quality_profile,
+            telegram_chat_id=telegram_chat_id,
         )
 
     async def back_to_action(
-        self, *, request_id: int, user_id: int, now: datetime
+        self, *, request_id: int, user_id: int, now: datetime, telegram_chat_id: int | None = None
     ) -> TelegramDeliveryRequest | None:
         return await self._transition(
             request_id=request_id,
@@ -183,24 +198,33 @@ class TelegramDeliveryRepository:
             expected=TelegramDeliveryStatus.AWAITING_TRACK_QUALITY,
             target=TelegramDeliveryStatus.AWAITING_ACTION,
             now=now,
+            telegram_chat_id=telegram_chat_id,
         )
 
-    async def record_card_message(self, *, request_id: int, user_id: int, message_id: int) -> bool:
+    async def record_card_message(
+        self,
+        *,
+        request_id: int,
+        user_id: int,
+        message_id: int,
+        telegram_chat_id: int | None = None,
+    ) -> bool:
+        conditions = [
+            TelegramDeliveryRequest.id == request_id,
+            TelegramDeliveryRequest.user_id == user_id,
+            TelegramDeliveryRequest.card_message_id.is_(None),
+            TelegramDeliveryRequest.status.in_(
+                (
+                    TelegramDeliveryStatus.AWAITING_QUALITY,
+                    TelegramDeliveryStatus.AWAITING_ACTION,
+                    TelegramDeliveryStatus.AWAITING_TRACK_QUALITY,
+                )
+            ),
+        ]
+        if telegram_chat_id is not None:
+            conditions.append(TelegramDeliveryRequest.telegram_chat_id == telegram_chat_id)
         result = await self._session.execute(
-            update(TelegramDeliveryRequest)
-            .where(
-                TelegramDeliveryRequest.id == request_id,
-                TelegramDeliveryRequest.user_id == user_id,
-                TelegramDeliveryRequest.card_message_id.is_(None),
-                TelegramDeliveryRequest.status.in_(
-                    (
-                        TelegramDeliveryStatus.AWAITING_QUALITY,
-                        TelegramDeliveryStatus.AWAITING_ACTION,
-                        TelegramDeliveryStatus.AWAITING_TRACK_QUALITY,
-                    )
-                ),
-            )
-            .values(card_message_id=message_id)
+            update(TelegramDeliveryRequest).where(*conditions).values(card_message_id=message_id)
         )
         return _changed(result)
 
@@ -213,6 +237,7 @@ class TelegramDeliveryRepository:
         target: TelegramDeliveryStatus,
         now: datetime,
         quality_profile: QualityProfile | None = None,
+        telegram_chat_id: int | None = None,
     ) -> TelegramDeliveryRequest | None:
         values: dict[str, object] = {
             "status": target,
@@ -221,13 +246,16 @@ class TelegramDeliveryRepository:
         }
         if quality_profile is not None:
             values["quality_profile"] = quality_profile
+        conditions = [
+            TelegramDeliveryRequest.id == request_id,
+            TelegramDeliveryRequest.user_id == user_id,
+            TelegramDeliveryRequest.status == expected,
+        ]
+        if telegram_chat_id is not None:
+            conditions.append(TelegramDeliveryRequest.telegram_chat_id == telegram_chat_id)
         result = await self._session.execute(
             update(TelegramDeliveryRequest)
-            .where(
-                TelegramDeliveryRequest.id == request_id,
-                TelegramDeliveryRequest.user_id == user_id,
-                TelegramDeliveryRequest.status == expected,
-            )
+            .where(*conditions)
             .values(**values)
             .returning(TelegramDeliveryRequest)
         )

@@ -51,6 +51,8 @@ Current delivery roadmap:
   decisions, and confirmation preparation for normalized catalog search results.
 - Stage 18: Download Flow UX: confirmed recognition selection, existing queue admission, durable
   delivery reuse, and transport-neutral UX progress mapping.
+- Stage 19: Channel/Bot Integration: transport-neutral Telegram contexts, explicit delivery
+  targets, persisted chat policies and channel bindings, and context-secure group/channel routing.
 
 Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
 deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage
@@ -91,6 +93,9 @@ recognition architecture](docs/stage17-track-recognition.md) for the scoring, ra
 and replacement boundaries. See [the Stage 18 download-flow UX architecture](docs/stage18-download-flow.md)
 for confirmation, canonical-track admission, queue reuse, delivery separation, UX state, and error
 handling boundaries.
+See [the Stage 19 channel/bot integration architecture](docs/stage19-channel-bot-integration.md)
+for context ownership, delivery targets, chat policy, channel binding, callback validation, and
+queue-preserving delivery routing.
 
 ## Architecture
 

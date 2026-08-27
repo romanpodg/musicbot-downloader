@@ -5,6 +5,7 @@ from app.storage.repositories.operational_audit import OperationalAuditRepositor
 from app.storage.repositories.singleflight import SingleFlightRepository
 from app.storage.repositories.telegram_album import TelegramAlbumRepository
 from app.storage.repositories.telegram_cache import TelegramFileCacheRepository
+from app.storage.repositories.telegram_context import TelegramContextRepository
 from app.storage.repositories.telegram_delivery import TelegramDeliveryRepository
 from app.storage.repositories.track_sources import TrackSourceRepository, UpsertSourceResult
 from app.storage.repositories.tracks import TrackRepository
@@ -21,6 +22,7 @@ __all__ = [
     "RuntimeSettingsRepository",
     "SingleFlightRepository",
     "TelegramFileCacheRepository",
+    "TelegramContextRepository",
     "TelegramDeliveryRepository",
     "TelegramAlbumRepository",
     "UploadJobRepository",

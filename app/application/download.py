@@ -5,6 +5,7 @@ from __future__ import annotations
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from app.core.download import (
@@ -15,6 +16,9 @@ from app.core.download import (
 )
 from app.core.recognition import RecognitionDecision, RecognitionResult
 from app.core.search import Track
+from app.core.telegram_context import TelegramContext
+
+DEFAULT_CONFIRMATION_TTL = timedelta(minutes=15)
 
 
 class RecognizedTrackResolver(Protocol):
@@ -62,10 +66,15 @@ class DownloadConfirmation:
     """Short-lived, user-owned confirmation context; it is never a persistent job state."""
 
     token: str
-    user_id: int
+    context: TelegramContext
     selected_track: Track
     alternatives: tuple[Track, ...]
     options: DownloadOptions
+    expires_at: datetime
+
+    @property
+    def user_id(self) -> int:
+        return self.context.user_id
 
 
 class DownloadService:
@@ -76,39 +85,44 @@ class DownloadService:
         use_case: DownloadTrackUseCase,
         *,
         token_factory: Callable[[], str] | None = None,
+        clock: Callable[[], datetime] | None = None,
+        confirmation_ttl: timedelta = DEFAULT_CONFIRMATION_TTL,
     ) -> None:
+        if confirmation_ttl <= timedelta():
+            raise ValueError("download confirmation TTL must be positive")
         self._use_case = use_case
         self._token_factory = token_factory or (lambda: secrets.token_hex(12))
+        self._clock = clock or (lambda: datetime.now(UTC))
+        self._confirmation_ttl = confirmation_ttl
         self._confirmations: dict[str, DownloadConfirmation] = {}
 
     def create_confirmation(
         self,
         *,
-        user_id: int,
+        context: TelegramContext,
         result: RecognitionResult,
         options: DownloadOptions | None = None,
     ) -> DownloadConfirmation | None:
         """Store only a pending user choice; rejected recognition never becomes a request."""
 
-        if user_id <= 0:
-            raise ValueError("download user ID must be positive")
         if result.candidate is None or result.decision is RecognitionDecision.REJECT:
             return None
         token = self._new_token()
         confirmation = DownloadConfirmation(
             token=token,
-            user_id=user_id,
+            context=context,
             selected_track=result.candidate.track,
             alternatives=tuple(item.candidate.track for item in result.alternatives),
             options=options or DownloadOptions(),
+            expires_at=self._clock() + self._confirmation_ttl,
         )
         self._confirmations[token] = confirmation
         return confirmation
 
     def select_alternative(
-        self, *, user_id: int, token: str, alternative_index: int
+        self, *, context: TelegramContext, token: str, alternative_index: int
     ) -> DownloadConfirmation | None:
-        confirmation = self._owned_confirmation(user_id, token)
+        confirmation = self._owned_confirmation(context, token)
         if confirmation is None or not 0 <= alternative_index < len(confirmation.alternatives):
             return None
         selected = confirmation.alternatives[alternative_index]
@@ -122,18 +136,19 @@ class DownloadService:
         )
         updated = DownloadConfirmation(
             confirmation.token,
-            confirmation.user_id,
+            confirmation.context,
             selected,
             alternatives,
             confirmation.options,
+            confirmation.expires_at,
         )
         self._confirmations[token] = updated
         return updated
 
     async def confirm(
-        self, *, user_id: int, token: str, target: DownloadDeliveryTarget
+        self, *, context: TelegramContext, token: str, target: DownloadDeliveryTarget
     ) -> DownloadSubmission | None:
-        confirmation = self._owned_confirmation(user_id, token)
+        confirmation = self._owned_confirmation(context, token)
         if confirmation is None:
             return None
         request = DownloadRequest(
@@ -145,16 +160,24 @@ class DownloadService:
         self._confirmations.pop(token, None)
         return submission
 
-    def cancel(self, *, user_id: int, token: str) -> bool:
-        confirmation = self._owned_confirmation(user_id, token)
+    def cancel(self, *, context: TelegramContext, token: str) -> bool:
+        confirmation = self._owned_confirmation(context, token)
         if confirmation is None:
             return False
         self._confirmations.pop(token, None)
         return True
 
-    def _owned_confirmation(self, user_id: int, token: str) -> DownloadConfirmation | None:
+    def _owned_confirmation(
+        self, context: TelegramContext, token: str
+    ) -> DownloadConfirmation | None:
         confirmation = self._confirmations.get(token)
-        if confirmation is None or confirmation.user_id != user_id:
+        if (
+            confirmation is None
+            or confirmation.context != context
+            or confirmation.expires_at <= self._clock()
+        ):
+            if confirmation is not None and confirmation.expires_at <= self._clock():
+                self._confirmations.pop(token, None)
             return None
         return confirmation
 

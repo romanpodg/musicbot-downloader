@@ -5,8 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from app.core.delivery_targets import DeliveryTarget
 from app.core.enums import QualityProfile
 from app.core.search import Track
+from app.core.telegram_context import TelegramContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,17 +61,20 @@ class CancelDownloadRequest:
 
 @dataclass(frozen=True, slots=True)
 class DownloadDeliveryTarget:
-    """Opaque delivery destination data owned by the delivery adapter, not the use case."""
+    """Actor-bound routing data owned by the delivery adapter, not the download use case."""
 
     user_id: int
-    destination_id: int
+    context: TelegramContext
+    delivery_target: DeliveryTarget
     source_message_id: int
 
     def __post_init__(self) -> None:
         if self.user_id <= 0:
             raise ValueError("delivery user ID must be positive")
-        if self.destination_id == 0:
-            raise ValueError("delivery destination ID must not be zero")
+        if self.context.user_id != self.user_id:
+            raise ValueError("delivery context and user differ")
+        if not isinstance(self.delivery_target, DeliveryTarget):
+            raise TypeError("delivery target must be DeliveryTarget")
         if self.source_message_id <= 0:
             raise ValueError("delivery source message ID must be positive")
 

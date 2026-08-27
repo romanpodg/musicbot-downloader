@@ -99,7 +99,7 @@ class TelegramDeliveryWorker:
             if cached.status is not TelegramCacheStatus.ACTIVE:
                 await self._repair(request, worker_id, cached.cache_id)
                 return
-            spec = TelegramCachedMediaSpec(request.telegram_chat_id, cached.file_id)
+            spec = TelegramCachedMediaSpec(request.delivery_target.chat_id, cached.file_id)
             if cached.media_kind is TelegramMediaKind.AUDIO:
                 receipt = await self._gateway.send_cached_audio(spec)
             else:
@@ -171,7 +171,7 @@ class TelegramDeliveryWorker:
         }.get(code, "bot.delivery_failed")
         try:
             await self._gateway.send_text(
-                request.telegram_chat_id, self._i18n.translate(key, locale)
+                request.delivery_target.chat_id, self._i18n.translate(key, locale)
             )
         except TelegramGatewayError:
             logger.info(

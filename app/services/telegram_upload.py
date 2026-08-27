@@ -28,8 +28,8 @@ class DeliveryService:
     """Deliver a completed, validated artifact through the existing Telegram cache mechanism.
 
     The service owns neither download execution nor queue state. The Stage 7 upload worker gives it
-    a completed artifact, after which the existing Stage 9 fanout sends the cached reference to the
-    requesting user.
+    a completed artifact, after which the existing Stage 9 fanout sends the cached reference to its
+    resolved delivery target. This cache boundary never decides a user, chat policy, or chat type.
     """
 
     def __init__(
