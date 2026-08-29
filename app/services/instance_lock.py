@@ -108,7 +108,7 @@ class ApplicationInstanceLock:
     @staticmethod
     def _lock(handle: BinaryIO) -> None:
         if os.name == "nt":
-            import msvcrt
+            msvcrt: Any = importlib.import_module("msvcrt")
 
             typed = handle
             if os.fstat(typed.fileno()).st_size == 0:
@@ -151,7 +151,7 @@ class ApplicationInstanceLock:
     @staticmethod
     def _unlock(handle: BinaryIO) -> None:
         if os.name == "nt":
-            import msvcrt
+            msvcrt: Any = importlib.import_module("msvcrt")
 
             handle.seek(0)
             msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
