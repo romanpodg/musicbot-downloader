@@ -6,7 +6,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import BaseFilter, Command, CommandStart
 from aiogram.types import CallbackQuery, ForceReply, InlineKeyboardMarkup, Message
 from aiogram.types import User as AiogramUser
@@ -51,14 +51,17 @@ class SearchInputFilter(BaseFilter):
     def __init__(self, flows: UxFlowService) -> None:
         self._flows = flows
 
-    async def __call__(self, message: Message) -> bool:
+    async def __call__(self, message: Message, bot: Bot) -> bool:
         context = _message_context(message)
         return (
             context is not None
             and message.text is not None
             and not message.text.startswith("/")
             and self._flows.awaiting_search_input(context)
-            and (context.chat_type is TelegramChatType.PRIVATE or _is_bot_directed_reply(message))
+            and (
+                context.chat_type is TelegramChatType.PRIVATE
+                or _is_bot_directed_reply(message, bot)
+            )
         )
 
 
@@ -441,9 +444,9 @@ def _command_query(text: str | None) -> str | None:
     return remainder or None
 
 
-def _is_bot_directed_reply(message: Message) -> bool:
+def _is_bot_directed_reply(message: Message, bot: Bot) -> bool:
     reply = message.reply_to_message
-    return bool(reply is not None and reply.from_user is not None and reply.from_user.is_bot)
+    return bool(reply is not None and reply.from_user is not None and reply.from_user.id == bot.id)
 
 
 async def _message_access(

@@ -113,6 +113,7 @@ class DownloadService:
 
         if result.candidate is None or result.decision is RecognitionDecision.REJECT:
             return None
+        self._prune_expired()
         token = self._new_token()
         alternatives = tuple(
             item.candidate.track for item in result.alternatives[:MAX_CONFIRMATION_ALTERNATIVES]
@@ -181,16 +182,23 @@ class DownloadService:
     def _owned_confirmation(
         self, context: TelegramContext, token: str
     ) -> DownloadConfirmation | None:
+        now = self._clock()
         confirmation = self._confirmations.get(token)
         if (
             confirmation is None
             or confirmation.context != context
-            or confirmation.expires_at <= self._clock()
+            or confirmation.expires_at <= now
         ):
-            if confirmation is not None and confirmation.expires_at <= self._clock():
+            if confirmation is not None and confirmation.expires_at <= now:
                 self._confirmations.pop(token, None)
             return None
         return confirmation
+
+    def _prune_expired(self) -> None:
+        now = self._clock()
+        expired = [token for token, item in self._confirmations.items() if item.expires_at <= now]
+        for token in expired:
+            self._confirmations.pop(token, None)
 
     def _new_token(self) -> str:
         for _ in range(8):

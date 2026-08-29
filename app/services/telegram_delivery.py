@@ -6,6 +6,7 @@ import asyncio
 import logging
 from datetime import timedelta
 
+from app.core.delivery_targets import DeliveryTargetType
 from app.core.enums import (
     QueueErrorCode,
     SubscriberStatus,
@@ -123,6 +124,7 @@ class TelegramDeliveryWorker:
                 return
             if (
                 exc.code == QueueErrorCode.TELEGRAM_PERMISSION_DENIED.value
+                and request.delivery_target.target_type is DeliveryTargetType.PRIVATE_USER
                 and request.delivery_target.chat_id != request.telegram_chat_id
             ):
                 await self._send_private_delivery_notice(request)

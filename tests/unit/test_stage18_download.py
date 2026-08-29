@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -187,6 +188,27 @@ async def test_download_service_requires_owned_confirmation_and_allows_alternati
         )
         is None
     )
+
+
+def test_stage20_confirmation_pruning_removes_all_expired_entries() -> None:
+    now = datetime(2026, 8, 30, tzinfo=UTC)
+    service = DownloadService(
+        DownloadTrackUseCase(_Resolver(), _SubmissionPort()),
+        token_factory=iter(("a" * 24, "b" * 24, "c" * 24)).__next__,
+        clock=lambda: now,
+        confirmation_ttl=timedelta(seconds=30),
+    )
+    context = TelegramContext(42, 42, TelegramChatType.PRIVATE)
+    first = service.create_confirmation(context=context, result=_recognition())
+    second = service.create_confirmation(context=context, result=_recognition())
+    assert first is not None and second is not None
+    assert len(service._confirmations) == 2
+    now = now + timedelta(seconds=31)
+    third = service.create_confirmation(context=context, result=_recognition())
+    assert third is not None
+    assert set(service._confirmations) == {third.token}
+    assert service.cancel(context=context, token=first.token) is False
+    assert service.cancel(context=context, token=second.token) is False
 
 
 def test_stage18_progress_and_errors_are_translated_from_backend_state() -> None:

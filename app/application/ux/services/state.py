@@ -113,7 +113,10 @@ class UserUxStateService:
         current = self.current(key)
         if target not in _TRANSITIONS[current]:
             raise ValueError(f"invalid UX transition: {current} -> {target}")
-        self._states[key] = target
+        if target is UxState.IDLE:
+            self._states.pop(key, None)
+        else:
+            self._states[key] = target
         return target
 
 

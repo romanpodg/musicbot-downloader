@@ -246,6 +246,7 @@ async def test_stage20_group_search_requires_bot_directed_reply(database) -> Non
     bot = Bot("123456:TEST_TOKEN")
     user = TgUser(id=15004, is_bot=False, first_name="Stage 20", language_code="en")
     bot_user = TgUser(id=123456, is_bot=True, first_name="Bot", username="testbot")
+    other_bot_user = TgUser(id=654321, is_bot=True, first_name="Other Bot", username="otherbot")
     chat = Chat(id=group_id, type=ChatType.GROUP)
     prompt = Message(
         message_id=1,
@@ -260,6 +261,21 @@ async def test_stage20_group_search_requires_bot_directed_reply(database) -> Non
             await dispatcher.feed_update(bot, _message_update(2, user, chat, "unrelated"))
             assert provider.requests == []
             assert received == ["unrelated"]
+            other_prompt = Message(
+                message_id=4,
+                date=datetime.now(UTC),
+                chat=chat,
+                from_user=other_bot_user,
+                text="Other bot prompt",
+            )
+            await dispatcher.feed_update(
+                bot,
+                _message_update(
+                    5, user, chat, "reply to another bot", reply_to_message=other_prompt
+                ),
+            )
+            assert provider.requests == []
+            assert received[-1] == "reply to another bot"
             await dispatcher.feed_update(
                 bot,
                 _message_update(3, user, chat, "Daft Punk One More Time", reply_to_message=prompt),

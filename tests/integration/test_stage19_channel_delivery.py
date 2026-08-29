@@ -60,6 +60,7 @@ class _Gateway:
         self.sent_to: list[int] = []
         self.texts: list[tuple[int, str]] = []
         self.permission_denied = False
+        self.denied_chat_ids: set[int] = set()
 
     async def get_bot_identity(self) -> TelegramBotIdentity:
         return TelegramBotIdentity(190, "stage19_bot")
@@ -71,7 +72,7 @@ class _Gateway:
         raise AssertionError("the integration test starts with an existing cache entry")
 
     async def send_cached_audio(self, spec: TelegramCachedMediaSpec) -> TelegramDeliveryReceipt:
-        if self.permission_denied and spec.chat_id > 0:
+        if self.permission_denied and (spec.chat_id > 0 or spec.chat_id in self.denied_chat_ids):
             raise TelegramGatewayError(
                 QueueErrorCode.TELEGRAM_PERMISSION_DENIED.value, retryable=False
             )
@@ -272,3 +273,35 @@ async def test_stage20_group_user_delivery_permission_failure_is_terminal_and_no
     assert status is TelegramDeliveryStatus.FAILED
     assert [chat_id for chat_id, _ in gateway.texts] == [group_id]
     assert "/start" in gateway.texts[0][1]
+
+
+async def test_stage20_channel_permission_failure_has_no_private_start_guidance(
+    database: Database,
+) -> None:
+    track_id = await _track_and_cache(database)
+    user_id = 19012
+    channel_id = -10019012
+    async with database.transaction() as repositories:
+        await repositories.users.create_user(
+            user_id, preferred_quality_profile=QualityProfile.MP3_320
+        )
+        await repositories.telegram_context.upsert_chat_policy(
+            ChatPolicy(channel_id, True, DeliveryMode.CHAT)
+        )
+        await repositories.telegram_context.upsert_channel_binding(
+            ChannelBinding(channel_id, ChannelBindingStatus.CONNECTED)
+        )
+    gateway = _Gateway()
+    gateway.permission_denied = True
+    gateway.denied_chat_ids.add(channel_id)
+    status = await _deliver(
+        database,
+        gateway,
+        TelegramContext(user_id, channel_id, TelegramChatType.CHANNEL),
+        1916,
+        track_id,
+        expect_delivered=False,
+    )
+
+    assert status is TelegramDeliveryStatus.FAILED
+    assert gateway.texts == []

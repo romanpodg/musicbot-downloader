@@ -72,6 +72,9 @@ def test_stage20_state_is_scoped_to_the_full_telegram_context() -> None:
     states.transition(group_a, UxState.SEARCHING)
     assert states.current(group_b) is UxState.IDLE
     assert states.current(private) is UxState.IDLE
+    states.transition(group_a, UxState.IDLE)
+    assert states.current(group_a) is UxState.IDLE
+    assert not states._states
 
 
 def test_stage14_error_service_hides_internal_error_details() -> None:
