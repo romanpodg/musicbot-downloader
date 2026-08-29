@@ -7,6 +7,7 @@ import logging
 from datetime import timedelta
 
 from app.core.enums import (
+    QueueErrorCode,
     SubscriberStatus,
     TelegramCacheStatus,
     TelegramDeliveryStatus,
@@ -120,6 +121,11 @@ class TelegramDeliveryWorker:
             if exc.invalid_cached_file and request.cache_id is not None:
                 await self._repair(request, worker_id, request.cache_id)
                 return
+            if (
+                exc.code == QueueErrorCode.TELEGRAM_PERMISSION_DENIED.value
+                and request.delivery_target.chat_id != request.telegram_chat_id
+            ):
+                await self._send_private_delivery_notice(request)
             await self._retry(
                 request,
                 worker_id,
@@ -133,6 +139,23 @@ class TelegramDeliveryWorker:
                 extra={"telegram_request_id": request.id, "track_id": request.track_id},
             )
             await self._retry(request, worker_id, "DELIVERY_FAILED", retryable=True)
+
+    async def _send_private_delivery_notice(self, request: TelegramDeliveryRequest) -> None:
+        """Best-effort origin-chat guidance for an unreachable USER target."""
+
+        try:
+            locale = await self._request_locale(request)
+            await self._gateway.send_text(
+                request.telegram_chat_id,
+                self._i18n.translate("bot.private_delivery_unavailable", locale),
+            )
+        except Exception:
+            # A notice must never change the terminal delivery outcome or crash
+            # the worker when the origin chat is also unavailable.
+            logger.info(
+                "Could not send private delivery guidance",
+                extra={"telegram_request_id": request.id},
+            )
 
     async def _resolve_subscriber(self, request: TelegramDeliveryRequest, worker_id: str) -> bool:
         assert request.subscriber_id is not None

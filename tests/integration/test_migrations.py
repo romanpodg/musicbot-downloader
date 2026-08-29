@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 from alembic import command
 from app.config import get_settings
@@ -530,6 +531,63 @@ def test_stage123_audit_migration_upgrades_0010_and_round_trips(
             }
             assert "operational_audit_events" not in tables
             assert connection.execute("SELECT role FROM users WHERE id=1").fetchone() == ("OWNER",)
+        command.upgrade(config, "head")
+        command.check(config)
+    finally:
+        get_settings.cache_clear()
+
+
+def test_stage19_migration_is_independent_and_round_trips_with_legacy_backfill(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    database_path = tmp_path / "stage19.db"
+    database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", database_url)  # type: ignore[attr-defined]
+    get_settings.cache_clear()
+    config = Config("alembic.ini")
+    try:
+        script = ScriptDirectory.from_config(config)
+        assert script.get_heads() == ["20260825_0012"]
+        command.upgrade(config, "head")
+        with sqlite3.connect(database_path) as connection:
+            tables = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            assert {"telegram_chat_policies", "telegram_channel_bindings"} <= tables
+        command.downgrade(config, "20260820_0011")
+        with sqlite3.connect(database_path) as connection:
+            connection.execute(
+                "INSERT INTO users (id, telegram_id, role, is_banned, last_seen_at, "
+                "created_at, updated_at) VALUES "
+                "(1, 1, 'USER', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+            connection.execute(
+                "INSERT INTO tracks (id, title, created_at, updated_at) VALUES "
+                "(1, 'Song', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+            connection.execute(
+                "INSERT INTO telegram_delivery_requests "
+                "(id, telegram_bot_id, user_id, telegram_chat_id, source_message_id, track_id, "
+                "quality_profile, status, attempt_count, repair_count, available_at, "
+                "created_at, updated_at) VALUES "
+                "(1, 100, 1, 1, 9, 1, NULL, 'AWAITING_QUALITY', 0, 0, CURRENT_TIMESTAMP, "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        command.upgrade(config, "head")
+        with sqlite3.connect(database_path) as connection:
+            assert connection.execute(
+                "SELECT delivery_chat_id, delivery_target_type "
+                "FROM telegram_delivery_requests WHERE id=1"
+            ).fetchone() == (1, "PRIVATE_USER")
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    "INSERT INTO telegram_chat_policies "
+                    "(chat_id, allow_downloads, delivery_mode, created_at, updated_at) "
+                    "VALUES (-1, 1, 'INVALID', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                )
+        command.check(config)
+        command.downgrade(config, "20260820_0011")
         command.upgrade(config, "head")
         command.check(config)
     finally:

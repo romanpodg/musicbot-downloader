@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from aiogram import F, Router
 from aiogram.filters import BaseFilter, Command, CommandStart
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, ForceReply, InlineKeyboardMarkup, Message
 from aiogram.types import User as AiogramUser
 
 from app.application.download import DownloadConfirmation, DownloadService
@@ -52,11 +52,13 @@ class SearchInputFilter(BaseFilter):
         self._flows = flows
 
     async def __call__(self, message: Message) -> bool:
+        context = _message_context(message)
         return (
-            message.from_user is not None
+            context is not None
             and message.text is not None
             and not message.text.startswith("/")
-            and self._flows.awaiting_search_input(message.from_user.id)
+            and self._flows.awaiting_search_input(context)
+            and (context.chat_type is TelegramChatType.PRIVATE or _is_bot_directed_reply(message))
         )
 
 
@@ -77,7 +79,16 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
 
     @router.message(Command("search"))
     async def search_command(message: Message) -> None:
-        await _handle_message(message, dependencies, dependencies.flows.begin_search)
+        query = _command_query(message.text)
+        if query is None:
+            await _handle_message(
+                message,
+                dependencies,
+                dependencies.flows.begin_search,
+                group_reply_prompt=True,
+            )
+            return
+        await _handle_search_query(message, dependencies, query)
 
     @router.message(SearchInputFilter(dependencies.flows))
     async def search_input(message: Message) -> None:
@@ -118,7 +129,9 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
             context, _ = await _callback_access(callback, user, dependencies)
             if context is None:
                 return
-            screen = await dependencies.flows.open_menu(_profile(callback.from_user), menu)
+            screen = await dependencies.flows.open_menu(
+                _profile(callback.from_user), menu, context=context
+            )
             await _render_callback(
                 callback, screen, dependencies, dependencies.users.locale_for(user)
             )
@@ -143,7 +156,7 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
                 if not dependencies.downloads.cancel(context=context, token=parsed.token):
                     await _invalid_callback(callback, dependencies)
                     return
-                dependencies.flows.transition(callback.from_user.id, UxState.IDLE)
+                dependencies.flows.transition(context, UxState.IDLE)
                 await _edit_download_text(
                     callback,
                     dependencies.messages.get(UxMessage.DOWNLOAD_CANCELLED, locale),
@@ -188,7 +201,7 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
                     context,
                 )
             else:
-                dependencies.flows.transition(callback.from_user.id, UxState.DOWNLOAD_QUEUED)
+                dependencies.flows.transition(context, UxState.DOWNLOAD_QUEUED)
                 await _edit_download_text(
                     callback,
                     dependencies.messages.get(UxMessage.DOWNLOAD_QUEUED, locale),
@@ -204,7 +217,9 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
 async def _handle_message(
     message: Message,
     dependencies: UxHandlerDependencies,
-    operation: Callable[[TelegramUserProfile], Awaitable[UxScreen]],
+    operation: Callable[..., Awaitable[UxScreen]],
+    *,
+    group_reply_prompt: bool = False,
 ) -> None:
     if message.from_user is None:
         return
@@ -213,11 +228,16 @@ async def _handle_message(
         context, _ = await _message_access(message, user, dependencies)
         if context is None:
             return
-        screen = await operation(_profile(message.from_user))
+        screen = await _invoke_operation(operation, _profile(message.from_user), context)
         locale = dependencies.users.locale_for(user)
         await message.answer(
             _screen_text(screen, dependencies, locale),
-            reply_markup=_screen_keyboard(screen, dependencies, locale),
+            reply_markup=(
+                ForceReply(selective=True)
+                if group_reply_prompt
+                and context.chat_type in {TelegramChatType.GROUP, TelegramChatType.SUPERGROUP}
+                else _screen_keyboard(screen, dependencies, locale)
+            ),
         )
     except Exception as exc:
         logger.error("Telegram UX command failed")
@@ -312,10 +332,10 @@ def _confirmation_text(
     text = dependencies.messages.get(
         UxMessage.DOWNLOAD_CONFIRMATION, locale, artist=artist, title=track.title
     )
-    if confirmation.alternatives:
+    if confirmation.presentation_alternatives:
         alternatives = "\n".join(
             f"• {', '.join(item.name for item in item_track.artists)} — {item_track.title}"
-            for item_track in confirmation.alternatives
+            for item_track in confirmation.presentation_alternatives
         )
         text += dependencies.messages.get(
             UxMessage.DOWNLOAD_ALTERNATIVES, locale, alternatives=alternatives
@@ -371,6 +391,59 @@ async def _render_initial_quality(
 
 def _profile(user: AiogramUser) -> TelegramUserProfile:
     return TelegramUserProfile(user.id, user.username, user.first_name, user.language_code)
+
+
+async def _invoke_operation(
+    operation: Callable[..., Awaitable[UxScreen]],
+    profile: TelegramUserProfile,
+    context: TelegramContext,
+) -> UxScreen:
+    """Pass context to Stage 20-aware flows while keeping old injected test doubles usable."""
+
+    import inspect
+
+    if "context" in inspect.signature(operation).parameters:
+        return await operation(profile, context=context)
+    return await operation(profile)
+
+
+async def _handle_search_query(
+    message: Message, dependencies: UxHandlerDependencies, query: str
+) -> None:
+    if message.from_user is None:
+        return
+    try:
+        user = await dependencies.users.observe(_profile(message.from_user))
+        context, _ = await _message_access(message, user, dependencies)
+        if context is None:
+            return
+        screen = await dependencies.flows.search(
+            _profile(message.from_user), query, context=context
+        )
+        locale = dependencies.users.locale_for(user)
+        await message.answer(
+            _screen_text(screen, dependencies, locale),
+            reply_markup=_screen_keyboard(screen, dependencies, locale),
+        )
+    except Exception as exc:
+        logger.error("Telegram UX search failed")
+        locale = dependencies.messages.default_locale
+        await message.answer(
+            dependencies.messages.get(dependencies.errors.message_name(exc).value, locale)
+        )
+
+
+def _command_query(text: str | None) -> str | None:
+    if not text:
+        return None
+    _, _, remainder = text.partition(" ")
+    remainder = remainder.strip()
+    return remainder or None
+
+
+def _is_bot_directed_reply(message: Message) -> bool:
+    reply = message.reply_to_message
+    return bool(reply is not None and reply.from_user is not None and reply.from_user.is_bot)
 
 
 async def _message_access(

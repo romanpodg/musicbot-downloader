@@ -66,9 +66,12 @@ Each scorer returns a value in the inclusive `0.0`–`1.0` range:
   neutral (`0.5`).
 
 Text comparison applies Unicode NFKC normalization, case folding, punctuation/whitespace cleanup,
-and exact normalized phrase matching. Otherwise it uses the stronger of token F1 and a standard
-library sequence ratio. This makes case and normal whitespace/punctuation differences deterministic
-without claiming fingerprint-grade recording identity.
+and the stronger of token F1 and a standard-library sequence ratio. Explicit title/artist fields
+use direct comparison. For raw combined queries, the engine removes candidate artist tokens before
+strictly scoring the remaining title intent, so an exact artist/title pair receives full combined
+coverage while a title that merely appears as one token cannot independently claim a full score.
+This keeps case, punctuation, whitespace, and artist/title ordering deterministic without claiming
+fingerprint-grade recording identity.
 
 `SimilarityAggregator` owns configurable default weights and normalizes their total:
 
@@ -89,9 +92,9 @@ policy.
 | `< 0.60` | `REJECT` |
 
 For example, the query `Daft Punk One More Time` matches a candidate titled `One More Time` by
-`Daft Punk` at `0.90` even when Stage 16 has no album/duration data: exact title and artist match,
-while the two unavailable optional dimensions are neutral. A `Daft Punk` candidate titled `Around
-The World` remains below the rejection threshold.
+`Daft Punk` at `0.90` even when Stage 16 has no album/duration data: exact combined title/artist
+coverage and two neutral optional dimensions. Candidates titled only `Time`, `One`, or `More` do
+not reach ACCEPT, while `Adele Hello` can still accept `Adele — Hello`.
 
 ## Replacement and compatibility seams
 

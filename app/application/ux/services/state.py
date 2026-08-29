@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+from app.core.telegram_context import TelegramChatType, TelegramContext
+
 
 class UxState(StrEnum):
     IDLE = "IDLE"
@@ -26,9 +28,18 @@ class UxState(StrEnum):
 
 
 _TRANSITIONS: dict[UxState, frozenset[UxState]] = {
-    UxState.IDLE: frozenset((UxState.IDLE, UxState.MENU, UxState.SEARCH_INPUT, UxState.ERROR)),
+    UxState.IDLE: frozenset(
+        (UxState.IDLE, UxState.MENU, UxState.SEARCH_INPUT, UxState.SEARCHING, UxState.ERROR)
+    ),
     UxState.MENU: frozenset(
-        (UxState.MENU, UxState.IDLE, UxState.SEARCH_INPUT, UxState.PROCESSING, UxState.ERROR)
+        (
+            UxState.MENU,
+            UxState.IDLE,
+            UxState.SEARCH_INPUT,
+            UxState.SEARCHING,
+            UxState.PROCESSING,
+            UxState.ERROR,
+        )
     ),
     UxState.SEARCH_INPUT: frozenset(
         (UxState.SEARCH_INPUT, UxState.SEARCHING, UxState.MENU, UxState.IDLE, UxState.ERROR)
@@ -45,7 +56,13 @@ _TRANSITIONS: dict[UxState, frozenset[UxState]] = {
         )
     ),
     UxState.SEARCH_RESULTS: frozenset(
-        (UxState.SEARCH_INPUT, UxState.MENU, UxState.IDLE, UxState.ERROR)
+        (
+            UxState.SEARCH_INPUT,
+            UxState.SEARCHING,
+            UxState.MENU,
+            UxState.IDLE,
+            UxState.ERROR,
+        )
     ),
     UxState.SELECTING_TRACK: frozenset((UxState.PROCESSING, UxState.ERROR, UxState.IDLE)),
     UxState.DOWNLOADING: frozenset((UxState.UPLOADING, UxState.ERROR, UxState.IDLE)),
@@ -79,21 +96,34 @@ class UserUxStateService:
     """In-memory navigation state; durable delivery/card state remains Stage 9-owned."""
 
     def __init__(self) -> None:
-        self._states: dict[int, UxState] = {}
+        self._states: dict[TelegramContext, UxState] = {}
 
-    def current(self, user_id: int) -> UxState:
-        _validate_user_id(user_id)
-        return self._states.get(user_id, UxState.IDLE)
+    def current(self, context: TelegramContext | int) -> UxState:
+        """Return state for one conversation context.
 
-    def transition(self, user_id: int, target: UxState) -> UxState:
-        _validate_user_id(user_id)
-        current = self.current(user_id)
+        The integer form is retained only for Stage 14 callers that predate chat
+        context support; production Telegram paths always pass ``TelegramContext``.
+        """
+
+        key = _coerce_context(context)
+        return self._states.get(key, UxState.IDLE)
+
+    def transition(self, context: TelegramContext | int, target: UxState) -> UxState:
+        key = _coerce_context(context)
+        current = self.current(key)
         if target not in _TRANSITIONS[current]:
             raise ValueError(f"invalid UX transition: {current} -> {target}")
-        self._states[user_id] = target
+        self._states[key] = target
         return target
 
 
-def _validate_user_id(user_id: int) -> None:
-    if user_id <= 0:
-        raise ValueError("user ID must be positive")
+def _coerce_context(context: TelegramContext | int) -> TelegramContext:
+    if isinstance(context, TelegramContext):
+        return context
+    if isinstance(context, int):
+        if context <= 0:
+            raise ValueError("user ID must be positive")
+        # Compatibility for pre-Stage-19 application callers. This key is never
+        # used by Telegram handlers, which pass the exact incoming context.
+        return TelegramContext(context, context, TelegramChatType.PRIVATE)
+    raise TypeError("UX state key must be TelegramContext")

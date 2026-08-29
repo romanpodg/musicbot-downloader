@@ -6,20 +6,37 @@ from dataclasses import dataclass
 
 from app.application.ux.services.state import UserUxStateService, UxState
 from app.core.enums import QueueJobStatus, TelegramDeliveryStatus
+from app.core.telegram_context import TelegramChatType, TelegramContext
 
 
 @dataclass(frozen=True, slots=True)
 class UxProgress:
-    user_id: int
+    context: TelegramContext
     state: UxState
+
+    @property
+    def user_id(self) -> int:
+        return self.context.user_id
 
 
 class UxProgressService:
     def __init__(self, states: UserUxStateService) -> None:
         self._states = states
 
-    def update(self, *, user_id: int, state: UxState) -> UxProgress:
-        return UxProgress(user_id=user_id, state=self._states.transition(user_id, state))
+    def update(
+        self,
+        *,
+        state: UxState,
+        context: TelegramContext | None = None,
+        user_id: int | None = None,
+    ) -> UxProgress:
+        if context is None:
+            if user_id is None:
+                raise ValueError("UX progress requires a Telegram context")
+            context = TelegramContext(user_id, user_id, TelegramChatType.PRIVATE)
+        elif user_id is not None and context.user_id != user_id:
+            raise ValueError("UX progress context and user differ")
+        return UxProgress(context=context, state=self._states.transition(context, state))
 
 
 class DownloadProgressService:

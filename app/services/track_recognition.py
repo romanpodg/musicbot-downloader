@@ -35,16 +35,25 @@ class TitleSimilarityScorer:
     """Score a candidate title against explicit title metadata or the user query."""
 
     def score(self, request: RecognitionRequest, candidate: TrackCandidate) -> float:
-        return _text_similarity(request.requested_title or request.query, candidate.track.title)
+        if request.requested_title is not None:
+            return _text_similarity(request.requested_title, candidate.track.title)
+        return _text_similarity_with_context(request.query, candidate.track.title)
 
 
 class ArtistSimilarityScorer:
     """Score the strongest requested/candidate artist pairing."""
 
     def score(self, request: RecognitionRequest, candidate: TrackCandidate) -> float:
-        requested = request.requested_artists or (request.query,)
+        if request.requested_artists:
+            requested = request.requested_artists
+            return max(
+                _text_similarity(expected_artist, candidate_artist.name)
+                for expected_artist in requested
+                for candidate_artist in candidate.track.artists
+            )
+        requested = (request.query,)
         return max(
-            _text_similarity(expected_artist, candidate_artist.name)
+            _text_similarity_with_context(expected_artist, candidate_artist.name)
             for expected_artist in requested
             for candidate_artist in candidate.track.artists
         )
@@ -185,9 +194,13 @@ class RuleBasedRecognitionEngine(RecognitionEngine):
     def _score(
         self, request: RecognitionRequest, candidate: TrackCandidate
     ) -> RankedTrackCandidate:
+        title_score = self._title_scorer.score(request, candidate)
+        artist_score = self._artist_scorer.score(request, candidate)
+        if request.requested_title is None and not request.requested_artists:
+            title_score, artist_score = _fallback_query_scores(request.query, candidate)
         scores = SimilarityScores(
-            title=self._title_scorer.score(request, candidate),
-            artist=self._artist_scorer.score(request, candidate),
+            title=title_score,
+            artist=artist_score,
             duration=self._duration_scorer.score(request, candidate),
             album=self._album_scorer.score(request, candidate),
         )
@@ -211,9 +224,6 @@ def _text_similarity(requested: str, candidate: str) -> float:
         return 0.0
     if normalized_requested == normalized_candidate:
         return 1.0
-    if normalized_candidate in normalized_requested:
-        return 1.0
-
     requested_tokens = set(normalized_requested.split())
     candidate_tokens = set(normalized_candidate.split())
     shared = requested_tokens & candidate_tokens
@@ -222,6 +232,53 @@ def _text_similarity(requested: str, candidate: str) -> float:
     token_f1 = 2.0 * len(shared) / (len(requested_tokens) + len(candidate_tokens))
     sequence_ratio = SequenceMatcher(None, normalized_requested, normalized_candidate).ratio()
     return max(token_f1, sequence_ratio)
+
+
+def _text_similarity_with_context(requested: str, candidate: str) -> float:
+    """Legacy scorer behavior for direct component diagnostics.
+
+    Recognition decisions use ``_fallback_query_scores`` below, which requires
+    combined artist/title evidence. Keeping this helper preserves the Stage 17
+    component scorer's useful phrase-in-query signal for explicit diagnostics.
+    """
+
+    normalized_requested = _normalize_text(requested)
+    normalized_candidate = _normalize_text(candidate)
+    if normalized_candidate and normalized_candidate in normalized_requested:
+        return 1.0
+    return _text_similarity(requested, candidate)
+
+
+def _fallback_query_scores(query: str, candidate: TrackCandidate) -> tuple[float, float]:
+    """Score raw queries using combined intent rather than independent victories.
+
+    Candidate artist tokens are removed from the normalized query, then the
+    remaining title intent is compared strictly. Thus ``Daft Punk One More
+    Time`` + ``Daft Punk — One More Time`` is exact, while a title such as
+    ``Time`` covers only part of the remaining intent and cannot reach ACCEPT.
+    """
+
+    normalized_query = _normalize_text(query)
+    query_tokens = normalized_query.split()
+    best_artist = 0.0
+    best_title = 0.0
+    for artist in candidate.track.artists:
+        artist_tokens = _normalize_text(artist.name).split()
+        if not artist_tokens:
+            continue
+        coverage = sum(token in query_tokens for token in artist_tokens) / len(artist_tokens)
+        remaining_tokens = list(query_tokens)
+        for token in artist_tokens:
+            try:
+                remaining_tokens.remove(token)
+            except ValueError:
+                pass
+        remaining = " ".join(remaining_tokens) or normalized_query
+        title_score = _text_similarity(remaining, candidate.track.title)
+        pair = (title_score, coverage)
+        if pair > (best_title, best_artist):
+            best_title, best_artist = pair
+    return best_title, best_artist
 
 
 def _normalize_text(value: str) -> str:

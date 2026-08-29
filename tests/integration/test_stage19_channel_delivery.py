@@ -11,6 +11,7 @@ from app.core.enums import (
     NativeCodec,
     NativeContainer,
     QualityProfile,
+    QueueErrorCode,
     TelegramDeliveryStatus,
     TelegramMediaKind,
 )
@@ -33,7 +34,12 @@ from app.services.telegram_context import ChatContextAccessService, DeliveryTarg
 from app.services.telegram_delivery import TelegramDeliveryWorker
 from app.services.telegram_requests import TelegramTrackRequestService
 from app.storage import Database
-from app.telegram import TelegramCachedMediaSpec, TelegramDeliveryReceipt, TelegramUploadSpec
+from app.telegram import (
+    TelegramCachedMediaSpec,
+    TelegramDeliveryReceipt,
+    TelegramGatewayError,
+    TelegramUploadSpec,
+)
 
 
 @dataclass
@@ -52,6 +58,8 @@ class _UnusedUrlResolver:
 class _Gateway:
     def __init__(self) -> None:
         self.sent_to: list[int] = []
+        self.texts: list[tuple[int, str]] = []
+        self.permission_denied = False
 
     async def get_bot_identity(self) -> TelegramBotIdentity:
         return TelegramBotIdentity(190, "stage19_bot")
@@ -63,6 +71,10 @@ class _Gateway:
         raise AssertionError("the integration test starts with an existing cache entry")
 
     async def send_cached_audio(self, spec: TelegramCachedMediaSpec) -> TelegramDeliveryReceipt:
+        if self.permission_denied and spec.chat_id > 0:
+            raise TelegramGatewayError(
+                QueueErrorCode.TELEGRAM_PERMISSION_DENIED.value, retryable=False
+            )
         self.sent_to.append(spec.chat_id)
         return TelegramDeliveryReceipt(spec.chat_id, len(self.sent_to))
 
@@ -70,6 +82,7 @@ class _Gateway:
         return await self.send_cached_audio(spec)
 
     async def send_text(self, chat_id: int, text: str) -> TelegramDeliveryReceipt:
+        self.texts.append((chat_id, text))
         return TelegramDeliveryReceipt(chat_id, 1)
 
     async def can_send_messages(self, chat_id: int) -> bool:
@@ -130,7 +143,9 @@ async def _deliver(
     context: TelegramContext,
     source_message_id: int,
     track_id: int,
-) -> None:
+    *,
+    expect_delivered: bool = True,
+) -> TelegramDeliveryStatus:
     async with database.transaction() as repositories:
         user = await repositories.users.get_by_telegram_id(context.user_id)
     assert user is not None
@@ -183,7 +198,10 @@ async def _deliver(
     await worker.process(ready, f"stage19-{source_message_id}-send")
     async with database.transaction() as repositories:
         stored = await repositories.telegram_delivery.get(submission.delivery_request_id)
-    assert stored is not None and stored.status is TelegramDeliveryStatus.DELIVERED
+    assert stored is not None
+    if expect_delivered:
+        assert stored.status is TelegramDeliveryStatus.DELIVERED
+    return stored.status
 
 
 async def test_stage19_private_group_and_bound_channel_delivery(database: Database) -> None:
@@ -225,3 +243,32 @@ async def test_stage19_private_group_and_bound_channel_delivery(database: Databa
         track_id,
     )
     assert gateway.sent_to == [user_id, -19002, -10019003]
+
+
+async def test_stage20_group_user_delivery_permission_failure_is_terminal_and_notifies_origin(
+    database: Database,
+) -> None:
+    track_id = await _track_and_cache(database)
+    user_id = 19011
+    group_id = -19011
+    async with database.transaction() as repositories:
+        await repositories.users.create_user(
+            user_id, preferred_quality_profile=QualityProfile.MP3_320
+        )
+        await repositories.telegram_context.upsert_chat_policy(
+            ChatPolicy(group_id, True, DeliveryMode.USER)
+        )
+    gateway = _Gateway()
+    gateway.permission_denied = True
+    status = await _deliver(
+        database,
+        gateway,
+        TelegramContext(user_id, group_id, TelegramChatType.GROUP),
+        1915,
+        track_id,
+        expect_delivered=False,
+    )
+
+    assert status is TelegramDeliveryStatus.FAILED
+    assert [chat_id for chat_id, _ in gateway.texts] == [group_id]
+    assert "/start" in gateway.texts[0][1]

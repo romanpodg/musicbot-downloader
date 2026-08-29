@@ -49,7 +49,9 @@ class TrackSearchService:
         if not requested_providers:
             raise TrackSearchUnavailable()
 
-        tracks: list[Track] = []
+        # Query every selected provider before applying the aggregate limit. This
+        # avoids starving later providers when an earlier adapter fills the limit.
+        provider_results: list[list[Track]] = []
         seen: set[tuple[MusicProviderName, str]] = set()
         completed_provider = False
         for provider_name in requested_providers:
@@ -74,6 +76,7 @@ class TrackSearchService:
                 continue
 
             completed_provider = True
+            normalized: list[Track] = []
             for track in provider_tracks:
                 if track.provider is not provider_name:
                     logger.warning(
@@ -85,10 +88,27 @@ class TrackSearchService:
                 if identity in seen:
                     continue
                 seen.add(identity)
-                tracks.append(track)
-                if len(tracks) == request.limit:
-                    return TrackSearchResult(request.query, tuple(tracks))
+                normalized.append(track)
+            provider_results.append(normalized)
 
         if not completed_provider:
             raise TrackSearchUnavailable()
+
+        # Deterministic round-robin merge: preserve each provider's ordering,
+        # while giving every successful provider an opportunity before truncation.
+        tracks: list[Track] = []
+        positions = [0] * len(provider_results)
+        while len(tracks) < request.limit:
+            made_progress = False
+            for index, candidates in enumerate(provider_results):
+                position = positions[index]
+                if position >= len(candidates):
+                    continue
+                tracks.append(candidates[position])
+                positions[index] += 1
+                made_progress = True
+                if len(tracks) >= request.limit:
+                    break
+            if not made_progress:
+                break
         return TrackSearchResult(request.query, tuple(tracks))

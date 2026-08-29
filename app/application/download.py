@@ -19,6 +19,7 @@ from app.core.search import Track
 from app.core.telegram_context import TelegramContext
 
 DEFAULT_CONFIRMATION_TTL = timedelta(minutes=15)
+MAX_CONFIRMATION_ALTERNATIVES = 3
 
 
 class RecognizedTrackResolver(Protocol):
@@ -71,10 +72,15 @@ class DownloadConfirmation:
     alternatives: tuple[Track, ...]
     options: DownloadOptions
     expires_at: datetime
+    show_alternatives: bool = True
 
     @property
     def user_id(self) -> int:
         return self.context.user_id
+
+    @property
+    def presentation_alternatives(self) -> tuple[Track, ...]:
+        return self.alternatives if self.show_alternatives else ()
 
 
 class DownloadService:
@@ -108,13 +114,17 @@ class DownloadService:
         if result.candidate is None or result.decision is RecognitionDecision.REJECT:
             return None
         token = self._new_token()
+        alternatives = tuple(
+            item.candidate.track for item in result.alternatives[:MAX_CONFIRMATION_ALTERNATIVES]
+        )
         confirmation = DownloadConfirmation(
             token=token,
             context=context,
             selected_track=result.candidate.track,
-            alternatives=tuple(item.candidate.track for item in result.alternatives),
+            alternatives=alternatives,
             options=options or DownloadOptions(),
             expires_at=self._clock() + self._confirmation_ttl,
+            show_alternatives=result.decision is RecognitionDecision.ASK_USER,
         )
         self._confirmations[token] = confirmation
         return confirmation
@@ -141,6 +151,7 @@ class DownloadService:
             alternatives,
             confirmation.options,
             confirmation.expires_at,
+            confirmation.show_alternatives,
         )
         self._confirmations[token] = updated
         return updated

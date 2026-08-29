@@ -30,6 +30,7 @@
   "bot.preparing_download": "Preparing the track… I’ll send it here when it’s ready.",
   "bot.preparing_download_short": "Preparing the track…",
   "bot.delivery_failed": "I couldn’t deliver this track. Please try again later.",
+  "bot.private_delivery_unavailable": "I couldn’t message you privately. Open the bot in a private chat and send /start before using USER delivery from a group.",
   "bot.no_available_provider": "This track cannot be downloaded from the currently available sources.",
   "bot.quality_unavailable": "The selected quality is unavailable for this track.",
   "bot.request_cancelled": "This track request was cancelled.",

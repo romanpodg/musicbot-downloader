@@ -53,6 +53,7 @@ Current delivery roadmap:
   delivery reuse, and transport-neutral UX progress mapping.
 - Stage 19: Channel/Bot Integration: transport-neutral Telegram contexts, explicit delivery
   targets, persisted chat policies and channel bindings, and context-secure group/channel routing.
+- Stage 20 — Architecture & Production Review
 
 Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
 deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage
@@ -96,6 +97,8 @@ handling boundaries.
 See [the Stage 19 channel/bot integration architecture](docs/stage19-channel-bot-integration.md)
 for context ownership, delivery targets, chat policy, channel binding, callback validation, and
 queue-preserving delivery routing.
+See [the Stage 20 architecture and production review](docs/stage20-architecture-production-review.md)
+for confirmed correctness fixes and validation evidence.
 
 ## Architecture
 

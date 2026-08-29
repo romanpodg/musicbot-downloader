@@ -255,6 +255,43 @@ def test_metadata_processor_is_an_unwired_extension_point() -> None:
     assert processor is not None
 
 
+def test_stage20_confirmation_presentation_hides_accept_alternatives_and_bounds_ask_user() -> None:
+    service = DownloadService(
+        DownloadTrackUseCase(_Resolver(), _SubmissionPort()), token_factory=lambda: "e" * 24
+    )
+    selected = _track()
+    alternatives = tuple(
+        RankedTrackCandidate(
+            TrackCandidate(
+                _track(identifier=f"alt-{index}", title=f"Alternative {index}"), "spotify"
+            ),
+            SimilarityScores(0.7, 0.7, 0.5, 0.5),
+            0.7,
+        )
+        for index in range(5)
+    )
+    accepted = service.create_confirmation(
+        context=TelegramContext(42, 42, TelegramChatType.PRIVATE),
+        result=RecognitionResult(
+            TrackCandidate(selected, "spotify"), 0.95, RecognitionDecision.ACCEPT, alternatives
+        ),
+    )
+    assert accepted is not None
+    assert accepted.presentation_alternatives == ()
+
+    asking_service = DownloadService(
+        DownloadTrackUseCase(_Resolver(), _SubmissionPort()), token_factory=lambda: "f" * 24
+    )
+    asking = asking_service.create_confirmation(
+        context=TelegramContext(42, 42, TelegramChatType.PRIVATE),
+        result=RecognitionResult(
+            TrackCandidate(selected, "spotify"), 0.7, RecognitionDecision.ASK_USER, alternatives
+        ),
+    )
+    assert asking is not None
+    assert len(asking.presentation_alternatives) == 3
+
+
 async def test_delivery_service_rejects_artifacts_without_validated_metadata() -> None:
     service = DeliveryService(None, None, None, cache_chat_id=-100)  # type: ignore[arg-type]
     request = UploadRequest(1, 1, 1, QualityProfile.MP3_320, "artifact", Path("missing.mp3"), None)

@@ -15,9 +15,9 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           version: "0.11.20"
           python-version: "3.12"
@@ -28,6 +28,11 @@ jobs:
           uv lock --check
           uv sync --locked --extra dev --extra onthespot
           uv lock --check
+
+      - name: Install host media prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
 
       - name: Run host quality and regression gates
         run: |

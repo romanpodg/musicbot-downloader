@@ -105,3 +105,54 @@ async def test_stage15_use_case_and_error_boundary_report_unavailable_search() -
     assert (
         UxErrorService().message_name(TrackSearchUnavailable()) is UxErrorMessage.SEARCH_UNAVAILABLE
     )
+
+
+async def test_stage20_search_queries_all_providers_before_round_robin_truncation() -> None:
+    providers = tuple(
+        FakeSearchProvider(
+            provider,
+            tuple(_track(provider, f"{provider.value}-{index}") for index in range(10)),
+        )
+        for provider in (
+            MusicProviderName.SPOTIFY,
+            MusicProviderName.DEEZER,
+            MusicProviderName.TIDAL,
+        )
+    )
+    service = TrackSearchService(TrackSearchProviderRegistry(providers))
+
+    result = await service.search(TrackSearchRequest("query", limit=20))
+
+    assert all(
+        provider.requests == [TrackSearchRequest("query", limit=20)] for provider in providers
+    )
+    assert {track.provider for track in result.tracks} == {
+        MusicProviderName.SPOTIFY,
+        MusicProviderName.DEEZER,
+        MusicProviderName.TIDAL,
+    }
+    assert len(result.tracks) == 20
+    assert [track.provider for track in result.tracks[:6]] == [
+        MusicProviderName.SPOTIFY,
+        MusicProviderName.DEEZER,
+        MusicProviderName.TIDAL,
+        MusicProviderName.SPOTIFY,
+        MusicProviderName.DEEZER,
+        MusicProviderName.TIDAL,
+    ]
+
+
+async def test_stage20_search_respects_requested_provider_subset() -> None:
+    spotify = FakeSearchProvider(MusicProviderName.SPOTIFY, (_track(MusicProviderName.SPOTIFY),))
+    tidal = FakeSearchProvider(MusicProviderName.TIDAL, (_track(MusicProviderName.TIDAL),))
+    service = TrackSearchService(TrackSearchProviderRegistry((spotify, tidal)))
+
+    result = await service.search(
+        TrackSearchRequest("query", providers=(MusicProviderName.TIDAL,), limit=5)
+    )
+
+    assert spotify.requests == []
+    assert tidal.requests == [
+        TrackSearchRequest("query", providers=(MusicProviderName.TIDAL,), limit=5)
+    ]
+    assert [track.provider for track in result.tracks] == [MusicProviderName.TIDAL]

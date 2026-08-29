@@ -201,6 +201,34 @@ def test_stage17_rule_based_engine_accepts_exact_title_and_artist_without_option
     assert result.decision is RecognitionDecision.ACCEPT
 
 
+@pytest.mark.parametrize("title", ["Time", "One", "More"])
+def test_stage20_raw_query_partial_title_false_positive_is_not_accepted(title: str) -> None:
+    candidate = _candidate(track=_track(title=title, album=None, duration_ms=None))
+
+    result = RuleBasedRecognitionEngine().recognize(
+        RecognitionRequest("Daft Punk One More Time", (candidate,))
+    )
+
+    assert result.decision is not RecognitionDecision.ACCEPT
+
+
+def test_stage20_raw_query_exact_combined_intent_and_one_word_title_remain_accepted() -> None:
+    exact = _candidate(track=_track(album=None, duration_ms=None))
+    adele = TrackCandidate(
+        _track(title="Hello", artist="Adele", album=None, duration_ms=None), "spotify"
+    )
+
+    engine = RuleBasedRecognitionEngine()
+    assert (
+        engine.recognize(RecognitionRequest("Daft Punk One More Time", (exact,))).decision
+        is RecognitionDecision.ACCEPT
+    )
+    assert (
+        engine.recognize(RecognitionRequest("Adele Hello", (adele,))).decision
+        is RecognitionDecision.ACCEPT
+    )
+
+
 def test_stage17_rule_based_engine_rejects_an_unrelated_title_from_same_artist() -> None:
     candidate = _candidate(track=_track(title="Around The World", provider_track_id="around-world"))
 

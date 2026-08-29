@@ -7,6 +7,7 @@ from app.application.ux.services.errors import UxErrorMessage, UxErrorService
 from app.application.ux.services.progress import UxProgressService
 from app.application.ux.services.state import UserUxStateService, UxState
 from app.core.exceptions import DatabaseError, ProviderUnavailable
+from app.core.telegram_context import TelegramChatType, TelegramContext
 from app.i18n import LocalizationService
 from app.telegram.callbacks import encode_ux_callback, parse_ux_callback
 from app.telegram.keyboards import UxKeyboardFactory
@@ -56,6 +57,21 @@ def test_stage14_state_transitions_and_progress_foundation() -> None:
     assert states.transition(42, UxState.IDLE) is UxState.IDLE
     with pytest.raises(ValueError, match="invalid UX transition"):
         states.transition(42, UxState.DOWNLOADING)
+
+
+def test_stage20_state_is_scoped_to_the_full_telegram_context() -> None:
+    states = UserUxStateService()
+    group_a = TelegramContext(42, -1001, TelegramChatType.GROUP)
+    group_b = TelegramContext(42, -1002, TelegramChatType.GROUP)
+    private = TelegramContext(42, 42, TelegramChatType.PRIVATE)
+
+    states.transition(group_a, UxState.SEARCH_INPUT)
+    assert states.current(group_a) is UxState.SEARCH_INPUT
+    assert states.current(group_b) is UxState.IDLE
+    assert states.current(private) is UxState.IDLE
+    states.transition(group_a, UxState.SEARCHING)
+    assert states.current(group_b) is UxState.IDLE
+    assert states.current(private) is UxState.IDLE
 
 
 def test_stage14_error_service_hides_internal_error_details() -> None:

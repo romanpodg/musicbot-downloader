@@ -9,7 +9,7 @@ from app.application.download import DownloadConfirmation, DownloadService
 from app.application.search import SearchTracksUseCase
 from app.application.ux.services.state import UserUxStateService, UxState
 from app.core.search import TrackSearchRequest
-from app.core.telegram_context import TelegramContext
+from app.core.telegram_context import TelegramChatType, TelegramContext
 from app.services.telegram_users import TelegramUserProfile, TelegramUserService
 
 
@@ -44,19 +44,30 @@ class UxFlowService:
         self._search_tracks = search_tracks
         self._downloads = downloads
 
-    async def start(self, profile: TelegramUserProfile) -> UxScreen:
+    async def start(
+        self, profile: TelegramUserProfile, *, context: TelegramContext | None = None
+    ) -> UxScreen:
         await self._users.observe(profile)
-        return self._screen(profile.telegram_id, "ux.welcome", UxMenu.MAIN)
+        return self._screen(_context_for(profile, context), "ux.welcome", UxMenu.MAIN)
 
-    async def help(self, profile: TelegramUserProfile) -> UxScreen:
+    async def help(
+        self, profile: TelegramUserProfile, *, context: TelegramContext | None = None
+    ) -> UxScreen:
         await self._users.observe(profile)
-        return self._screen(profile.telegram_id, "ux.help")
+        return self._screen(_context_for(profile, context), "ux.help")
 
-    async def open_menu(self, profile: TelegramUserProfile, menu: UxMenu = UxMenu.MAIN) -> UxScreen:
+    async def open_menu(
+        self,
+        profile: TelegramUserProfile,
+        menu: UxMenu = UxMenu.MAIN,
+        *,
+        context: TelegramContext | None = None,
+    ) -> UxScreen:
         await self._users.observe(profile)
+        state_context = _context_for(profile, context)
         if menu is UxMenu.SEARCH:
             return self._screen(
-                profile.telegram_id, "ux.search.prompt", state=UxState.SEARCH_INPUT, menu=menu
+                state_context, "ux.search.prompt", state=UxState.SEARCH_INPUT, menu=menu
             )
         key = {
             UxMenu.MAIN: "ux.menu.main",
@@ -65,12 +76,14 @@ class UxFlowService:
             UxMenu.PROVIDERS: "ux.menu.providers",
             UxMenu.SETTINGS: "ux.menu.settings",
         }[menu]
-        return self._screen(profile.telegram_id, key, menu)
+        return self._screen(state_context, key, menu)
 
-    async def begin_search(self, profile: TelegramUserProfile) -> UxScreen:
+    async def begin_search(
+        self, profile: TelegramUserProfile, *, context: TelegramContext | None = None
+    ) -> UxScreen:
         await self._users.observe(profile)
         return self._screen(
-            profile.telegram_id,
+            _context_for(profile, context),
             "ux.search.prompt",
             state=UxState.SEARCH_INPUT,
             menu=UxMenu.SEARCH,
@@ -83,13 +96,13 @@ class UxFlowService:
             raise ValueError("search context and Telegram profile differ")
         await self._users.observe(profile)
         request = TrackSearchRequest(query=query)
-        self._states.transition(profile.telegram_id, UxState.SEARCHING)
+        self._states.transition(context, UxState.SEARCHING)
         try:
             if self._search_tracks is None:
                 raise RuntimeError("track search use case is not composed")
             recognition = await self._search_tracks.recognize(request)
         except Exception:
-            self._states.transition(profile.telegram_id, UxState.ERROR)
+            self._states.transition(context, UxState.ERROR)
             raise
         confirmation = (
             self._downloads.create_confirmation(context=context, result=recognition)
@@ -98,29 +111,29 @@ class UxFlowService:
         )
         if confirmation is not None:
             return self._screen(
-                profile.telegram_id,
+                context,
                 "ux.download.confirmation",
                 state=UxState.DOWNLOAD_CONFIRMATION,
                 download_confirmation=confirmation,
             )
         return self._screen(
-            profile.telegram_id,
+            context,
             "ux.search.results",
             state=UxState.SEARCH_RESULTS,
             menu=UxMenu.SEARCH,
         )
 
-    def awaiting_search_input(self, user_id: int) -> bool:
-        return self._states.current(user_id) is UxState.SEARCH_INPUT
+    def awaiting_search_input(self, context: TelegramContext | int) -> bool:
+        return self._states.current(context) is UxState.SEARCH_INPUT
 
-    def transition(self, user_id: int, target: UxState) -> UxState:
+    def transition(self, context: TelegramContext | int, target: UxState) -> UxState:
         """Apply a transport-neutral state transition after a confirmed UX action."""
 
-        return self._states.transition(user_id, target)
+        return self._states.transition(context, target)
 
     def _screen(
         self,
-        user_id: int,
+        context: TelegramContext,
         message_key: str,
         menu: UxMenu | None = None,
         state: UxState = UxState.MENU,
@@ -128,7 +141,15 @@ class UxFlowService:
     ) -> UxScreen:
         return UxScreen(
             message_key,
-            self._states.transition(user_id, state),
+            self._states.transition(context, state),
             menu,
             download_confirmation,
         )
+
+
+def _context_for(profile: TelegramUserProfile, context: TelegramContext | None) -> TelegramContext:
+    if context is not None:
+        if context.user_id != profile.telegram_id:
+            raise ValueError("UX context and Telegram profile differ")
+        return context
+    return TelegramContext(profile.telegram_id, profile.telegram_id, TelegramChatType.PRIVATE)

@@ -77,7 +77,7 @@ class UxKeyboardFactory:
                     ),
                 )
             ]
-            for index, track in enumerate(confirmation.alternatives)
+            for index, track in enumerate(confirmation.presentation_alternatives)
         )
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
