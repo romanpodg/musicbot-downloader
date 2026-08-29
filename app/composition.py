@@ -51,6 +51,7 @@ from app.services.authorization import TelegramAuthorizationService
 from app.services.crash_recovery import CrashRecoveryService
 from app.services.deep_links import DeepLinkRegistryService
 from app.services.delivery import DeliveryPreparationService
+from app.services.download_lifecycle import DownloadLifecycleService
 from app.services.download_pipeline import DownloadPipeline, NativeDownloadBoundary
 from app.services.download_requests import ExistingDeliverySubmissionService
 from app.services.media import MediaProbe, Transcoder
@@ -170,10 +171,14 @@ class Stage9Components:
     artifact_cleanup: StaleArtifactCleanupService
     cleanup_manager: StaleArtifactCleanupManager
     ux_progress: UxProgressService
+    download_lifecycle: DownloadLifecycleService
 
     async def start(self) -> None:
         try:
             await self.crash_recovery.recover_startup()
+            lifecycle = getattr(self, "download_lifecycle", None)
+            if lifecycle is not None:
+                await lifecycle.recover()
             await self.artifact_cleanup.sweep()
             await self.provider_accounts.reconcile_startup()
             await self.queue_manager.start()
@@ -247,6 +252,7 @@ async def compose_stage9(
         notifier=notifier,
         upload_queue=uploads,
     )
+    lifecycle = DownloadLifecycleService(database)
     stage8 = await compose_stage8(
         database,
         settings,
@@ -294,6 +300,7 @@ async def compose_stage9(
         download_backend,
         upload_backend,
         singleflight=singleflight,
+        download_lifecycle=lifecycle,
     )
     i18n = LocalizationService(settings.supported_locales, settings.default_locale)
     users = TelegramUserService(database, i18n, owner_id=settings.owner_id)
@@ -326,7 +333,7 @@ async def compose_stage9(
     download_service = DownloadService(
         DownloadTrackUseCase(
             RecognizedTrackResolutionAdapter(track_resolution),
-            ExistingDeliverySubmissionService(database, requests),
+            ExistingDeliverySubmissionService(database, requests, lifecycle),
         )
     )
     chat_contexts = ChatContextAccessService(database, DeliveryTargetResolver(), stage8.gateway)
@@ -466,6 +473,7 @@ async def compose_stage9(
         i18n,
         max_attempts=settings.telegram_delivery_max_attempts,
         wake_event=delivery_wake,
+        lifecycle=lifecycle,
     )
     fanout = TelegramDeliveryFanoutManager(
         delivery_worker,
@@ -522,4 +530,5 @@ async def compose_stage9(
         artifact_cleanup=artifact_cleanup,
         cleanup_manager=cleanup_manager,
         ux_progress=ux_progress,
+        download_lifecycle=lifecycle,
     )

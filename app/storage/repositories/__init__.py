@@ -1,6 +1,7 @@
 """Focused repository exports."""
 
 from app.storage.repositories.deep_links import DeepLinkRegistryRepository
+from app.storage.repositories.download_lifecycle import DownloadLifecycleRepository
 from app.storage.repositories.operational_audit import OperationalAuditRepository
 from app.storage.repositories.singleflight import SingleFlightRepository
 from app.storage.repositories.telegram_album import TelegramAlbumRepository
@@ -19,6 +20,7 @@ __all__ = [
     "UpsertSourceResult",
     "UserRepository",
     "DownloadJobRepository",
+    "DownloadLifecycleRepository",
     "RuntimeSettingsRepository",
     "SingleFlightRepository",
     "TelegramFileCacheRepository",

@@ -2,6 +2,11 @@
 
 from app.storage.models.base import Base
 from app.storage.models.deep_link import DeepLinkRegistryEntry
+from app.storage.models.download_lifecycle import (
+    DownloadDelivery,
+    DownloadLifecycleJob,
+    DownloadRequestRecord,
+)
 from app.storage.models.operational_audit import OperationalAuditEvent
 from app.storage.models.queue import (
     DownloadFlight,
@@ -21,6 +26,9 @@ from app.storage.models.user import User
 __all__ = [
     "Base",
     "DownloadJob",
+    "DownloadRequestRecord",
+    "DownloadLifecycleJob",
+    "DownloadDelivery",
     "DeepLinkRegistryEntry",
     "DownloadFlight",
     "JobSubscriber",

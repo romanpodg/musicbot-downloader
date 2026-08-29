@@ -22,6 +22,7 @@ from app.core.exceptions import DatabaseConcurrencyError, DatabaseError
 from app.storage.repositories import (
     DeepLinkRegistryRepository,
     DownloadJobRepository,
+    DownloadLifecycleRepository,
     OperationalAuditRepository,
     RuntimeSettingsRepository,
     SingleFlightRepository,
@@ -51,6 +52,7 @@ class Repositories:
     telegram_context: TelegramContextRepository
     telegram_delivery: TelegramDeliveryRepository
     telegram_album: TelegramAlbumRepository
+    download_lifecycle: DownloadLifecycleRepository
 
 
 class Database:
@@ -97,6 +99,7 @@ class Database:
             telegram_context=TelegramContextRepository(session),
             telegram_delivery=TelegramDeliveryRepository(session),
             telegram_album=TelegramAlbumRepository(session),
+            download_lifecycle=DownloadLifecycleRepository(session),
         )
 
     @staticmethod

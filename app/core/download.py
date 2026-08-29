@@ -31,6 +31,7 @@ class DownloadRequest:
     user_id: int
     recognized_track: Track
     options: DownloadOptions = DownloadOptions()
+    confirmation_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.user_id <= 0:
@@ -39,6 +40,8 @@ class DownloadRequest:
             raise TypeError("download request requires a recognized search Track")
         if not isinstance(self.options, DownloadOptions):
             raise TypeError("download request options must be DownloadOptions")
+        if self.confirmation_id is not None and not self.confirmation_id:
+            raise ValueError("confirmation ID must not be empty")
 
 
 @dataclass(frozen=True, slots=True)

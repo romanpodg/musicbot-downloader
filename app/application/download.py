@@ -167,6 +167,7 @@ class DownloadService:
             user_id=confirmation.user_id,
             recognized_track=confirmation.selected_track,
             options=confirmation.options,
+            confirmation_id=confirmation.token,
         )
         submission = await self._use_case.execute(request, target=target)
         self._confirmations.pop(token, None)

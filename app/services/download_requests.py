@@ -8,7 +8,8 @@ from app.core.download import (
     DownloadSubmission,
     DownloadSubmissionState,
 )
-from app.core.enums import TelegramDeliveryStatus
+from app.core.enums import DownloadJobStatus, TelegramDeliveryStatus
+from app.services.download_lifecycle import DownloadLifecycleService
 from app.services.telegram_requests import TelegramTrackRequestService
 from app.storage import Database
 from app.storage.models import TelegramDeliveryRequest
@@ -17,9 +18,15 @@ from app.storage.models import TelegramDeliveryRequest
 class ExistingDeliverySubmissionService:
     """Uses Stage 9's request/outbox lifecycle; it never owns a queue or downloader."""
 
-    def __init__(self, database: Database, requests: TelegramTrackRequestService) -> None:
+    def __init__(
+        self,
+        database: Database,
+        requests: TelegramTrackRequestService,
+        lifecycle: DownloadLifecycleService | None = None,
+    ) -> None:
         self._database = database
         self._requests = requests
+        self._lifecycle = lifecycle
 
     async def submit(
         self,
@@ -55,6 +62,20 @@ class ExistingDeliverySubmissionService:
             )
             if started.accepted and started.request is not None:
                 delivery = started.request
+
+        if self._lifecycle is not None and request.confirmation_id is not None:
+            await self._lifecycle.admit(
+                confirmation_id=request.confirmation_id,
+                request=request,
+                canonical_track_id=canonical_track_id,
+                target=target,
+                initial_status=(
+                    DownloadJobStatus.PENDING
+                    if delivery.status is TelegramDeliveryStatus.AWAITING_QUALITY
+                    else DownloadJobStatus.QUEUED
+                ),
+                telegram_delivery_request_id=delivery.id,
+            )
 
         return DownloadSubmission(
             request=request,

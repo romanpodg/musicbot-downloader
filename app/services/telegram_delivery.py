@@ -16,6 +16,7 @@ from app.core.enums import (
 )
 from app.i18n import LocalizationService
 from app.services.delivery import DeliveryPreparationService
+from app.services.download_lifecycle import DownloadLifecycleService
 from app.services.telegram_cache import TelegramFileCacheService
 from app.storage import Database
 from app.storage.models import TelegramDeliveryRequest
@@ -40,6 +41,7 @@ class TelegramDeliveryWorker:
         max_attempts: int,
         wake_event: asyncio.Event,
         lease_seconds: float = DEFAULT_LEASE_SECONDS,
+        lifecycle: DownloadLifecycleService | None = None,
     ) -> None:
         self._database = database
         self._preparation = preparation
@@ -49,6 +51,7 @@ class TelegramDeliveryWorker:
         self._max_attempts = max_attempts
         self._wake_event = wake_event
         self._lease = timedelta(seconds=lease_seconds)
+        self._lifecycle = lifecycle
 
     async def claim(self, worker_id: str) -> TelegramDeliveryRequest | None:
         now = utc_now()
@@ -141,6 +144,22 @@ class TelegramDeliveryWorker:
                 extra={"telegram_request_id": request.id, "track_id": request.track_id},
             )
             await self._retry(request, worker_id, "DELIVERY_FAILED", retryable=True)
+        finally:
+            if self._lifecycle is not None:
+                try:
+                    async with self._database.transaction() as repositories:
+                        current = await repositories.telegram_delivery.get(request.id)
+                    if current is not None:
+                        await self._lifecycle.reconcile_telegram_delivery(
+                            request.id,
+                            current.status.value,
+                            current.last_error_code,
+                        )
+                except Exception:
+                    logger.info(
+                        "Could not reconcile download lifecycle",
+                        extra={"telegram_request_id": request.id},
+                    )
 
     async def _send_private_delivery_notice(self, request: TelegramDeliveryRequest) -> None:
         """Best-effort origin-chat guidance for an unreachable USER target."""

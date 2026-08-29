@@ -25,6 +25,7 @@ from app.core.models import (
     WorkerPoolSnapshot,
 )
 from app.services.artifacts import ArtifactPathError, DownloadArtifactManager
+from app.services.download_lifecycle import DownloadLifecycleService
 from app.services.queues import (
     DownloadQueueService,
     SubscriberLifecycleNotifier,
@@ -554,6 +555,7 @@ class QueueManager:
         *,
         singleflight: SingleFlightService | None = None,
         reconcile_seconds: float = 1.0,
+        download_lifecycle: DownloadLifecycleService | None = None,
     ) -> None:
         self._settings = settings
         self._worker_settings = worker_settings
@@ -565,6 +567,7 @@ class QueueManager:
         )
         self._singleflight = singleflight
         self._reconcile_seconds = reconcile_seconds
+        self._download_lifecycle = download_lifecycle
         self._reconciler: asyncio.Task[None] | None = None
         self._started = False
         worker_settings.attach_resizer(self)
@@ -651,6 +654,8 @@ class QueueManager:
                     await self._upload_pool.resize(values.upload.current)
                 if self._singleflight is not None:
                     await self._singleflight.reconcile()
+                if self._download_lifecycle is not None:
+                    await self._download_lifecycle.recover()
             except asyncio.CancelledError:
                 return
             except Exception:

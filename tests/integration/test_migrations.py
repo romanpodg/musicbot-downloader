@@ -547,7 +547,7 @@ def test_stage19_migration_is_independent_and_round_trips_with_legacy_backfill(
     config = Config("alembic.ini")
     try:
         script = ScriptDirectory.from_config(config)
-        assert script.get_heads() == ["20260825_0012"]
+        assert script.get_heads() == ["20260830_0013"]
         command.upgrade(config, "head")
         with sqlite3.connect(database_path) as connection:
             tables = {
