@@ -72,12 +72,12 @@ Host deterministic suite: `670 passed, 4 skipped, 4 deselected` (`uv run pytest 
 The skips are Windows-only FFmpeg/symlink capability skips. Ruff format, Ruff lint, mypy, and
 `git diff --check` pass. Focused migration and Stage 14–20 regressions pass.
 
-Linux/container validation: **PASS**. Fresh images from commit `636b6a8` completed
+Linux/container validation: **PASS**. Fresh images from commit `3e0ce0e` completed
 `scripts/validate-production.sh` with `673 passed, 4 deselected` and
 `STAGE12_4_CONTAINER_VALIDATION=PASS` on Linux/amd64.
 
-GitHub Actions `release-validation` run [#12](https://github.com/romanpodg/musicbot-downloader/actions/runs/33270484459)
-for commit `636b6a8` is **PASS**. Run #11 isolated the previous monolithic-step failure to
+GitHub Actions `release-validation` run [#13](https://github.com/romanpodg/musicbot-downloader/actions/runs/33270972623)
+for final commit `3e0ce0e` is **PASS**. Run #11 isolated the previous monolithic-step failure to
 `uv run mypy app` on Linux: `app/services/instance_lock.py:125,157` reported missing
 `msvcrt.locking`, `LK_NBLCK`, and `LK_UNLCK` attributes. Loading `msvcrt` through an `Any`-typed
 import preserves Windows behavior and makes the Linux type check portable.
