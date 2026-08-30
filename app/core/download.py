@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from app.core.delivery_targets import DeliveryTarget
+from app.core.download_preferences import EffectiveDownloadProfile
 from app.core.enums import QualityProfile
 from app.core.search import Track
 from app.core.telegram_context import TelegramContext
@@ -32,6 +33,8 @@ class DownloadRequest:
     recognized_track: Track
     options: DownloadOptions = DownloadOptions()
     confirmation_id: str | None = None
+    # Filled at admission time; workers use this immutable snapshot only.
+    effective_profile: EffectiveDownloadProfile | None = None
 
     def __post_init__(self) -> None:
         if self.user_id <= 0:
@@ -42,6 +45,10 @@ class DownloadRequest:
             raise TypeError("download request options must be DownloadOptions")
         if self.confirmation_id is not None and not self.confirmation_id:
             raise ValueError("confirmation ID must not be empty")
+        if self.effective_profile is not None and not isinstance(
+            self.effective_profile, EffectiveDownloadProfile
+        ):
+            raise TypeError("download request profile must be EffectiveDownloadProfile")
 
 
 @dataclass(frozen=True, slots=True)

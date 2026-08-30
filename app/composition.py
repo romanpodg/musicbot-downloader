@@ -53,6 +53,7 @@ from app.services.deep_links import DeepLinkRegistryService
 from app.services.delivery import DeliveryPreparationService
 from app.services.download_lifecycle import DownloadLifecycleService
 from app.services.download_pipeline import DownloadPipeline, NativeDownloadBoundary
+from app.services.download_preferences import UserDownloadPreferencesService
 from app.services.download_requests import ExistingDeliverySubmissionService
 from app.services.media import MediaProbe, Transcoder
 from app.services.provider_accounts import ProviderAccountManagementService
@@ -252,7 +253,9 @@ async def compose_stage9(
         notifier=notifier,
         upload_queue=uploads,
     )
-    lifecycle = DownloadLifecycleService(database)
+    lifecycle = DownloadLifecycleService(
+        database, capability_provider=getattr(provider, "provider_capabilities", None)
+    )
     stage8 = await compose_stage8(
         database,
         settings,
@@ -304,6 +307,7 @@ async def compose_stage9(
     )
     i18n = LocalizationService(settings.supported_locales, settings.default_locale)
     users = TelegramUserService(database, i18n, owner_id=settings.owner_id)
+    download_preferences = UserDownloadPreferencesService(database)
     ux_states = UserUxStateService()
     ux_progress = UxProgressService(ux_states)
     search_registry = TrackSearchProviderRegistry(
@@ -449,6 +453,7 @@ async def compose_stage9(
                 requests,
                 telegram_presentation,
                 chat_contexts,
+                download_preferences,
             )
         )
     )

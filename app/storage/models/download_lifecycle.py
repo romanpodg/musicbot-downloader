@@ -8,9 +8,11 @@ with a shared SingleFlight job.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Enum,
     ForeignKey,
@@ -22,22 +24,22 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.delivery_targets import DeliveryTargetType
+from app.core.download_preferences import EffectiveDownloadProfile
 from app.core.enums import (
+    DeliveryMode,
     DownloadDeliveryStatus,
     DownloadJobStatus,
     DownloadPhase,
     DownloadSourceType,
+    FormatPreference,
     MusicProviderName,
+    QualityPreference,
 )
 from app.storage.models.base import Base, TimestampMixin, UTCDateTime, utc_now
 
 
 def _enum(
-    enum_type: type[DownloadJobStatus]
-    | type[DownloadPhase]
-    | type[DownloadSourceType]
-    | type[DownloadDeliveryStatus]
-    | type[DeliveryTargetType],
+    enum_type: type[Any],
     length: int,
 ) -> Enum:
     return Enum(
@@ -54,6 +56,7 @@ class DownloadRequestRecord(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("confirmation_id", name="uq_download_requests_confirmation"),
         Index("ix_download_requests_user_created", "requester_user_id", "created_at"),
+        Index("ix_download_requests_profile_quality", "effective_quality"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -71,6 +74,72 @@ class DownloadRequestRecord(TimestampMixin, Base):
         _enum(DeliveryTargetType, 16), nullable=False
     )
     delivery_target_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # Nullable for Stage 21 rows admitted before profile snapshotting existed.
+    requested_quality: Mapped[QualityPreference | None] = mapped_column(
+        _enum(QualityPreference, 32)
+    )
+    effective_quality: Mapped[QualityPreference | None] = mapped_column(
+        _enum(QualityPreference, 32)
+    )
+    requested_format: Mapped[FormatPreference | None] = mapped_column(_enum(FormatPreference, 16))
+    effective_format: Mapped[FormatPreference | None] = mapped_column(_enum(FormatPreference, 16))
+    delivery_mode: Mapped[DeliveryMode | None] = mapped_column(_enum(DeliveryMode, 16))
+    embed_metadata: Mapped[bool | None] = mapped_column(Boolean)
+    embed_cover: Mapped[bool | None] = mapped_column(Boolean)
+    profile_fallback_applied: Mapped[bool | None] = mapped_column(Boolean)
+    profile_fallback_reason: Mapped[str | None] = mapped_column(String(64))
+
+    @property
+    def effective_profile(self) -> EffectiveDownloadProfile | None:
+        """Reconstruct the frozen profile without consulting live preferences."""
+
+        if None in {
+            self.requested_quality,
+            self.effective_quality,
+            self.requested_format,
+            self.effective_format,
+            self.delivery_mode,
+            self.embed_metadata,
+            self.embed_cover,
+            self.profile_fallback_applied,
+        }:
+            return None
+        from app.core.enums import ProfileFallbackReason
+
+        requested_quality = self.requested_quality
+        effective_quality = self.effective_quality
+        requested_format = self.requested_format
+        effective_format = self.effective_format
+        delivery_mode = self.delivery_mode
+        embed_metadata = self.embed_metadata
+        embed_cover = self.embed_cover
+        fallback_applied = self.profile_fallback_applied
+        assert (
+            requested_quality is not None
+            and effective_quality is not None
+            and requested_format is not None
+            and effective_format is not None
+            and delivery_mode is not None
+            and embed_metadata is not None
+            and embed_cover is not None
+            and fallback_applied is not None
+        )
+
+        return EffectiveDownloadProfile(
+            requested_quality=requested_quality,
+            effective_quality=effective_quality,
+            requested_format=requested_format,
+            effective_format=effective_format,
+            delivery_mode=delivery_mode,
+            embed_metadata=embed_metadata,
+            embed_cover=embed_cover,
+            fallback_applied=fallback_applied,
+            fallback_reason=(
+                ProfileFallbackReason(self.profile_fallback_reason)
+                if self.profile_fallback_reason
+                else None
+            ),
+        )
 
 
 class DownloadLifecycleJob(TimestampMixin, Base):

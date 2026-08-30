@@ -12,12 +12,20 @@ from pathlib import Path
 
 from app.core.delivery_targets import DeliveryTargetType
 from app.core.download import DownloadDeliveryTarget, DownloadRequest
+from app.core.download_preferences import (
+    DownloadProfileResolver,
+    UserDownloadPreferences,
+)
 from app.core.enums import (
     DownloadFailureCode,
     DownloadJobStatus,
     DownloadPhase,
     DownloadSourceType,
+    MusicProviderName,
+    QualityPreference,
 )
+from app.core.models import ProviderCapabilities
+from app.providers.onthespot.capabilities import ONTHESPOT_CAPABILITIES
 from app.storage import Database
 from app.storage.models.base import utc_now
 from app.storage.models.download_lifecycle import (
@@ -47,6 +55,8 @@ class DownloadLifecycleService:
         lease_seconds: float = 60.0,
         clock: Callable[[], datetime] = utc_now,
         random_source: Callable[[], float] | None = None,
+        profile_resolver: DownloadProfileResolver | None = None,
+        capability_provider: Callable[[MusicProviderName], ProviderCapabilities] | None = None,
     ) -> None:
         if max_attempts < 1 or lease_seconds <= 0:
             raise ValueError("invalid lifecycle limits")
@@ -55,6 +65,8 @@ class DownloadLifecycleService:
         self.lease_seconds = lease_seconds
         self.clock = clock
         self._random = random_source or random.random
+        self._profile_resolver = profile_resolver or DownloadProfileResolver()
+        self._capability_provider = capability_provider
 
     async def admit(
         self,
@@ -77,6 +89,33 @@ class DownloadLifecycleService:
             user = await repositories.users.get_by_telegram_id(request.user_id)
             if user is None:
                 raise ValueError("download user is not available")
+            profile = request.effective_profile
+            if profile is None:
+                preferences = await repositories.download_preferences.get_effective(user.id)
+                if request.options.quality_profile is not None:
+                    requested = {
+                        "LOSSLESS": QualityPreference.LOSSLESS,
+                        "MP3_320": QualityPreference.HIGH,
+                        "MP3_128": QualityPreference.STANDARD,
+                        "AAC_256": QualityPreference.HIGH,
+                    }[request.options.quality_profile.value]
+                    preferences = UserDownloadPreferences(
+                        user_id=user.id,
+                        quality=requested,
+                        format=preferences.format,
+                        delivery_mode=preferences.delivery_mode,
+                        embed_metadata=preferences.embed_metadata,
+                        embed_cover=preferences.embed_cover,
+                    )
+                capabilities = (
+                    self._capability_provider(provider)
+                    if self._capability_provider is not None and provider is not None
+                    else ONTHESPOT_CAPABILITIES.get(provider)
+                )
+                if capabilities is not None:
+                    profile = self._profile_resolver.resolve(
+                        preferences, capabilities, capabilities.media
+                    )
             stored_request, job, delivery = await repositories.download_lifecycle.admit(
                 requester_user_id=user.id,
                 confirmation_id=confirmation_id,
@@ -90,6 +129,7 @@ class DownloadLifecycleService:
                 max_attempts=self.max_attempts,
                 initial_status=initial_status,
                 telegram_delivery_request_id=telegram_delivery_request_id,
+                profile=profile,
             )
         logger.info(
             "download_lifecycle_admitted",

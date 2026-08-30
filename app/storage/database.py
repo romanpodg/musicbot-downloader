@@ -33,6 +33,7 @@ from app.storage.repositories import (
     TrackRepository,
     TrackSourceRepository,
     UploadJobRepository,
+    UserDownloadPreferencesRepository,
     UserRepository,
 )
 
@@ -53,6 +54,7 @@ class Repositories:
     telegram_delivery: TelegramDeliveryRepository
     telegram_album: TelegramAlbumRepository
     download_lifecycle: DownloadLifecycleRepository
+    download_preferences: UserDownloadPreferencesRepository
 
 
 class Database:
@@ -100,6 +102,7 @@ class Database:
             telegram_delivery=TelegramDeliveryRepository(session),
             telegram_album=TelegramAlbumRepository(session),
             download_lifecycle=DownloadLifecycleRepository(session),
+            download_preferences=UserDownloadPreferencesRepository(session),
         )
 
     @staticmethod

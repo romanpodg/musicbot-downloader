@@ -51,7 +51,7 @@ async def test_online_backup_is_valid_live_safe_and_non_overwriting(
         destination = tmp_path / "backup.db"
         result = await SQLiteBackupService(database).create(destination)
         assert result.destination == destination
-        assert result.schema_revision == "20260830_0013"
+        assert result.schema_revision == "20260830_0014"
         with sqlite3.connect(destination) as backup:
             assert backup.execute("PRAGMA integrity_check").fetchone() == ("ok",)
             assert backup.execute("SELECT title FROM tracks WHERE id=1").fetchone() == (
@@ -229,5 +229,5 @@ async def test_online_backup_remains_valid_during_controlled_writes(
     with sqlite3.connect(result.destination) as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "20260830_0013",
+            "20260830_0014",
         )

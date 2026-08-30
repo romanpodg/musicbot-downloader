@@ -7,6 +7,7 @@ from app.storage.models.download_lifecycle import (
     DownloadLifecycleJob,
     DownloadRequestRecord,
 )
+from app.storage.models.download_preferences import UserDownloadPreferencesRecord
 from app.storage.models.operational_audit import OperationalAuditEvent
 from app.storage.models.queue import (
     DownloadFlight,
@@ -29,6 +30,7 @@ __all__ = [
     "DownloadRequestRecord",
     "DownloadLifecycleJob",
     "DownloadDelivery",
+    "UserDownloadPreferencesRecord",
     "DeepLinkRegistryEntry",
     "DownloadFlight",
     "JobSubscriber",

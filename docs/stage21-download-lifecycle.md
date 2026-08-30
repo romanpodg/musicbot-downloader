@@ -22,4 +22,3 @@ cleaned, including orphan cleanup.
 Telegram’s external send and SQLite commit still have an unavoidable crash
 window. The lifecycle therefore provides idempotent admission and best-effort
 deduplicated delivery, not mathematically exactly-once external side effects.
-

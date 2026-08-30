@@ -14,6 +14,7 @@ from app.core.enums import (
     DownloadPlanOperation,
     DownloadPlanReadiness,
     DownloadPlanReason,
+    FormatPreference,
     MusicProviderName,
     NativeCodec,
     NativeContainer,
@@ -23,6 +24,7 @@ from app.core.enums import (
     ProviderResolutionStatus,
     ProviderRuntimeStatus,
     QualityCandidateRejectionReason,
+    QualityPreference,
     QualityProfile,
     QualityResolutionStatus,
     QueueJobStatus,
@@ -48,7 +50,7 @@ class NativeMediaInfo:
 class ProviderMediaCapabilities:
     """Provider implementation facts; unknown and unsupported stay distinct."""
 
-    known: bool
+    known: bool = True
     supports_lossy: bool | None = None
     supports_lossless: bool | None = None
     native_codecs: frozenset[NativeCodec] = field(default_factory=frozenset)
@@ -57,15 +59,26 @@ class ProviderMediaCapabilities:
     potential_media: tuple[NativeMediaInfo, ...] = ()
     max_sample_rate_hz: int | None = None
     max_bit_depth: int | None = None
+    # Optional provider-neutral translation for item-specific capabilities.
+    qualities: frozenset[QualityPreference] = field(default_factory=frozenset)
+    formats: frozenset[FormatPreference] = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True, slots=True)
 class ProviderCapabilities:
-    metadata_supported: bool
-    search_supported: bool
-    download_supported: bool
-    requires_auth: bool | None
-    media: ProviderMediaCapabilities
+    metadata_supported: bool = True
+    search_supported: bool = True
+    download_supported: bool = True
+    requires_auth: bool | None = None
+    media: ProviderMediaCapabilities = field(default_factory=ProviderMediaCapabilities)
+    # Stage 22 provider-neutral capability translation.  Empty values retain
+    # compatibility with older adapters; the resolver derives them from media.
+    qualities: frozenset[QualityPreference] = field(default_factory=frozenset)
+    formats: frozenset[FormatPreference] = field(default_factory=frozenset)
+
+
+# Narrow alias used by Stage 22 callers without introducing a second media model.
+MediaCapabilities = ProviderMediaCapabilities
 
 
 @dataclass(frozen=True, slots=True)

@@ -8,7 +8,13 @@ from dataclasses import dataclass
 
 from aiogram import Bot, F, Router
 from aiogram.filters import BaseFilter, Command, CommandStart
-from aiogram.types import CallbackQuery, ForceReply, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    CallbackQuery,
+    ForceReply,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 from aiogram.types import User as AiogramUser
 
 from app.application.download import DownloadConfirmation, DownloadService
@@ -17,7 +23,9 @@ from app.application.ux.services.errors import UxErrorService
 from app.application.ux.services.state import UxState
 from app.core.delivery_targets import DeliveryTarget, PrivateUserTarget
 from app.core.download import DownloadDeliveryTarget, DownloadSubmissionState
+from app.core.enums import DeliveryMode, FormatPreference, QualityPreference
 from app.core.telegram_context import TelegramChatType, TelegramContext
+from app.services.download_preferences import UserDownloadPreferencesService
 from app.services.telegram_context import ChatContextAccessService
 from app.services.telegram_requests import TelegramTrackRequestService
 from app.services.telegram_users import TelegramUserProfile, TelegramUserService
@@ -25,6 +33,11 @@ from app.storage.models import User
 from app.telegram.callbacks import parse_ux_callback
 from app.telegram.context import telegram_context_from_values
 from app.telegram.download_callbacks import DownloadCallbackAction, parse_download_callback
+from app.telegram.download_preferences_callbacks import (
+    PreferenceSetting,
+    encode_preference_callback,
+    parse_preference_callback,
+)
 from app.telegram.keyboards import UxKeyboardFactory
 from app.telegram.messages import UxMessage, UxMessageService
 from app.telegram.presentation import TelegramPresentation
@@ -43,6 +56,7 @@ class UxHandlerDependencies:
     track_requests: TelegramTrackRequestService | None = None
     delivery_presentation: TelegramPresentation | None = None
     contexts: ChatContextAccessService | None = None
+    download_preferences: UserDownloadPreferencesService | None = None
 
 
 class SearchInputFilter(BaseFilter):
@@ -92,6 +106,60 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
             )
             return
         await _handle_search_query(message, dependencies, query)
+
+    @router.message(Command("settings"))
+    async def settings_command(message: Message) -> None:
+        if dependencies.download_preferences is None or message.from_user is None:
+            await _handle_message(message, dependencies, dependencies.flows.open_menu)
+            return
+        try:
+            user = await dependencies.users.observe(_profile(message.from_user))
+            prefs = await dependencies.download_preferences.get_for_telegram_user(
+                message.from_user.id
+            )
+            locale = dependencies.users.locale_for(user)
+            await message.answer(
+                _settings_text(prefs, locale), reply_markup=_settings_keyboard(prefs, locale)
+            )
+        except Exception as exc:
+            logger.error("Telegram settings command failed")
+            await message.answer(
+                dependencies.messages.get(
+                    dependencies.errors.message_name(exc).value,
+                    dependencies.messages.default_locale,
+                )
+            )
+
+    @router.callback_query(F.data.startswith("dp1:"))
+    async def settings_callback(callback: CallbackQuery) -> None:
+        parsed = parse_preference_callback(callback.data)
+        if parsed is None or dependencies.download_preferences is None:
+            await _invalid_callback(callback, dependencies)
+            return
+        try:
+            values: dict[str, object]
+            if parsed.setting is PreferenceSetting.QUALITY:
+                values = {"quality": QualityPreference(parsed.value)}
+            elif parsed.setting is PreferenceSetting.FORMAT:
+                values = {"format": FormatPreference(parsed.value)}
+            elif parsed.setting is PreferenceSetting.DELIVERY:
+                values = {"delivery_mode": DeliveryMode(parsed.value)}
+            elif parsed.setting is PreferenceSetting.METADATA:
+                values = {"embed_metadata": parsed.value == "on"}
+            else:
+                values = {"embed_cover": parsed.value == "on"}
+            prefs = await dependencies.download_preferences.update_for_telegram_user(
+                callback.from_user.id, **values
+            )
+            user = await dependencies.users.observe(_profile(callback.from_user))
+            locale = dependencies.users.locale_for(user)
+            if isinstance(callback.message, Message):
+                await callback.message.edit_text(
+                    _settings_text(prefs, locale), reply_markup=_settings_keyboard(prefs, locale)
+                )
+            await callback.answer()
+        except Exception as exc:
+            await _operation_failed_callback(callback, dependencies, exc)
 
     @router.message(SearchInputFilter(dependencies.flows))
     async def search_input(message: Message) -> None:
@@ -394,6 +462,66 @@ async def _render_initial_quality(
 
 def _profile(user: AiogramUser) -> TelegramUserProfile:
     return TelegramUserProfile(user.id, user.username, user.first_name, user.language_code)
+
+
+def _settings_text(prefs: object, locale: str) -> str:
+    from app.core.download_preferences import UserDownloadPreferences
+
+    if not isinstance(prefs, UserDownloadPreferences):
+        raise TypeError("invalid settings value")
+    return (
+        "⚙ Download settings\n\n"
+        f"Quality: {prefs.quality.value}\n"
+        f"Format: {prefs.format.value}\n"
+        f"Delivery: {prefs.delivery_mode.value}\n"
+        f"Metadata: {'On' if prefs.embed_metadata else 'Off'}\n"
+        f"Cover artwork: {'On' if prefs.embed_cover else 'Off'}"
+    )
+
+
+def _settings_keyboard(prefs: object, locale: str) -> InlineKeyboardMarkup:
+    from app.core.download_preferences import UserDownloadPreferences
+
+    if not isinstance(prefs, UserDownloadPreferences):
+        raise TypeError("invalid settings value")
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=("✓ " if value is prefs.quality else "") + value.value,
+                callback_data=encode_preference_callback(PreferenceSetting.QUALITY, value.value),
+            )
+            for value in QualityPreference
+        ],
+        [
+            InlineKeyboardButton(
+                text=("✓ " if value is prefs.format else "") + value.value,
+                callback_data=encode_preference_callback(PreferenceSetting.FORMAT, value.value),
+            )
+            for value in FormatPreference
+        ],
+        [
+            InlineKeyboardButton(
+                text=("✓ " if value is prefs.delivery_mode else "") + value.value,
+                callback_data=encode_preference_callback(PreferenceSetting.DELIVERY, value.value),
+            )
+            for value in DeliveryMode
+        ],
+        [
+            InlineKeyboardButton(
+                text=f"Metadata: {'On' if prefs.embed_metadata else 'Off'}",
+                callback_data=encode_preference_callback(
+                    PreferenceSetting.METADATA, "off" if prefs.embed_metadata else "on"
+                ),
+            ),
+            InlineKeyboardButton(
+                text=f"Cover: {'On' if prefs.embed_cover else 'Off'}",
+                callback_data=encode_preference_callback(
+                    PreferenceSetting.COVER, "off" if prefs.embed_cover else "on"
+                ),
+            ),
+        ],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def _invoke_operation(

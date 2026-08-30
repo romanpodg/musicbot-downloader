@@ -16,6 +16,37 @@ class QualityProfile(StrEnum):
     LOSSLESS = "LOSSLESS"
 
 
+class QualityPreference(StrEnum):
+    """Provider-neutral quality defaults exposed to users."""
+
+    BEST_AVAILABLE = "best_available"
+    LOSSLESS = "lossless"
+    HIGH = "high"
+    STANDARD = "standard"
+
+
+class FormatPreference(StrEnum):
+    """Output format preferences; ORIGINAL preserves provider-native media."""
+
+    ORIGINAL = "original"
+    FLAC = "flac"
+    MP3 = "mp3"
+    M4A = "m4a"
+
+
+class DeliveryMode(StrEnum):
+    """Telegram presentation mode, distinct from delivery target routing."""
+
+    AUDIO = "audio"
+    DOCUMENT = "document"
+
+
+class ProfileFallbackReason(StrEnum):
+    LOSSLESS_UNAVAILABLE = "lossless_unavailable"
+    HIGH_UNAVAILABLE = "high_unavailable"
+    STANDARD_UNAVAILABLE = "standard_unavailable"
+
+
 class QualityResolutionStatus(StrEnum):
     RESOLVED = "RESOLVED"
     NO_AVAILABLE_PROVIDER = "NO_AVAILABLE_PROVIDER"

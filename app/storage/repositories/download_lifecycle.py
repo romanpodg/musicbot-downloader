@@ -11,6 +11,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.delivery_targets import DeliveryTargetType
+from app.core.download_preferences import EffectiveDownloadProfile
 from app.core.enums import DownloadDeliveryStatus, DownloadJobStatus, DownloadPhase
 from app.storage.models.download_lifecycle import (
     DownloadDelivery,
@@ -38,6 +39,7 @@ class DownloadLifecycleRepository:
         max_attempts: int = 3,
         initial_status: DownloadJobStatus = DownloadJobStatus.QUEUED,
         telegram_delivery_request_id: int | None = None,
+        profile: EffectiveDownloadProfile | None = None,
     ) -> tuple[DownloadRequestRecord, DownloadLifecycleJob, DownloadDelivery]:
         # SQLite serializes this short admission transaction.  The unique
         # confirmation/request constraints remain the final race invariant.
@@ -55,6 +57,17 @@ class DownloadLifecycleRepository:
                 delivery_target_id=delivery_target_id,
                 created_at=now,
                 updated_at=now,
+                requested_quality=(profile.requested_quality if profile else None),
+                effective_quality=(profile.effective_quality if profile else None),
+                requested_format=(profile.requested_format if profile else None),
+                effective_format=(profile.effective_format if profile else None),
+                delivery_mode=(profile.delivery_mode if profile else None),
+                embed_metadata=(profile.embed_metadata if profile else None),
+                embed_cover=(profile.embed_cover if profile else None),
+                profile_fallback_applied=(profile.fallback_applied if profile else None),
+                profile_fallback_reason=(
+                    profile.fallback_reason.value if profile and profile.fallback_reason else None
+                ),
             )
             .on_conflict_do_nothing(index_elements=[DownloadRequestRecord.confirmation_id])
         )
