@@ -123,6 +123,12 @@ class DownloadLifecycleService:
                 source_reference=str(canonical_track_id),
                 provider=provider.value if provider is not None else None,
                 provider_media_id=request.recognized_track.provider_track_id,
+                media_title=request.recognized_track.title,
+                media_artist=", ".join(artist.name for artist in request.recognized_track.artists),
+                media_album=(
+                    request.recognized_track.album.title if request.recognized_track.album else None
+                ),
+                replay_of_request_id=request.replay_of_request_id,
                 delivery_target_type=target.delivery_target.target_type,
                 delivery_target_id=target.delivery_target.chat_id,
                 now=now,

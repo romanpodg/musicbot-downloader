@@ -7,6 +7,7 @@ from app.storage.repositories.download_preferences import UserDownloadPreference
 from app.storage.repositories.operational_audit import OperationalAuditRepository
 from app.storage.repositories.singleflight import SingleFlightRepository
 from app.storage.repositories.telegram_album import TelegramAlbumRepository
+from app.storage.repositories.telegram_artifact_cache import TelegramArtifactCacheRepository
 from app.storage.repositories.telegram_cache import TelegramFileCacheRepository
 from app.storage.repositories.telegram_context import TelegramContextRepository
 from app.storage.repositories.telegram_delivery import TelegramDeliveryRepository
@@ -27,6 +28,7 @@ __all__ = [
     "RuntimeSettingsRepository",
     "SingleFlightRepository",
     "TelegramFileCacheRepository",
+    "TelegramArtifactCacheRepository",
     "TelegramContextRepository",
     "TelegramDeliveryRepository",
     "TelegramAlbumRepository",

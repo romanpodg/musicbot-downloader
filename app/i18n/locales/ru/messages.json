@@ -313,5 +313,7 @@
   "ux.button.back": "Назад",
   "ux.button.confirm": "Подтвердить",
   "ux.button.download": "Скачать",
-  "ux.button.cancel": "Отмена"
+  "ux.button.cancel": "Отмена",
+  "bot.batch_cancel_remaining": "Отменить оставшиеся",
+  "bot.batch_retry_failed": "Повторить неудачные"
 }

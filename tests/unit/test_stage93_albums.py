@@ -8,7 +8,7 @@ import pytest
 from app.core.enums import AlbumRequestStatus, MusicProviderName, QualityProfile
 from app.core.exceptions import AlbumTooLarge, UnsupportedMediaType
 from app.i18n import LocalizationService
-from app.providers.base import AlbumReference, TrackReference
+from app.providers.base import AlbumReference, PlaylistReference, TrackReference
 from app.providers.onthespot.provider import OnTheSpotProvider
 from app.services.telegram_albums import AlbumCard, AlbumSelectionPage
 from app.storage.models import TelegramAlbumItem
@@ -85,8 +85,10 @@ def test_track_playlist_and_malformed_routing_remain_distinct() -> None:
         provider.detect_media("https://open.spotify.com/track/0123456789012345678901"),
         TrackReference,
     )
-    with pytest.raises(UnsupportedMediaType):
-        provider.detect_media("https://open.spotify.com/playlist/0123456789012345678901")
+    assert isinstance(
+        provider.detect_media("https://open.spotify.com/playlist/0123456789012345678901"),
+        PlaylistReference,
+    )
     with pytest.raises(UnsupportedMediaType):
         provider.detect_media("https://music.youtube.com/playlist?list=synthetic")
 

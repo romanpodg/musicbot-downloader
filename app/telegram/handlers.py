@@ -10,6 +10,8 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from aiogram.types import User as AiogramUser
 
+from app.core.delivery_targets import PrivateUserTarget
+from app.core.download import DownloadDeliveryTarget
 from app.core.enums import AlbumRequestStatus, DeepLinkTargetType, TelegramDeliveryStatus
 from app.core.exceptions import (
     AlbumResolutionFailed,
@@ -22,7 +24,14 @@ from app.core.exceptions import (
     UnsupportedProvider,
 )
 from app.core.telegram_context import TelegramChatType
+from app.services.batch_download import (
+    ActiveBatchLimitExceeded,
+    BatchDownloadService,
+    BatchLimitExceeded,
+)
 from app.services.deep_links import DeepLinkRegistryService
+from app.services.download_history import DownloadHistoryService
+from app.services.download_preferences import UserDownloadPreferencesService
 from app.services.telegram_albums import (
     AlbumActionOutcome,
     AlbumActionResult,
@@ -52,7 +61,11 @@ from app.telegram.presentation import (
     parse_album_select_tracks,
     parse_album_selection_back,
     parse_album_toggle,
+    parse_batch_cancel,
+    parse_batch_download,
+    parse_batch_retry,
     parse_first_quality,
+    parse_history_callback,
     parse_locale,
     parse_other_quality,
     parse_setting_quality,
@@ -71,6 +84,9 @@ class TelegramHandlerDependencies:
     albums: TelegramAlbumRequestService | None = None
     deep_links: DeepLinkRegistryService | None = None
     contexts: ChatContextAccessService | None = None
+    batch_download: BatchDownloadService | None = None
+    download_preferences: UserDownloadPreferencesService | None = None
+    history: DownloadHistoryService | None = None
 
 
 def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
@@ -139,6 +155,83 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
             return
         locale = dependencies.users.locale_for(user)
         await message.answer(dependencies.presentation.text("bot.help", locale))
+
+    @router.message(Command("history"))
+    async def history_command(message: Message) -> None:
+        if dependencies.history is None or message.from_user is None:
+            return
+        user = await _observe_message(message, dependencies.users)
+        if user is None or not await _private(message, user, dependencies):
+            return
+        page = await dependencies.history.page(user.telegram_id)
+        locale = dependencies.users.locale_for(user)
+        await message.answer(
+            dependencies.presentation.history_text(page, locale),
+            reply_markup=dependencies.presentation.history_keyboard(page, locale),
+        )
+
+    @router.callback_query(F.data.startswith("h24:"))
+    async def history_callback(callback: CallbackQuery) -> None:
+        if dependencies.history is None:
+            await _invalid_callback(
+                callback, dependencies.presentation, dependencies.presentation.i18n.default_locale
+            )
+            return
+        parsed = parse_history_callback(callback.data)
+        user = await _observe_callback(callback, dependencies.users)
+        locale = dependencies.users.locale_for(user)
+        if parsed is None:
+            await _invalid_callback(callback, dependencies.presentation, locale)
+            return
+        try:
+            if parsed.action == "list":
+                page = await dependencies.history.page(user.telegram_id, cursor=parsed.cursor)
+                await _edit_or_send(
+                    callback,
+                    dependencies.presentation.history_text(page, locale),
+                    dependencies.presentation.history_keyboard(page, locale)
+                    or InlineKeyboardMarkup(inline_keyboard=[]),
+                )
+            elif parsed.action == "track" and parsed.identifier is not None:
+                entry = await dependencies.history.track(user.telegram_id, parsed.identifier)
+                if entry is None:
+                    await _invalid_callback(callback, dependencies.presentation, locale)
+                    return
+                await _edit_or_send(
+                    callback,
+                    dependencies.presentation.history_track_text(entry, locale),
+                    dependencies.presentation.history_track_keyboard(entry, locale),
+                )
+            elif parsed.action == "batch" and parsed.identifier is not None:
+                batch_entry = await dependencies.history.batch(user.telegram_id, parsed.identifier)
+                if batch_entry is None:
+                    await _invalid_callback(callback, dependencies.presentation, locale)
+                    return
+                await _edit_or_send(
+                    callback,
+                    dependencies.presentation.history_batch_text(batch_entry, locale),
+                    InlineKeyboardMarkup(inline_keyboard=[]),
+                )
+            elif (
+                parsed.action == "repeat"
+                and parsed.identifier is not None
+                and isinstance(callback.message, Message)
+            ):
+                result = await dependencies.history.repeat(
+                    user.telegram_id,
+                    parsed.identifier,
+                    target=_batch_target(callback, user.telegram_id),
+                )
+                if result is None:
+                    await _invalid_callback(callback, dependencies.presentation, locale)
+                    return
+                await callback.message.edit_text("Download queued")
+            else:
+                await _invalid_callback(callback, dependencies.presentation, locale)
+                return
+            await callback.answer()
+        except (ValueError, TypeError):
+            await _invalid_callback(callback, dependencies.presentation, locale)
 
     @router.message(Command("quality"))
     async def quality_command(message: Message) -> None:
@@ -341,6 +434,48 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
         if request_id is None or dependencies.albums is None:
             await _invalid_callback(callback, dependencies.presentation, locale)
             return
+        # Stage 23 batch admission is the only path for album Download all.
+        # The legacy album coordinator remains available for older callers but
+        # is deliberately not woken by this Telegram action.
+        if dependencies.batch_download is not None:
+            collection = await dependencies.albums.collection(
+                request_id=request_id, telegram_user_id=callback.from_user.id
+            )
+            if collection is None:
+                await _invalid_callback(callback, dependencies.presentation, locale)
+                return
+            preferences = (
+                await dependencies.download_preferences.get_for_telegram_user(callback.from_user.id)
+                if dependencies.download_preferences is not None
+                else None
+            )
+            if preferences is None:
+                await _invalid_callback(callback, dependencies.presentation, locale)
+                return
+            try:
+                batch = await dependencies.batch_download.create_from_collection(
+                    user_id=user.id,
+                    confirmation_id=f"album:{request_id}",
+                    collection=collection,
+                    preferences=preferences,
+                )
+            except BatchLimitExceeded:
+                await callback.answer(
+                    dependencies.presentation.text("bot.album_too_large", locale), show_alert=True
+                )
+                return
+            except ActiveBatchLimitExceeded:
+                await callback.answer(
+                    dependencies.presentation.text("bot.album_request_stale", locale),
+                    show_alert=True,
+                )
+                return
+            target = _batch_target(callback, user.id)
+            await dependencies.batch_download.admit_pending(batch.id, target=target)
+            await _remove_keyboard(callback)
+            await _render_batch(callback, dependencies, batch.id, locale)
+            await callback.answer(dependencies.presentation.text("bot.album_preparing", locale))
+            return
         result = await dependencies.albums.download_all(
             request_id=request_id, telegram_user_id=callback.from_user.id
         )
@@ -349,6 +484,53 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
             return
         await _remove_keyboard(callback)
         await callback.answer(dependencies.presentation.text("bot.album_preparing", locale))
+
+    @router.callback_query(F.data.startswith("bc1:"))
+    async def batch_cancel(callback: CallbackQuery) -> None:
+        user = await _observe_callback(callback, dependencies.users)
+        locale = dependencies.users.locale_for(user)
+        batch_id = parse_batch_cancel(callback.data)
+        if batch_id is None or dependencies.batch_download is None or user is None:
+            await _invalid_callback(callback, dependencies.presentation, locale)
+            return
+        changed = await dependencies.batch_download.cancel(batch_id, user_id=user.id)
+        if not changed:
+            await _invalid_callback(callback, dependencies.presentation, locale)
+            return
+        await dependencies.batch_download.reconcile(batch_id)
+        await _render_batch(callback, dependencies, batch_id, locale)
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("bd1:"))
+    async def batch_status(callback: CallbackQuery) -> None:
+        user = await _observe_callback(callback, dependencies.users)
+        locale = dependencies.users.locale_for(user)
+        batch_id = parse_batch_download(callback.data)
+        if batch_id is None or dependencies.batch_download is None or user is None:
+            await _invalid_callback(callback, dependencies.presentation, locale)
+            return
+        if not await _render_batch(callback, dependencies, batch_id, locale):
+            await _invalid_callback(callback, dependencies.presentation, locale)
+            return
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("br1:"))
+    async def batch_retry(callback: CallbackQuery) -> None:
+        user = await _observe_callback(callback, dependencies.users)
+        locale = dependencies.users.locale_for(user)
+        batch_id = parse_batch_retry(callback.data)
+        if batch_id is None or dependencies.batch_download is None or user is None:
+            await _invalid_callback(callback, dependencies.presentation, locale)
+            return
+        retry = await dependencies.batch_download.retry_failed(batch_id, user_id=user.id)
+        if retry is None:
+            await _invalid_callback(callback, dependencies.presentation, locale)
+            return
+        await dependencies.batch_download.admit_pending(
+            retry.id, target=_batch_target(callback, user.id)
+        )
+        await _render_batch(callback, dependencies, retry.id, locale)
+        await callback.answer()
 
     @router.callback_query(F.data.startswith("as1:"))
     async def album_select_tracks(callback: CallbackQuery) -> None:
@@ -662,6 +844,59 @@ async def _send_track_request_card(
         await message.answer(dependencies.presentation.text("bot.preparing_download", locale))
         return
     await _record_card_message(sent, request_id, user.telegram_id, dependencies.requests)
+
+
+def _batch_target(callback: CallbackQuery, user_id: int) -> DownloadDeliveryTarget:
+    message = callback.message
+    chat_id = message.chat.id if isinstance(message, Message) else user_id
+    chat_type = message.chat.type if isinstance(message, Message) else "private"
+    context = telegram_context_from_values(user_id, chat_id, chat_type)
+    if context is None:
+        context = telegram_context_from_values(user_id, user_id, "private")
+    assert context is not None
+    return DownloadDeliveryTarget(
+        user_id=user_id,
+        context=context,
+        delivery_target=PrivateUserTarget(user_id),
+        source_message_id=(message.message_id if isinstance(message, Message) else 1),
+    )
+
+
+async def _render_batch(
+    callback: CallbackQuery,
+    dependencies: TelegramHandlerDependencies,
+    batch_id: int,
+    locale: str,
+) -> bool:
+    service = dependencies.batch_download
+    if service is None:
+        return False
+    progress = await service.progress(batch_id)
+    if progress is None:
+        return False
+    async with service.database.transaction() as repositories:
+        batch = await repositories.batch_download.get(batch_id)
+    if batch is None:
+        return False
+    terminal = batch.status.value in {"COMPLETED", "PARTIAL", "FAILED", "CANCELLED"}
+    text = dependencies.presentation.batch_progress_text(
+        batch.title, progress, locale, terminal=terminal
+    )
+    markup = (
+        dependencies.presentation.batch_progress_keyboard(locale, batch_id=batch_id, retry=True)
+        if terminal and batch.status.value in {"PARTIAL", "FAILED"}
+        else (
+            dependencies.presentation.batch_progress_keyboard(locale, batch_id=batch_id)
+            if not terminal
+            else InlineKeyboardMarkup(inline_keyboard=[])
+        )
+    )
+    await _edit_or_send(
+        callback,
+        text,
+        markup,
+    )
+    return True
 
 
 async def _send_album_request_card(

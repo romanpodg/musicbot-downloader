@@ -28,6 +28,7 @@ from app.storage.repositories import (
     RuntimeSettingsRepository,
     SingleFlightRepository,
     TelegramAlbumRepository,
+    TelegramArtifactCacheRepository,
     TelegramContextRepository,
     TelegramDeliveryRepository,
     TelegramFileCacheRepository,
@@ -51,6 +52,7 @@ class Repositories:
     runtime_settings: RuntimeSettingsRepository
     singleflight: SingleFlightRepository
     telegram_cache: TelegramFileCacheRepository
+    telegram_artifact_cache: TelegramArtifactCacheRepository
     telegram_context: TelegramContextRepository
     telegram_delivery: TelegramDeliveryRepository
     telegram_album: TelegramAlbumRepository
@@ -100,6 +102,7 @@ class Database:
             runtime_settings=RuntimeSettingsRepository(session),
             singleflight=SingleFlightRepository(session),
             telegram_cache=TelegramFileCacheRepository(session),
+            telegram_artifact_cache=TelegramArtifactCacheRepository(session),
             telegram_context=TelegramContextRepository(session),
             telegram_delivery=TelegramDeliveryRepository(session),
             telegram_album=TelegramAlbumRepository(session),

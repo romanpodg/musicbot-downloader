@@ -17,9 +17,10 @@ from app.core.enums import (
 from app.i18n import LocalizationService
 from app.services.delivery import DeliveryPreparationService
 from app.services.download_lifecycle import DownloadLifecycleService
+from app.services.telegram_artifact_cache import TelegramArtifactCacheService
 from app.services.telegram_cache import TelegramFileCacheService
 from app.storage import Database
-from app.storage.models import TelegramDeliveryRequest
+from app.storage.models import DownloadRequestRecord, TelegramDeliveryRequest
 from app.storage.models.base import utc_now
 from app.telegram import TelegramCachedMediaSpec, TelegramGateway, TelegramGatewayError
 
@@ -42,6 +43,7 @@ class TelegramDeliveryWorker:
         wake_event: asyncio.Event,
         lease_seconds: float = DEFAULT_LEASE_SECONDS,
         lifecycle: DownloadLifecycleService | None = None,
+        artifact_cache: TelegramArtifactCacheService | None = None,
     ) -> None:
         self._database = database
         self._preparation = preparation
@@ -52,6 +54,7 @@ class TelegramDeliveryWorker:
         self._wake_event = wake_event
         self._lease = timedelta(seconds=lease_seconds)
         self._lifecycle = lifecycle
+        self._artifact_cache = artifact_cache
 
     async def claim(self, worker_id: str) -> TelegramDeliveryRequest | None:
         now = utc_now()
@@ -67,6 +70,10 @@ class TelegramDeliveryWorker:
 
     async def process(self, request: TelegramDeliveryRequest, worker_id: str) -> None:
         try:
+            if self._artifact_cache is not None and self._lifecycle is not None:
+                cached_result = await self._try_artifact_cache(request, worker_id)
+                if cached_result:
+                    return
             if request.quality_profile is None:
                 await self._terminal(request, worker_id, "QUALITY_NOT_SELECTED")
                 return
@@ -118,6 +125,7 @@ class TelegramDeliveryWorker:
                 )
             if delivered:
                 await self._cache.mark_used(cached.cache_id)
+                await self._record_artifact_cache(request, cached.file_id)
         except asyncio.CancelledError:
             await self._retry(request, worker_id, "DELIVERY_CANCELLED", retryable=True)
             raise
@@ -243,6 +251,69 @@ class TelegramDeliveryWorker:
             )
         if scheduled:
             self._wake_event.set()
+
+    async def _try_artifact_cache(self, request: TelegramDeliveryRequest, worker_id: str) -> bool:
+        assert self._artifact_cache is not None and self._lifecycle is not None
+        async with self._database.transaction() as repositories:
+            pair = await repositories.download_lifecycle.get_by_telegram_request(request.id)
+        if pair is None:
+            return False
+        lifecycle_job, _ = pair
+        lifecycle_request = await self._lifecycle_request(lifecycle_job.request_id)
+        if lifecycle_request is None:
+            return False
+        entry = await self._artifact_cache.lookup(lifecycle_request)
+        if entry is None:
+            return False
+        try:
+            from app.core.enums import DeliveryMode
+
+            spec = TelegramCachedMediaSpec(request.delivery_target.chat_id, entry.telegram_file_id)
+            receipt = (
+                await self._gateway.send_cached_audio(spec)
+                if lifecycle_request.delivery_mode in (None, DeliveryMode.AUDIO, "audio")
+                else await self._gateway.send_cached_document(spec)
+            )
+        except TelegramGatewayError as exc:
+            if exc.invalid_cached_file:
+                await self._artifact_cache.invalidate(entry.id, "INVALID_CACHED_FILE")
+                return False
+            await self._retry(
+                request,
+                worker_id,
+                exc.code,
+                retryable=exc.retryable,
+                retry_after_seconds=exc.retry_after_seconds,
+            )
+            return True
+        async with self._database.transaction() as repositories:
+            delivered = await repositories.telegram_delivery.delivered(
+                request_id=request.id,
+                worker_id=worker_id,
+                message_id=receipt.message_id,
+                now=utc_now(),
+            )
+        if delivered:
+            await self._artifact_cache.mark_used(entry.id)
+        return True
+
+    async def _lifecycle_request(self, request_id: int) -> DownloadRequestRecord | None:
+        async with self._database.transaction() as repositories:
+            return await repositories.download_lifecycle.get_request(request_id)
+
+    async def _record_artifact_cache(self, request: TelegramDeliveryRequest, file_id: str) -> None:
+        if self._artifact_cache is None or self._lifecycle is None:
+            return
+        async with self._database.transaction() as repositories:
+            pair = await repositories.download_lifecycle.get_by_telegram_request(request.id)
+        if pair is None:
+            return
+        _, delivery = pair
+        lifecycle_request = await self._lifecycle_request(pair[0].request_id)
+        if lifecycle_request is not None:
+            await self._artifact_cache.record_successful_delivery(
+                lifecycle_request, delivery_id=delivery.id, file_id=file_id
+            )
 
     async def _retry(
         self,

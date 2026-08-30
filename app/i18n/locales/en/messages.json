@@ -313,5 +313,7 @@
   "ux.button.back": "Back",
   "ux.button.confirm": "Confirm",
   "ux.button.download": "Download",
-  "ux.button.cancel": "Cancel"
+  "ux.button.cancel": "Cancel",
+  "bot.batch_cancel_remaining": "Cancel remaining",
+  "bot.batch_retry_failed": "Retry failed"
 }

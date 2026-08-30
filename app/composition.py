@@ -52,6 +52,7 @@ from app.services.batch_download import BatchDownloadService
 from app.services.crash_recovery import CrashRecoveryService
 from app.services.deep_links import DeepLinkRegistryService
 from app.services.delivery import DeliveryPreparationService
+from app.services.download_history import DownloadHistoryService
 from app.services.download_lifecycle import DownloadLifecycleService
 from app.services.download_pipeline import DownloadPipeline, NativeDownloadBoundary
 from app.services.download_preferences import UserDownloadPreferencesService
@@ -77,6 +78,7 @@ from app.services.telegram_album_coordinator import (
     TelegramAlbumCoordinatorManager,
 )
 from app.services.telegram_albums import TelegramAlbumRequestService, TelegramAlbumResolver
+from app.services.telegram_artifact_cache import TelegramArtifactCacheService
 from app.services.telegram_cache import TelegramFileCacheService
 from app.services.telegram_context import ChatContextAccessService, DeliveryTargetResolver
 from app.services.telegram_delivery import TelegramDeliveryFanoutManager, TelegramDeliveryWorker
@@ -175,6 +177,8 @@ class Stage9Components:
     ux_progress: UxProgressService
     download_lifecycle: DownloadLifecycleService
     batch_download: BatchDownloadService
+    artifact_cache: TelegramArtifactCacheService
+    history: DownloadHistoryService
 
     async def start(self) -> None:
         try:
@@ -182,6 +186,12 @@ class Stage9Components:
             lifecycle = getattr(self, "download_lifecycle", None)
             if lifecycle is not None:
                 await lifecycle.recover()
+            batch_service = getattr(self, "batch_download", None)
+            if batch_service is not None:
+                await batch_service.reconcile_all()
+            artifact_cache = getattr(self, "artifact_cache", None)
+            if artifact_cache is not None:
+                await artifact_cache.prune(max_entries=1000)
             await self.artifact_cleanup.sweep()
             await self.provider_accounts.reconcile_startup()
             await self.queue_manager.start()
@@ -258,6 +268,7 @@ async def compose_stage9(
     lifecycle = DownloadLifecycleService(
         database, capability_provider=getattr(provider, "provider_capabilities", None)
     )
+    artifact_cache = TelegramArtifactCacheService(database)
     stage8 = await compose_stage8(
         database,
         settings,
@@ -336,15 +347,17 @@ async def compose_stage9(
         telegram_bot_id=stage8.bot_identity.telegram_bot_id,
         wake_event=delivery_wake,
     )
+    submissions = ExistingDeliverySubmissionService(database, requests, lifecycle)
     download_use_case = DownloadTrackUseCase(
-        RecognizedTrackResolutionAdapter(track_resolution),
-        ExistingDeliverySubmissionService(database, requests, lifecycle),
+        RecognizedTrackResolutionAdapter(track_resolution), submissions
     )
     download_service = DownloadService(download_use_case)
+    history = DownloadHistoryService(database, lifecycle=lifecycle, submissions=submissions)
     batch_download = BatchDownloadService(
         database,
         provider,
         child_admitter=download_use_case.execute,
+        child_canceller=lifecycle.cancel,
         max_items=settings.max_batch_items,
         max_active_batches_per_user=settings.max_active_batches_per_user,
     )
@@ -475,6 +488,9 @@ async def compose_stage9(
                 albums,
                 deep_links,
                 chat_contexts,
+                batch_download=batch_download,
+                download_preferences=download_preferences,
+                history=history,
             )
         )
     )
@@ -487,6 +503,7 @@ async def compose_stage9(
         max_attempts=settings.telegram_delivery_max_attempts,
         wake_event=delivery_wake,
         lifecycle=lifecycle,
+        artifact_cache=artifact_cache,
     )
     fanout = TelegramDeliveryFanoutManager(
         delivery_worker,
@@ -545,4 +562,6 @@ async def compose_stage9(
         ux_progress=ux_progress,
         download_lifecycle=lifecycle,
         batch_download=batch_download,
+        artifact_cache=artifact_cache,
+        history=history,
     )

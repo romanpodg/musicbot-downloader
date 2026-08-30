@@ -9,8 +9,9 @@ from app.core.exceptions import (
     MetadataUnavailable,
     ProviderAuthenticationError,
     ProviderUnavailable,
+    UnsupportedMediaType,
 )
-from app.providers.base import AlbumReference, MusicProvider, TrackReference
+from app.providers.base import AlbumReference, MusicProvider, PlaylistReference, TrackReference
 from app.services.telegram_albums import TelegramAlbumRequestService
 from app.services.telegram_requests import TelegramTrackRequestService
 from app.storage.models import TelegramAlbumRequest, TelegramDeliveryRequest, User
@@ -67,4 +68,9 @@ class TelegramMediaRequestService:
                 ProviderUnavailable,
             ) as exc:
                 raise AlbumResolutionFailed() from exc
+        if isinstance(reference, PlaylistReference):
+            # The pinned OnTheSpot runtime currently exposes no playlist-item
+            # API. Keep recognition explicit and fail closed until a provider
+            # adapter can return a real immutable collection snapshot.
+            raise UnsupportedMediaType()
         raise TypeError("unsupported media reference")

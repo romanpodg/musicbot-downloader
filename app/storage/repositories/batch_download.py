@@ -24,6 +24,29 @@ class BatchDownloadRepository:
     async def get(self, batch_id: int) -> BatchDownloadRequest | None:
         return await self._session.get(BatchDownloadRequest, batch_id)
 
+    async def list_history(
+        self, user_id: int, *, after: tuple[datetime, int] | None, limit: int
+    ) -> list[BatchDownloadRequest]:
+        statement = select(BatchDownloadRequest).where(
+            BatchDownloadRequest.requester_user_id == user_id,
+            BatchDownloadRequest.parent_batch_id.is_(None),
+        )
+        if after is not None:
+            created_at, batch_id = after
+            statement = statement.where(
+                (BatchDownloadRequest.created_at < created_at)
+                | (
+                    (BatchDownloadRequest.created_at == created_at)
+                    & (BatchDownloadRequest.id < batch_id)
+                )
+            )
+        rows = await self._session.scalars(
+            statement.order_by(
+                BatchDownloadRequest.created_at.desc(), BatchDownloadRequest.id.desc()
+            ).limit(limit)
+        )
+        return list(rows)
+
     async def get_by_confirmation(self, confirmation_id: str) -> BatchDownloadRequest | None:
         return cast(
             BatchDownloadRequest | None,
@@ -50,6 +73,18 @@ class BatchDownloadRepository:
             )
             or 0
         )
+
+    async def list_reconcilable(self) -> tuple[BatchDownloadRequest, ...]:
+        result = await self._session.scalars(
+            select(BatchDownloadRequest)
+            .where(
+                BatchDownloadRequest.status.in_(
+                    (BatchStatus.PENDING, BatchStatus.EXPANDING, BatchStatus.ACTIVE)
+                )
+            )
+            .order_by(BatchDownloadRequest.id)
+        )
+        return tuple(result.all())
 
     async def create_snapshot(
         self,
@@ -87,10 +122,16 @@ class BatchDownloadRepository:
             "embed_metadata": getattr(requested, "embed_metadata", None),
             "embed_cover": getattr(requested, "embed_cover", None),
         }
-        await self._session.execute(sqlite_insert(BatchDownloadRequest).values(**values))
+        result = await self._session.execute(
+            sqlite_insert(BatchDownloadRequest)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=["confirmation_id"])
+        )
         batch = await self.get_by_confirmation(confirmation_id)
         if batch is None:
             raise RuntimeError("batch admission failed")
+        if not getattr(result, "rowcount", 0):
+            return batch
         await self._session.execute(
             sqlite_insert(BatchDownloadItem),
             [
@@ -145,6 +186,62 @@ class BatchDownloadRepository:
         )
         return bool(result.rowcount)
 
+    async def claim_pending_item(self, item_id: int, now: datetime) -> bool:
+        """Atomically reserve one item for admission.
+
+        The reservation uses the existing ADMITTED presentation state; an
+        orphaned reservation is returned to PENDING by reconciliation.
+        """
+        result = cast(
+            CursorResult[Any],
+            await self._session.execute(
+                update(BatchDownloadItem)
+                .where(
+                    BatchDownloadItem.id == item_id,
+                    BatchDownloadItem.status == BatchItemStatus.PENDING,
+                    BatchDownloadItem.download_request_id.is_(None),
+                    BatchDownloadRequest.id == BatchDownloadItem.batch_id,
+                    BatchDownloadRequest.cancel_requested_at.is_(None),
+                )
+                .values(status=BatchItemStatus.ADMITTED, updated_at=now)
+            ),
+        )
+        return bool(result.rowcount)
+
+    async def recover_orphaned_admission(self, batch_id: int, now: datetime) -> int:
+        result = cast(
+            CursorResult[Any],
+            await self._session.execute(
+                update(BatchDownloadItem)
+                .where(
+                    BatchDownloadItem.batch_id == batch_id,
+                    BatchDownloadItem.status == BatchItemStatus.ADMITTED,
+                    BatchDownloadItem.download_request_id.is_(None),
+                )
+                .values(status=BatchItemStatus.PENDING, updated_at=now)
+            ),
+        )
+        return int(result.rowcount or 0)
+
+    async def cancel_pending(self, batch_id: int, now: datetime) -> int:
+        result = cast(
+            CursorResult[Any],
+            await self._session.execute(
+                update(BatchDownloadItem)
+                .where(
+                    BatchDownloadItem.batch_id == batch_id,
+                    BatchDownloadItem.status == BatchItemStatus.PENDING,
+                )
+                .values(
+                    status=BatchItemStatus.SKIPPED,
+                    error_code="BATCH_CANCELLED",
+                    error_message="cancelled before admission",
+                    updated_at=now,
+                )
+            ),
+        )
+        return int(result.rowcount or 0)
+
     async def request_cancel(self, batch_id: int, now: datetime) -> bool:
         result = cast(
             CursorResult[Any],
@@ -153,6 +250,14 @@ class BatchDownloadRepository:
                 .where(
                     BatchDownloadRequest.id == batch_id,
                     BatchDownloadRequest.cancel_requested_at.is_(None),
+                    BatchDownloadRequest.status.not_in(
+                        (
+                            BatchStatus.COMPLETED,
+                            BatchStatus.PARTIAL,
+                            BatchStatus.FAILED,
+                            BatchStatus.CANCELLED,
+                        )
+                    ),
                 )
                 .values(cancel_requested_at=now, updated_at=now)
             ),
@@ -210,4 +315,16 @@ class BatchDownloadRepository:
                     counts[str(status.value if hasattr(status, "value") else status)] += 1
             else:
                 counts[item.status.value] += 1
+        for key in (
+            "PENDING",
+            "QUEUED",
+            "RUNNING",
+            "RETRY_WAIT",
+            "DELIVERING",
+            "SUCCEEDED",
+            "FAILED",
+            "CANCELLED",
+            "SKIPPED",
+        ):
+            counts.setdefault(key, 0)
         return counts

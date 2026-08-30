@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import case, or_, select, text, update
+from sqlalchemy import case, exists, or_, select, text, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.delivery_targets import DeliveryTargetType
 from app.core.download_preferences import EffectiveDownloadProfile
 from app.core.enums import DownloadDeliveryStatus, DownloadJobStatus, DownloadPhase
+from app.storage.models.batch_download import BatchDownloadItem
 from app.storage.models.download_lifecycle import (
     DownloadDelivery,
     DownloadLifecycleJob,
@@ -33,6 +34,10 @@ class DownloadLifecycleRepository:
         source_reference: str,
         provider: str | None,
         provider_media_id: str | None,
+        media_title: str | None = None,
+        media_artist: str | None = None,
+        media_album: str | None = None,
+        replay_of_request_id: int | None = None,
         delivery_target_type: DeliveryTargetType,
         delivery_target_id: int,
         now: datetime,
@@ -53,6 +58,10 @@ class DownloadLifecycleRepository:
                 source_reference=source_reference,
                 provider=provider,
                 provider_media_id=provider_media_id,
+                media_title=media_title,
+                media_artist=media_artist,
+                media_album=media_album,
+                replay_of_request_id=replay_of_request_id,
                 delivery_target_type=delivery_target_type,
                 delivery_target_id=delivery_target_id,
                 created_at=now,
@@ -127,11 +136,54 @@ class DownloadLifecycleRepository:
             ),
         )
 
+    async def list_history(
+        self, user_id: int, *, after: tuple[datetime, int] | None, limit: int
+    ) -> list[tuple[DownloadRequestRecord, DownloadLifecycleJob, DownloadDelivery | None]]:
+        statement = (
+            select(DownloadRequestRecord, DownloadLifecycleJob, DownloadDelivery)
+            .join(DownloadLifecycleJob, DownloadLifecycleJob.request_id == DownloadRequestRecord.id)
+            .outerjoin(DownloadDelivery, DownloadDelivery.job_id == DownloadLifecycleJob.id)
+            .where(
+                DownloadRequestRecord.requester_user_id == user_id,
+                ~exists(
+                    select(1).where(
+                        BatchDownloadItem.download_request_id == DownloadRequestRecord.id
+                    )
+                ),
+            )
+        )
+        if after is not None:
+            created_at, request_id = after
+            statement = statement.where(
+                (DownloadRequestRecord.created_at < created_at)
+                | (
+                    (DownloadRequestRecord.created_at == created_at)
+                    & (DownloadRequestRecord.id < request_id)
+                )
+            )
+        rows = await self._session.execute(
+            statement.order_by(
+                DownloadRequestRecord.created_at.desc(), DownloadRequestRecord.id.desc()
+            ).limit(limit)
+        )
+        return cast(
+            list[tuple[DownloadRequestRecord, DownloadLifecycleJob, DownloadDelivery | None]],
+            rows.all(),
+        )
+
     async def get_request(self, request_id: int) -> DownloadRequestRecord | None:
         return await self._session.get(DownloadRequestRecord, request_id)
 
     async def get_job(self, job_id: int) -> DownloadLifecycleJob | None:
         return await self._session.get(DownloadLifecycleJob, job_id)
+
+    async def get_job_for_request(self, request_id: int) -> DownloadLifecycleJob | None:
+        return cast(
+            DownloadLifecycleJob | None,
+            await self._session.scalar(
+                select(DownloadLifecycleJob).where(DownloadLifecycleJob.request_id == request_id)
+            ),
+        )
 
     async def get_delivery(self, job_id: int) -> DownloadDelivery | None:
         return cast(

@@ -57,6 +57,7 @@ class DownloadRequestRecord(TimestampMixin, Base):
         UniqueConstraint("confirmation_id", name="uq_download_requests_confirmation"),
         Index("ix_download_requests_user_created", "requester_user_id", "created_at"),
         Index("ix_download_requests_profile_quality", "effective_quality"),
+        Index("ix_download_requests_replay_of", "replay_of_request_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -70,6 +71,13 @@ class DownloadRequestRecord(TimestampMixin, Base):
     source_reference: Mapped[str] = mapped_column(String(512), nullable=False)
     provider: Mapped[MusicProviderName | None] = mapped_column(String(32))
     provider_media_id: Mapped[str | None] = mapped_column(String(512))
+    # A durable display snapshot.  History must never depend on a provider lookup.
+    media_title: Mapped[str | None] = mapped_column(String(1024))
+    media_artist: Mapped[str | None] = mapped_column(String(1024))
+    media_album: Mapped[str | None] = mapped_column(String(1024))
+    replay_of_request_id: Mapped[int | None] = mapped_column(
+        ForeignKey("download_requests.id", ondelete="RESTRICT")
+    )
     delivery_target_type: Mapped[DeliveryTargetType] = mapped_column(
         _enum(DeliveryTargetType, 16), nullable=False
     )

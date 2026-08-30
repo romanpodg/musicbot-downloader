@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import pytest
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 from alembic import command
 from app.config import Settings, get_settings
@@ -23,6 +24,12 @@ from app.services.operational_audit import OperationalAuditService
 from app.services.sqlite_backup import SQLiteBackupService
 from app.storage import Database
 from app.tools.ops import _make_recovery_service, _offline_artifacts, _offline_recovery, _status
+
+
+def _current_migration_head() -> str:
+    heads = ScriptDirectory.from_config(Config("alembic.ini")).get_heads()
+    assert len(heads) == 1
+    return heads[0]
 
 
 async def _migrate(path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
@@ -51,7 +58,7 @@ async def test_online_backup_is_valid_live_safe_and_non_overwriting(
         destination = tmp_path / "backup.db"
         result = await SQLiteBackupService(database).create(destination)
         assert result.destination == destination
-        assert result.schema_revision == "20260830_0014"
+        assert result.schema_revision == _current_migration_head()
         with sqlite3.connect(destination) as backup:
             assert backup.execute("PRAGMA integrity_check").fetchone() == ("ok",)
             assert backup.execute("SELECT title FROM tracks WHERE id=1").fetchone() == (
@@ -229,5 +236,5 @@ async def test_online_backup_remains_valid_during_controlled_writes(
     with sqlite3.connect(result.destination) as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "20260830_0014",
+            _current_migration_head(),
         )

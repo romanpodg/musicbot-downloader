@@ -1,9 +1,12 @@
-# Stage 23: album, playlist, and batch downloads
+# Stage 23 — Album / Batch Downloads
 
-Stage 23 snapshots an album or playlist into a durable `BatchDownloadRequest`
+Stage 23 snapshots a provider collection into a durable `BatchDownloadRequest`
 and ordered `BatchDownloadItem` rows. Duplicate entries are retained and the
 stored positions are immutable; provider membership is not re-read during
-execution.
+execution. Album expansion is supported by the current OnTheSpot runtime. Its
+playlist URLs are classified explicitly, but playlist expansion remains
+unsupported until the pinned runtime exposes a real playlist-items API; the bot
+fails closed rather than fabricating membership.
 
 Each admitted item is handed to the existing Stage 21 `DownloadRequest` and
 `DownloadJob` path. Stage 21 owns queue fairness, leases, retries, recovery,
@@ -24,6 +27,15 @@ Limits are configurable through `MAX_BATCH_ITEMS` (`max_batch_items`) and
 retain the existing `PRIVATE_USER` routing policy, and completion timing is not
 strictly collection-ordered.
 
-Stage 23 intentionally does not provide archive/ZIP delivery, persistent media
-or Telegram caches, history UI, cross-provider fallback, playlist
+Startup runs Stage 21 recovery first and then reconciles every persisted
+non-terminal batch. Cancellation is durable: pending items are skipped, active
+child jobs receive the normal Stage 21 cancellation request, and the aggregate
+becomes `CANCELLED` after active children reach terminal states. Retry-failed
+creates one linked batch using the original frozen requested preferences.
+
+Playlist URL classification exists, but playlist expansion and playlist
+downloads are intentionally deferred to a separate future stage because the
+currently pinned provider runtime does not expose a supported playlist-items
+API. Stage 23 intentionally does not provide archive/ZIP delivery, persistent
+media or Telegram caches, history UI, cross-provider fallback, playlist
 synchronization, or strict delivery ordering.

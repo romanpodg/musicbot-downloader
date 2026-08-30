@@ -35,6 +35,9 @@ class DownloadRequest:
     confirmation_id: str | None = None
     # Filled at admission time; workers use this immutable snapshot only.
     effective_profile: EffectiveDownloadProfile | None = None
+    # Stage 24 provenance only.  It is populated by history replay, never by
+    # an untrusted Telegram callback.
+    replay_of_request_id: int | None = None
 
     def __post_init__(self) -> None:
         if self.user_id <= 0:
@@ -49,6 +52,8 @@ class DownloadRequest:
             self.effective_profile, EffectiveDownloadProfile
         ):
             raise TypeError("download request profile must be EffectiveDownloadProfile")
+        if self.replay_of_request_id is not None and self.replay_of_request_id <= 0:
+            raise ValueError("replay request ID must be positive")
 
 
 @dataclass(frozen=True, slots=True)

@@ -6,16 +6,20 @@ admission port; it never downloads media or owns a second queue.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, cast
 
+from app.core.delivery_targets import PrivateUserTarget
 from app.core.download import DownloadDeliveryTarget, DownloadOptions, DownloadRequest
 from app.core.download_preferences import EffectiveDownloadProfile, UserDownloadPreferences
 from app.core.enums import BatchItemStatus, BatchSourceType, BatchStatus
 from app.core.models import ResolvedCollection, ResolvedCollectionItem
 from app.core.search import Artist, Track
 from app.storage import Database
+from app.storage.models import BatchDownloadRequest
 from app.storage.models.base import utc_now
 
 
@@ -39,6 +43,20 @@ class ActiveBatchLimitExceeded(ValueError):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class BatchProgress:
+    total: int
+    pending: int
+    queued: int
+    running: int
+    retry_wait: int
+    delivering: int
+    succeeded: int
+    failed: int
+    cancelled: int
+    skipped: int
+
+
 class BatchDownloadService:
     def __init__(
         self,
@@ -60,6 +78,7 @@ class BatchDownloadService:
         self.max_items = max_items
         self.max_active_batches_per_user = max_active_batches_per_user
         self.clock = clock
+        self._admission_locks: dict[int, asyncio.Lock] = {}
 
     async def expand(
         self,
@@ -71,30 +90,54 @@ class BatchDownloadService:
         preferences: UserDownloadPreferences,
         parent_batch_id: int | None = None,
         retry_generation: int = 0,
-    ) -> object:
+    ) -> BatchDownloadRequest:
         collection = await self.resolver.resolve_collection(source_type, source_reference)
+        return await self.create_from_collection(
+            user_id=user_id,
+            confirmation_id=confirmation_id,
+            collection=collection,
+            preferences=preferences,
+            parent_batch_id=parent_batch_id,
+            retry_generation=retry_generation,
+        )
+
+    async def create_from_collection(
+        self,
+        *,
+        user_id: int,
+        confirmation_id: str,
+        collection: ResolvedCollection,
+        preferences: UserDownloadPreferences,
+        parent_batch_id: int | None = None,
+        retry_generation: int = 0,
+    ) -> BatchDownloadRequest:
+        """Persist an already-resolved immutable collection snapshot."""
         if len(collection.items) > self.max_items:
             raise BatchLimitExceeded(
                 f"collection contains {len(collection.items)} items; maximum is {self.max_items}"
             )
-        async with self.database.transaction() as repositories:
-            existing = await repositories.batch_download.get_by_confirmation(confirmation_id)
-            if existing is not None:
-                return existing
-            if (
-                await repositories.batch_download.active_count(user_id)
-                >= self.max_active_batches_per_user
-            ):
-                raise ActiveBatchLimitExceeded("maximum active batches reached")
-            return await repositories.batch_download.create_snapshot(
-                user_id=user_id,
-                confirmation_id=confirmation_id,
-                collection=collection,
-                requested=preferences,
-                parent_batch_id=parent_batch_id,
-                retry_generation=retry_generation,
-                now=self.clock(),
-            )
+        if not collection.items:
+            raise BatchLimitExceeded("collection must contain at least one item")
+        lock = self._admission_locks.setdefault(user_id, asyncio.Lock())
+        async with lock:
+            async with self.database.transaction() as repositories:
+                existing = await repositories.batch_download.get_by_confirmation(confirmation_id)
+                if existing is not None:
+                    return existing
+                if (
+                    await repositories.batch_download.active_count(user_id)
+                    >= self.max_active_batches_per_user
+                ):
+                    raise ActiveBatchLimitExceeded("maximum active batches reached")
+                return await repositories.batch_download.create_snapshot(
+                    user_id=user_id,
+                    confirmation_id=confirmation_id,
+                    collection=collection,
+                    requested=preferences,
+                    parent_batch_id=parent_batch_id,
+                    retry_generation=retry_generation,
+                    now=self.clock(),
+                )
 
     async def admit_pending(self, batch_id: int, *, target: DownloadDeliveryTarget) -> int:
         if self.child_admitter is None:
@@ -108,13 +151,22 @@ class BatchDownloadService:
                 BatchStatus.CANCELLED,
             }:
                 return 0
+            if batch.requester_user_id != target.user_id:
+                return 0
             items = await repositories.batch_download.list_items(batch_id)
         admitted = 0
+        child_target = DownloadDeliveryTarget(
+            user_id=target.user_id,
+            context=target.context,
+            delivery_target=PrivateUserTarget(target.user_id),
+            source_message_id=target.source_message_id,
+        )
         for item in items:
-            if item.status is not BatchItemStatus.PENDING:
-                continue
             if batch.cancel_requested_at is not None:
                 break
+            async with self.database.transaction() as repositories:
+                if not await repositories.batch_download.claim_pending_item(item.id, self.clock()):
+                    continue
             artist = Artist(item.artist or batch.creator or "Unknown")
             track = Track(
                 id=f"batch-{batch.id}-{item.position}",
@@ -124,15 +176,20 @@ class BatchDownloadService:
                 provider_track_id=item.provider_media_id,
                 duration_ms=item.duration_ms,
             )
+            frozen_profile = self._frozen_profile(batch)
             request = DownloadRequest(
                 user_id=batch.requester_user_id,
                 recognized_track=track,
-                options=DownloadOptions(),
+                options=DownloadOptions(
+                    quality_profile=(
+                        frozen_profile.quality_profile if frozen_profile is not None else None
+                    )
+                ),
                 confirmation_id=f"{batch.confirmation_id}:{item.position}",
-                effective_profile=self._frozen_profile(batch),
+                effective_profile=frozen_profile,
             )
             try:
-                result = await self.child_admitter(request, target=target)
+                result = await self.child_admitter(request, target=child_target)
             except Exception as exc:
                 async with self.database.transaction() as repositories:
                     await repositories.batch_download.set_item(
@@ -166,8 +223,9 @@ class BatchDownloadService:
             if batch is None or batch.requester_user_id != user_id:
                 return False
             changed = await repositories.batch_download.request_cancel(batch_id, self.clock())
+            await repositories.batch_download.cancel_pending(batch_id, self.clock())
             items = await repositories.batch_download.list_items(batch_id)
-        if self.child_canceller is not None:
+        if changed and self.child_canceller is not None:
             for item in items:
                 if item.download_request_id is not None:
                     result = self.child_canceller(item.download_request_id)
@@ -204,13 +262,20 @@ class BatchDownloadService:
             embed_cover=cast(bool, cover),
         )
 
-    async def retry_failed(self, batch_id: int, *, user_id: int) -> object | None:
+    async def retry_failed(self, batch_id: int, *, user_id: int) -> BatchDownloadRequest | None:
         """Create one linked retry batch from unsuccessful snapshot items."""
         from app.core.enums import DeliveryMode, FormatPreference, QualityPreference
 
         async with self.database.transaction() as repositories:
             batch = await repositories.batch_download.get(batch_id)
             if batch is None or batch.requester_user_id != user_id:
+                return None
+            if batch.status not in {
+                BatchStatus.COMPLETED,
+                BatchStatus.PARTIAL,
+                BatchStatus.FAILED,
+                BatchStatus.CANCELLED,
+            }:
                 return None
             items = await repositories.batch_download.list_items(batch_id)
             retry_items = tuple(
@@ -226,7 +291,8 @@ class BatchDownloadService:
                     (
                         item
                         for item in items
-                        if item.status in {BatchItemStatus.FAILED, BatchItemStatus.SKIPPED}
+                        if item.status is BatchItemStatus.FAILED
+                        and item.error_code != "MEDIA_UNAVAILABLE"
                     ),
                     start=1,
                 )
@@ -270,10 +336,21 @@ class BatchDownloadService:
             batch = await repositories.batch_download.get(batch_id)
             if batch is None:
                 return None
+            await repositories.batch_download.recover_orphaned_admission(batch_id, self.clock())
+            if batch.cancel_requested_at is not None:
+                await repositories.batch_download.cancel_pending(batch_id, self.clock())
             counts = await repositories.batch_download.counts(batch_id)
-            total = sum(counts.values())
-            unfinished = (
-                counts[BatchItemStatus.PENDING.value] + counts[BatchItemStatus.ADMITTED.value]
+            total = batch.total_items
+            unfinished = sum(
+                counts[key]
+                for key in (
+                    BatchItemStatus.PENDING.value,
+                    BatchItemStatus.ADMITTED.value,
+                    "QUEUED",
+                    "RUNNING",
+                    "RETRY_WAIT",
+                    "DELIVERING",
+                )
             )
             if unfinished:
                 return batch.status
@@ -288,3 +365,31 @@ class BatchDownloadService:
                 status = BatchStatus.FAILED
             await repositories.batch_download.mark_status(batch_id, status, self.clock())
             return status
+
+    async def progress(self, batch_id: int) -> BatchProgress | None:
+        async with self.database.transaction() as repositories:
+            batch = await repositories.batch_download.get(batch_id)
+            if batch is None:
+                return None
+            counts = await repositories.batch_download.counts(batch_id)
+            return BatchProgress(
+                total=batch.total_items,
+                pending=counts["PENDING"],
+                queued=counts["QUEUED"],
+                running=counts["RUNNING"],
+                retry_wait=counts["RETRY_WAIT"],
+                delivering=counts["DELIVERING"],
+                succeeded=counts["SUCCEEDED"],
+                failed=counts["FAILED"],
+                cancelled=counts["CANCELLED"],
+                skipped=counts["SKIPPED"],
+            )
+
+    async def reconcile_all(self) -> int:
+        """Reconcile every durable non-terminal batch after process restart."""
+        async with self.database.transaction() as repositories:
+            batches = await repositories.batch_download.list_reconcilable()
+            ids = tuple(batch.id for batch in batches)
+        for batch_id in ids:
+            await self.reconcile(batch_id)
+        return len(ids)

@@ -6,9 +6,9 @@ import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
 
-from app.core.enums import AlbumRequestStatus, MusicProviderName, QualityProfile
+from app.core.enums import AlbumRequestStatus, BatchSourceType, MusicProviderName, QualityProfile
 from app.core.exceptions import DatabaseConcurrencyError
-from app.core.models import AlbumSnapshot
+from app.core.models import AlbumSnapshot, ResolvedCollection, ResolvedCollectionItem
 from app.providers.base import MusicProvider
 from app.storage import Database
 from app.storage.database import Repositories
@@ -166,6 +166,35 @@ class TelegramAlbumRequestService:
             if user is None or request is None or request.user_id != user.id:
                 return None
             return _card(request)
+
+    async def collection(
+        self, *, request_id: int, telegram_user_id: int
+    ) -> ResolvedCollection | None:
+        """Return the durable album snapshot as a batch collection for its owner."""
+        async with self._database.transaction() as repositories:
+            user = await repositories.users.get_by_telegram_id(telegram_user_id)
+            request = await repositories.telegram_album.get(request_id)
+            if user is None or request is None or request.user_id != user.id:
+                return None
+            items = await repositories.telegram_album.list_items(request_id, offset=0, limit=500)
+            return ResolvedCollection(
+                source_type=BatchSourceType.ALBUM,
+                provider=request.provider,
+                collection_id=request.provider_album_id,
+                source_reference=request.provider_album_id,
+                title=request.title,
+                creator=request.artist,
+                items=tuple(
+                    ResolvedCollectionItem(
+                        position=item.position,
+                        provider_media_id=item.provider_track_id,
+                        title=item.title,
+                        artist=item.artist,
+                        duration_ms=item.duration_ms,
+                    )
+                    for item in items
+                ),
+            )
 
     async def selection_page(
         self, *, request_id: int, telegram_user_id: int, page: int

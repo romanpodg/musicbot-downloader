@@ -8,6 +8,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.core.enums import QualityProfile
 from app.i18n import LocalizationService
+from app.services.batch_download import BatchProgress
 from app.services.telegram_albums import AlbumCard, AlbumSelectionPage
 from app.services.telegram_requests import TrackCard
 
@@ -49,6 +50,13 @@ class AlbumToggleCallback:
 class AlbumPageCallback:
     request_id: int
     page: int
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryCallback:
+    action: str
+    identifier: int | None = None
+    cursor: str | None = None
 
 
 def encode_first_quality(request_id: int, quality: QualityProfile) -> str:
@@ -193,6 +201,39 @@ def parse_album_page(value: str | None) -> AlbumPageCallback | None:
     return AlbumPageCallback(request_id, page)
 
 
+def encode_history_list(cursor: str | None = None) -> str:
+    return "h24:list" if not cursor else f"h24:list:{cursor}"
+
+
+def encode_history_track(request_id: int) -> str:
+    return f"h24:track:{request_id}"
+
+
+def encode_history_batch(batch_id: int) -> str:
+    return f"h24:batch:{batch_id}"
+
+
+def encode_history_repeat(request_id: int) -> str:
+    return f"h24:repeat:{request_id}"
+
+
+def parse_history_callback(value: str | None) -> HistoryCallback | None:
+    if not value or not value.startswith("h24:"):
+        return None
+    parts = value.split(":", 2)
+    if parts[1] == "list":
+        return HistoryCallback("list", cursor=parts[2] if len(parts) == 3 else None)
+    if len(parts) != 3:
+        return None
+    try:
+        identifier = int(parts[2])
+    except ValueError:
+        return None
+    if identifier <= 0 or parts[1] not in {"track", "batch", "repeat"}:
+        return None
+    return HistoryCallback(parts[1], identifier)
+
+
 def encode_album_select_all(request_id: int) -> str:
     return _encode_request("ax1", request_id)
 
@@ -233,6 +274,30 @@ def parse_album_quality_back(value: str | None) -> int | None:
     return _parse_request(value, "ak1")
 
 
+def encode_batch_download(batch_id: int) -> str:
+    return _encode_request("bd1", batch_id)
+
+
+def parse_batch_download(value: str | None) -> int | None:
+    return _parse_request(value, "bd1")
+
+
+def encode_batch_cancel(batch_id: int) -> str:
+    return _encode_request("bc1", batch_id)
+
+
+def parse_batch_cancel(value: str | None) -> int | None:
+    return _parse_request(value, "bc1")
+
+
+def encode_batch_retry(batch_id: int) -> str:
+    return _encode_request("br1", batch_id)
+
+
+def parse_batch_retry(value: str | None) -> int | None:
+    return _parse_request(value, "br1")
+
+
 def encode_setting_quality(quality: QualityProfile) -> str:
     return f"sq1:{QUALITY_CODES[quality]}"
 
@@ -261,6 +326,96 @@ class TelegramPresentation:
 
     def text(self, key: str, locale: str, **values: object) -> str:
         return self.i18n.translate(key, locale, **values)
+
+    def history_text(self, page: object, locale: str) -> str:
+        from app.services.download_history import BatchHistoryEntry, TrackHistoryEntry
+
+        entries = getattr(page, "entries", ())
+        lines = ["🕘 Download history", ""]
+        for number, entry in enumerate(entries, 1):
+            if isinstance(entry, TrackHistoryEntry):
+                label = f"{entry.artist} — {entry.title}"
+                state = "✓ Delivered" if entry.delivered else ("✗ " + entry.status.title())
+            elif isinstance(entry, BatchHistoryEntry):
+                label = entry.title
+                state = f"✓ {entry.succeeded_items} / {entry.total_items}"
+            else:
+                continue
+            lines.extend((f"{number}. {label}", f"   {state}", ""))
+        return "\n".join(lines).rstrip() or "🕘 Download history\n\nNo downloads yet."
+
+    def history_keyboard(self, page: object, locale: str) -> InlineKeyboardMarkup | None:
+        from app.services.download_history import BatchHistoryEntry, TrackHistoryEntry
+
+        rows = []
+        for entry in getattr(page, "entries", ()):
+            if isinstance(entry, TrackHistoryEntry):
+                rows.append(
+                    [
+                        InlineKeyboardButton(
+                            text=_bounded(f"{entry.artist} — {entry.title}", 48),
+                            callback_data=encode_history_track(entry.request_id),
+                        )
+                    ]
+                )
+            elif isinstance(entry, BatchHistoryEntry):
+                rows.append(
+                    [
+                        InlineKeyboardButton(
+                            text=_bounded(entry.title, 48),
+                            callback_data=encode_history_batch(entry.batch_id),
+                        )
+                    ]
+                )
+        cursor = getattr(page, "next_cursor", None)
+        if cursor:
+            rows.append([InlineKeyboardButton(text="→", callback_data=encode_history_list(cursor))])
+        return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+    def history_track_text(self, entry: object, locale: str) -> str:
+        from app.services.download_history import TrackHistoryEntry
+
+        if not isinstance(entry, TrackHistoryEntry):
+            return "Download history entry unavailable"
+        lines = [f"{entry.artist} — {entry.title}"]
+        if entry.album:
+            lines.append(entry.album)
+        if entry.profile:
+            lines.extend(
+                (
+                    "",
+                    f"Quality: {entry.profile.effective_quality.value}",
+                    f"Format: {entry.profile.effective_format.value}",
+                )
+            )
+        lines.extend(("", "✓ Delivered" if entry.delivered else f"✗ {entry.status.title()}"))
+        return "\n".join(lines)
+
+    def history_track_keyboard(self, entry: object, locale: str) -> InlineKeyboardMarkup:
+        from app.services.download_history import TrackHistoryEntry
+
+        rows = []
+        if isinstance(entry, TrackHistoryEntry) and entry.repeat_available:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text="Send again", callback_data=encode_history_repeat(entry.request_id)
+                    )
+                ]
+            )
+        rows.append([InlineKeyboardButton(text="Back", callback_data=encode_history_list())])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    def history_batch_text(self, entry: object, locale: str) -> str:
+        from app.services.download_history import BatchHistoryEntry
+
+        if not isinstance(entry, BatchHistoryEntry):
+            return "Download history entry unavailable"
+        return (
+            f"{entry.title}\n{entry.creator or ''}\n\n"
+            f"✓ {entry.succeeded_items} delivered\n✗ {entry.failed_items} failed\n"
+            f"Status: {entry.status.title()}"
+        )
 
     def quality_keyboard(
         self,
@@ -376,6 +531,44 @@ class TelegramPresentation:
                         callback_data=encode_album_quality_back(request_id),
                     )
                 ],
+            ]
+        )
+
+    def batch_progress_text(
+        self, title: str, progress: BatchProgress, locale: str, *, terminal: bool = False
+    ) -> str:
+        finished = progress.succeeded + progress.failed + progress.cancelled + progress.skipped
+        if terminal and progress.succeeded == progress.total:
+            return _bounded(f"{title}\n\n✓ {progress.total} / {progress.total} delivered", 4096)
+        if terminal and progress.cancelled and progress.succeeded:
+            return _bounded(
+                f"{title}\n\n✓ {progress.succeeded} delivered\n"
+                f"✗ {progress.cancelled + progress.failed + progress.skipped} "
+                "cancelled/not completed",
+                4096,
+            )
+        return _bounded(
+            "\n\n".join(
+                (
+                    title,
+                    f"{finished} / {progress.total} finished",
+                    f"✓ {progress.succeeded} delivered",
+                    f"✗ {progress.failed} failed",
+                    f"↻ {progress.running + progress.delivering} active",
+                    f"{progress.pending + progress.queued} queued",
+                )
+            ),
+            4096,
+        )
+
+    def batch_progress_keyboard(
+        self, locale: str, *, batch_id: int, retry: bool = False
+    ) -> InlineKeyboardMarkup:
+        callback = encode_batch_retry(batch_id) if retry else encode_batch_cancel(batch_id)
+        key = "bot.batch_retry_failed" if retry else "bot.batch_cancel_remaining"
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=self.text(key, locale), callback_data=callback)]
             ]
         )
 

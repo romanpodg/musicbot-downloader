@@ -50,6 +50,7 @@ from app.providers.base import (
     AlbumReference,
     MediaReference,
     MusicProvider,
+    PlaylistReference,
     ProviderAvailability,
     TrackReference,
 )
@@ -98,6 +99,9 @@ class OnTheSpotProvider(MusicProvider):
         album = self._detect_known_album(host, segments)
         if album is not None:
             return album
+        playlist = self._detect_known_playlist(host, segments)
+        if playlist is not None:
+            return playlist
         if self._is_known_host(host):
             raise UnsupportedMediaType()
         raise UnsupportedProvider()
@@ -527,6 +531,53 @@ class OnTheSpotProvider(MusicProvider):
                     MusicProviderName.TIDAL,
                     item_id,
                     f"https://tidal.com/browse/album/{item_id}",
+                )
+        return None
+
+    @staticmethod
+    def _detect_known_playlist(host: str, segments: list[str]) -> PlaylistReference | None:
+        """Recognize playlist identities even when the pinned runtime cannot expand them."""
+        if host == "open.spotify.com":
+            if len(segments) == 3 and segments[0].startswith("intl-"):
+                segments = segments[1:]
+            if (
+                len(segments) == 2
+                and segments[0] == "playlist"
+                and _SPOTIFY_ID.fullmatch(segments[1])
+            ):
+                item_id = segments[1]
+                return PlaylistReference(
+                    MusicProviderName.SPOTIFY,
+                    item_id,
+                    f"https://open.spotify.com/playlist/{item_id}",
+                )
+        if host in {"deezer.com", "www.deezer.com"}:
+            if len(segments) == 3 and len(segments[0]) == 2:
+                segments = segments[1:]
+            if len(segments) == 2 and segments[0] == "playlist" and segments[1].isdigit():
+                item_id = segments[1]
+                return PlaylistReference(
+                    MusicProviderName.DEEZER,
+                    item_id,
+                    f"https://www.deezer.com/playlist/{item_id}",
+                )
+        if host == "music.apple.com" and len(segments) >= 3 and "playlist" in segments:
+            index = segments.index("playlist")
+            if index + 1 < len(segments) and _PATH_SEGMENT.fullmatch(segments[index + 1]):
+                item_id = segments[index + 1]
+                return PlaylistReference(
+                    MusicProviderName.APPLE_MUSIC,
+                    item_id,
+                    f"https://music.apple.com/{segments[0].lower()}/playlist/{item_id}",
+                )
+        if host in {"tidal.com", "www.tidal.com", "listen.tidal.com"} and "playlist" in segments:
+            index = segments.index("playlist")
+            if index + 1 < len(segments) and _SIMPLE_ID.fullmatch(segments[index + 1]):
+                item_id = segments[index + 1]
+                return PlaylistReference(
+                    MusicProviderName.TIDAL,
+                    item_id,
+                    f"https://tidal.com/browse/playlist/{item_id}",
                 )
         return None
 
