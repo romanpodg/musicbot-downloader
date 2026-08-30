@@ -48,6 +48,7 @@ from app.services.artifact_cleanup import (
 )
 from app.services.artifacts import ActiveArtifactRegistry, DownloadArtifactManager
 from app.services.authorization import TelegramAuthorizationService
+from app.services.batch_download import BatchDownloadService
 from app.services.crash_recovery import CrashRecoveryService
 from app.services.deep_links import DeepLinkRegistryService
 from app.services.delivery import DeliveryPreparationService
@@ -173,6 +174,7 @@ class Stage9Components:
     cleanup_manager: StaleArtifactCleanupManager
     ux_progress: UxProgressService
     download_lifecycle: DownloadLifecycleService
+    batch_download: BatchDownloadService
 
     async def start(self) -> None:
         try:
@@ -334,11 +336,17 @@ async def compose_stage9(
         telegram_bot_id=stage8.bot_identity.telegram_bot_id,
         wake_event=delivery_wake,
     )
-    download_service = DownloadService(
-        DownloadTrackUseCase(
-            RecognizedTrackResolutionAdapter(track_resolution),
-            ExistingDeliverySubmissionService(database, requests, lifecycle),
-        )
+    download_use_case = DownloadTrackUseCase(
+        RecognizedTrackResolutionAdapter(track_resolution),
+        ExistingDeliverySubmissionService(database, requests, lifecycle),
+    )
+    download_service = DownloadService(download_use_case)
+    batch_download = BatchDownloadService(
+        database,
+        provider,
+        child_admitter=download_use_case.execute,
+        max_items=settings.max_batch_items,
+        max_active_batches_per_user=settings.max_active_batches_per_user,
     )
     chat_contexts = ChatContextAccessService(database, DeliveryTargetResolver(), stage8.gateway)
     ux_flows = UxFlowService(users, ux_states, search_use_case, download_service)
@@ -536,4 +544,5 @@ async def compose_stage9(
         cleanup_manager=cleanup_manager,
         ux_progress=ux_progress,
         download_lifecycle=lifecycle,
+        batch_download=batch_download,
     )

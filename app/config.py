@@ -90,6 +90,8 @@ class Settings(BaseSettings):
     telegram_delivery_workers: int = Field(default=4, ge=1, le=32)
     telegram_delivery_max_attempts: int = Field(default=3, ge=1, le=20)
     queue_max_size: int = Field(default=1000, ge=1)
+    max_batch_items: int = Field(default=100, ge=1, le=10000)
+    max_active_batches_per_user: int = Field(default=2, ge=1, le=100)
 
     default_locale: str = "en"
     supported_locales: LocaleTuple = ("en", "ru")

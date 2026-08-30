@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.enums import (
+    BatchSourceType,
     DeliveryPreparationStatus,
     DownloadAttemptStatus,
     DownloadFailureCode,
@@ -519,6 +520,50 @@ class AlbumSnapshot:
     @property
     def track_count(self) -> int:
         return len(self.tracks)
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedCollectionItem:
+    """Provider-neutral immutable member of an album or playlist snapshot."""
+
+    position: int
+    provider_media_id: str
+    title: str | None = None
+    artist: str | None = None
+    duration_ms: int | None = None
+    source_reference: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.position < 1 or not self.provider_media_id.strip():
+            raise ValueError("collection item position and media ID are required")
+        if self.duration_ms is not None and self.duration_ms < 0:
+            raise ValueError("collection item duration must not be negative")
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedCollection:
+    """Immutable provider collection membership returned before persistence."""
+
+    source_type: BatchSourceType
+    provider: MusicProviderName
+    collection_id: str
+    source_reference: str
+    title: str
+    creator: str | None
+    items: tuple[ResolvedCollectionItem, ...]
+
+    def __post_init__(self) -> None:
+        if (
+            not self.collection_id.strip()
+            or not self.source_reference.strip()
+            or not self.title.strip()
+        ):
+            raise ValueError("collection identity and title are required")
+        if not self.items:
+            raise ValueError("collection must contain at least one item")
+        positions = [item.position for item in self.items]
+        if positions != list(range(1, len(positions) + 1)):
+            raise ValueError("collection item positions must be contiguous and ordered")
 
 
 @dataclass(frozen=True, slots=True)

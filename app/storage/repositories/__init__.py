@@ -1,5 +1,6 @@
 """Focused repository exports."""
 
+from app.storage.repositories.batch_download import BatchDownloadRepository
 from app.storage.repositories.deep_links import DeepLinkRegistryRepository
 from app.storage.repositories.download_lifecycle import DownloadLifecycleRepository
 from app.storage.repositories.download_preferences import UserDownloadPreferencesRepository
@@ -30,6 +31,7 @@ __all__ = [
     "TelegramDeliveryRepository",
     "TelegramAlbumRepository",
     "UploadJobRepository",
+    "BatchDownloadRepository",
 ]
 from app.storage.repositories.queue import (
     DownloadJobRepository,

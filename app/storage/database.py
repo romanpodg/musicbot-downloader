@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import (
 
 from app.core.exceptions import DatabaseConcurrencyError, DatabaseError
 from app.storage.repositories import (
+    BatchDownloadRepository,
     DeepLinkRegistryRepository,
     DownloadJobRepository,
     DownloadLifecycleRepository,
@@ -55,6 +56,7 @@ class Repositories:
     telegram_album: TelegramAlbumRepository
     download_lifecycle: DownloadLifecycleRepository
     download_preferences: UserDownloadPreferencesRepository
+    batch_download: BatchDownloadRepository
 
 
 class Database:
@@ -103,6 +105,7 @@ class Database:
             telegram_album=TelegramAlbumRepository(session),
             download_lifecycle=DownloadLifecycleRepository(session),
             download_preferences=UserDownloadPreferencesRepository(session),
+            batch_download=BatchDownloadRepository(session),
         )
 
     @staticmethod

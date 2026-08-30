@@ -136,6 +136,28 @@ class DownloadSourceType(StrEnum):
     DIRECT_URL = "DIRECT_URL"
 
 
+class BatchSourceType(StrEnum):
+    ALBUM = "album"
+    PLAYLIST = "playlist"
+
+
+class BatchStatus(StrEnum):
+    PENDING = "PENDING"
+    EXPANDING = "EXPANDING"
+    ACTIVE = "ACTIVE"
+    COMPLETED = "COMPLETED"
+    PARTIAL = "PARTIAL"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class BatchItemStatus(StrEnum):
+    PENDING = "PENDING"
+    ADMITTED = "ADMITTED"
+    SKIPPED = "SKIPPED"
+    FAILED = "FAILED"
+
+
 class DownloadDeliveryStatus(StrEnum):
     PENDING = "PENDING"
     SENDING = "SENDING"

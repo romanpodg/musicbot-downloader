@@ -14,7 +14,7 @@ from app.core.exceptions import (
     DeepLinkNotFound,
     IdempotencyKeyConflict,
 )
-from app.providers.base import AlbumReference, MusicProvider, TrackReference
+from app.providers.base import AlbumReference, MusicProvider, PlaylistReference, TrackReference
 from app.services.operational_audit import OperationalAuditService
 from app.services.track_resolution import ResolveTrackService
 from app.storage import Database
@@ -63,6 +63,10 @@ class DeepLinkRegistryService:
             raise InvalidTrackUrl()
         key = self._validate_idempotency_key(idempotency_key)
         reference = await self._provider.classify_url(url)
+        if isinstance(reference, PlaylistReference):
+            from app.core.exceptions import UnsupportedMediaType
+
+            raise UnsupportedMediaType()
         target_type = (
             DeepLinkTargetType.TRACK
             if isinstance(reference, TrackReference)

@@ -5,13 +5,14 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from app.core.enums import MusicProviderName, ProviderRuntimeStatus
+from app.core.enums import BatchSourceType, MusicProviderName, ProviderRuntimeStatus
 from app.core.models import (
     AlbumSnapshot,
     NormalizedTrackMetadata,
     ProviderCapabilities,
     ProviderMediaCapabilities,
     ProviderSourceCheck,
+    ResolvedCollection,
     TrackSearchCandidate,
     TrackSearchRequest,
 )
@@ -31,7 +32,14 @@ class AlbumReference:
     source_url: str
 
 
-MediaReference = TrackReference | AlbumReference
+@dataclass(frozen=True, slots=True)
+class PlaylistReference:
+    provider: MusicProviderName
+    provider_playlist_id: str
+    source_url: str
+
+
+MediaReference = TrackReference | AlbumReference | PlaylistReference
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +75,46 @@ class MusicProvider(ABC):
     ) -> AlbumSnapshot:
         """Resolve a durable provider-release identity."""
 
+        from app.core.exceptions import UnsupportedAlbum
+
+        raise UnsupportedAlbum()
+
+    async def get_playlist(self, url: str) -> ResolvedCollection:
+        from app.core.exceptions import UnsupportedAlbum
+
+        raise UnsupportedAlbum()
+
+    async def resolve_collection(
+        self, source_type: BatchSourceType, source_reference: str
+    ) -> ResolvedCollection:
+        """Resolve one immutable album/playlist membership snapshot."""
+        from app.core.enums import BatchSourceType
+
+        if source_type is BatchSourceType.ALBUM:
+            album = await self.get_album(source_reference)
+            from app.core.models import ResolvedCollectionItem
+
+            return ResolvedCollection(
+                source_type=source_type,
+                provider=album.provider,
+                collection_id=album.provider_album_id,
+                source_reference=album.source_url,
+                title=album.title,
+                creator=album.artist,
+                items=tuple(
+                    ResolvedCollectionItem(
+                        position=t.position,
+                        provider_media_id=t.provider_track_id,
+                        title=t.title,
+                        artist=t.artist,
+                        duration_ms=t.duration_ms,
+                        source_reference=None,
+                    )
+                    for t in album.tracks
+                ),
+            )
+        if source_type is BatchSourceType.PLAYLIST:
+            return await self.get_playlist(source_reference)
         from app.core.exceptions import UnsupportedAlbum
 
         raise UnsupportedAlbum()

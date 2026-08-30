@@ -1,6 +1,7 @@
 """SQLAlchemy model exports used by Alembic and repositories."""
 
 from app.storage.models.base import Base
+from app.storage.models.batch_download import BatchDownloadItem, BatchDownloadRequest
 from app.storage.models.deep_link import DeepLinkRegistryEntry
 from app.storage.models.download_lifecycle import (
     DownloadDelivery,
@@ -31,6 +32,8 @@ __all__ = [
     "DownloadLifecycleJob",
     "DownloadDelivery",
     "UserDownloadPreferencesRecord",
+    "BatchDownloadRequest",
+    "BatchDownloadItem",
     "DeepLinkRegistryEntry",
     "DownloadFlight",
     "JobSubscriber",
