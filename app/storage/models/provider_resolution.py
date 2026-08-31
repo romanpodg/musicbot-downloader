@@ -41,6 +41,7 @@ class DownloadProviderAttemptRecord(TimestampMixin, Base):
     __table_args__ = (
         Index("ix_download_provider_attempts_job_number", "job_id", "attempt_number"),
         Index("ix_download_provider_attempts_candidate", "candidate_id"),
+        UniqueConstraint("job_id", "attempt_number", name="uq_download_provider_attempt_number"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

@@ -10,6 +10,7 @@ from app.storage.models.download_lifecycle import (
 )
 from app.storage.models.download_preferences import UserDownloadPreferencesRecord
 from app.storage.models.operational_audit import OperationalAuditEvent
+from app.storage.models.provider_account_health import ProviderAccountHealthRecord
 from app.storage.models.provider_resolution import (
     DownloadProviderAttemptRecord,
     DownloadProviderCandidateRecord,
@@ -61,4 +62,5 @@ __all__ = [
     "DownloadProviderAttemptRecord",
     "ProviderCandidateRecord",
     "ProviderAttempt",
+    "ProviderAccountHealthRecord",
 ]

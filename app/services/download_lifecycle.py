@@ -247,6 +247,7 @@ class DownloadLifecycleService:
             recovered = await repositories.download_lifecycle.recover_expired(
                 now=now, jitter_retry_at=now + timedelta(seconds=1 + self._random())
             )
+            await repositories.provider_resolution.abandon_expired_jobs(now)
             await repositories.download_lifecycle.requeue_due(now)
             return recovered
 

@@ -5,17 +5,11 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from enum import StrEnum
 
-from app.core.enums import MusicProviderName
+from app.core.enums import MusicProviderName, ProviderAccountHealthState
 
-
-class AccountHealthState(StrEnum):
-    HEALTHY = "HEALTHY"
-    DEGRADED = "DEGRADED"
-    COOLDOWN = "COOLDOWN"
-    AUTH_FAILED = "AUTH_FAILED"
-    DISABLED = "DISABLED"
+# Compatibility alias retained for Stage 25 callers.
+AccountHealthState = ProviderAccountHealthState
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +79,51 @@ class ProviderAccountSelector:
             failure_streak=account.failure_streak + 1,
             last_failure_at=at,
         )
+
+    async def eligible_durable(
+        self,
+        repository: object,
+        provider: MusicProviderName,
+        accounts: Iterable[str],
+        now: datetime | None = None,
+    ) -> tuple[ProviderAccountHealth, ...]:
+        """Read persisted health, preserving the caller's fairness ordering."""
+
+        current = {item.account_id: item for item in await repository.list(provider)}  # type: ignore[attr-defined]
+        ordered = tuple(
+            current.get(account_id, ProviderAccountHealth(provider, account_id))
+            for account_id in accounts
+        )
+        return self.eligible(ordered, now)
+
+    async def record_failure_durable(
+        self,
+        repository: object,
+        account: ProviderAccountHealth,
+        *,
+        auth: bool = False,
+        rate_limited: bool = False,
+        cooldown_seconds: float = 60.0,
+        now: datetime | None = None,
+    ) -> ProviderAccountHealth:
+        updated = self.record_failure(
+            account,
+            auth=auth,
+            rate_limited=rate_limited,
+            cooldown_seconds=cooldown_seconds,
+            now=now,
+        )
+        at = now or datetime.now(UTC)
+        await repository.upsert(updated, at)  # type: ignore[attr-defined]
+        return updated
+
+    async def record_success_durable(
+        self, repository: object, account: ProviderAccountHealth, now: datetime | None = None
+    ) -> ProviderAccountHealth:
+        updated = self.record_success(account, now)
+        at = now or datetime.now(UTC)
+        await repository.upsert(updated, at)  # type: ignore[attr-defined]
+        return updated
 
 
 __all__ = ["AccountHealthState", "ProviderAccountHealth", "ProviderAccountSelector"]

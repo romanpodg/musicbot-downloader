@@ -25,6 +25,7 @@ from app.storage.repositories import (
     DownloadJobRepository,
     DownloadLifecycleRepository,
     OperationalAuditRepository,
+    ProviderAccountHealthRepository,
     ProviderResolutionRepository,
     RuntimeSettingsRepository,
     SingleFlightRepository,
@@ -61,6 +62,7 @@ class Repositories:
     download_preferences: UserDownloadPreferencesRepository
     batch_download: BatchDownloadRepository
     provider_resolution: ProviderResolutionRepository
+    provider_account_health: ProviderAccountHealthRepository
 
 
 class Database:
@@ -112,6 +114,7 @@ class Database:
             download_preferences=UserDownloadPreferencesRepository(session),
             batch_download=BatchDownloadRepository(session),
             provider_resolution=ProviderResolutionRepository(session),
+            provider_account_health=ProviderAccountHealthRepository(session),
         )
 
     @staticmethod
@@ -165,6 +168,11 @@ class Database:
                 or (
                     "unique constraint failed: deep_link_registry.telegram_bot_id, "
                     "deep_link_registry.idempotency_key"
+                )
+                in message
+                or (
+                    "unique constraint failed: download_provider_attempts.job_id, "
+                    "download_provider_attempts.attempt_number"
                 )
                 in message
             )

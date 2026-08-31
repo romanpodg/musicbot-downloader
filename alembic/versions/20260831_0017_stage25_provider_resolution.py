@@ -68,6 +68,7 @@ def upgrade() -> None:
         sa.Column("fallback_decision", sa.String(64)),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.UniqueConstraint("job_id", "attempt_number", name="uq_download_provider_attempt_number"),
     )
     op.create_index(
         "ix_download_provider_attempts_job_number",
@@ -77,9 +78,32 @@ def upgrade() -> None:
     op.create_index(
         "ix_download_provider_attempts_candidate", "download_provider_attempts", ["candidate_id"]
     )
+    op.create_table(
+        "account_health",
+        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column("provider", sa.String(32), nullable=False),
+        sa.Column("account_id", sa.String(128), nullable=False),
+        sa.Column("health_state", sa.String(32), nullable=False, server_default="HEALTHY"),
+        sa.Column("failure_streak", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("last_success_at", sa.DateTime(timezone=True)),
+        sa.Column("last_failure_at", sa.DateTime(timezone=True)),
+        sa.Column("cooldown_until", sa.DateTime(timezone=True)),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.UniqueConstraint("provider", "account_id", name="uq_provider_account_health_account"),
+    )
+    op.create_index(
+        "ix_account_health_provider_state",
+        "account_health",
+        ["provider", "health_state"],
+    )
+    op.create_index("ix_account_health_cooldown", "account_health", ["cooldown_until"])
 
 
 def downgrade() -> None:
+    op.drop_index("ix_account_health_cooldown", table_name="account_health")
+    op.drop_index("ix_account_health_provider_state", table_name="account_health")
+    op.drop_table("account_health")
     op.drop_index(
         "ix_download_provider_attempts_candidate", table_name="download_provider_attempts"
     )

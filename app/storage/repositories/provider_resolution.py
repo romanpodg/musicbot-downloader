@@ -5,12 +5,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.provider_resolution import ProviderCandidate
+from app.storage.models.download_lifecycle import DownloadLifecycleJob
 from app.storage.models.provider_resolution import (
     DownloadProviderAttemptRecord,
     DownloadProviderCandidateRecord,
@@ -112,6 +113,43 @@ class ProviderResolutionRepository:
         self._session.add(row)
         await self._session.flush()
         return row
+
+    async def next_attempt_number(self, job_id: int) -> int:
+        value = await self._session.scalar(
+            select(func.coalesce(func.max(DownloadProviderAttemptRecord.attempt_number), 0)).where(
+                DownloadProviderAttemptRecord.job_id == job_id
+            )
+        )
+        return int(value or 0) + 1
+
+    async def abandon_unfinished(self, job_id: int, now: datetime) -> int:
+        result = await self._session.execute(
+            update(DownloadProviderAttemptRecord)
+            .where(
+                DownloadProviderAttemptRecord.job_id == job_id,
+                DownloadProviderAttemptRecord.finished_at.is_(None),
+            )
+            .values(
+                status="ABANDONED",
+                finished_at=now,
+                failure_code="WORKER_LOST",
+                updated_at=now,
+            )
+        )
+        return int(cast(CursorResult[Any], result).rowcount or 0)
+
+    async def abandon_expired_jobs(self, now: datetime) -> int:
+        """Reconcile attempts left open by a dead lifecycle worker lease."""
+        job_ids = await self._session.scalars(
+            select(DownloadLifecycleJob.id).where(
+                DownloadLifecycleJob.lease_expires_at.is_not(None),
+                DownloadLifecycleJob.lease_expires_at <= now,
+            )
+        )
+        total = 0
+        for job_id in job_ids:
+            total += await self.abandon_unfinished(int(job_id), now)
+        return total
 
     async def finish_attempt(
         self,
