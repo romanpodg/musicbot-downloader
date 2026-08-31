@@ -39,6 +39,7 @@ from app.providers.onthespot.ipc import (
     GET_METADATA_METHOD,
     GET_TRACK_METADATA_METHOD,
     INITIALIZE_METHOD,
+    LIST_PROVIDER_ACCOUNTS_METHOD,
     LIST_SEARCHABLE_PROVIDERS_METHOD,
     MATCH_URL_METHOD,
     MAX_MESSAGE_BYTES,
@@ -193,6 +194,12 @@ class OnTheSpotProcessClient:
 
     async def list_searchable_providers(self) -> list[str]:
         result = await self._request(LIST_SEARCHABLE_PROVIDERS_METHOD, {})
+        if not isinstance(result, list) or not all(isinstance(value, str) for value in result):
+            raise ProviderUnavailable()
+        return result
+
+    async def list_provider_accounts(self, provider: str) -> list[str]:
+        result = await self._request(LIST_PROVIDER_ACCOUNTS_METHOD, {"provider": provider})
         if not isinstance(result, list) or not all(isinstance(value, str) for value in result):
             raise ProviderUnavailable()
         return result
@@ -456,6 +463,7 @@ class OnTheSpotProcessClient:
         plan_rank: int,
         *,
         timeout_seconds: float,
+        account_id: str | None = None,
     ) -> Mapping[str, Any]:
         result = await self._request(
             DOWNLOAD_NATIVE_METHOD,
@@ -464,6 +472,7 @@ class OnTheSpotProcessClient:
                 "provider_track_id": provider_track_id,
                 "job_id": job_id,
                 "plan_rank": plan_rank,
+                **({"account_id": account_id} if account_id is not None else {}),
             },
             timeout_seconds=timeout_seconds,
         )

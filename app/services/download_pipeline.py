@@ -77,6 +77,7 @@ class NativeDownloadBoundary(Protocol):
         plan_rank: int,
         *,
         timeout_seconds: float,
+        account_id: str | None = None,
     ) -> PreparedSourceMedia: ...
 
 
@@ -105,7 +106,41 @@ class DownloadPipeline:
         self._disk_guard = disk_guard
 
     async def download(self, track_id: int, quality_profile: QualityProfile) -> DownloadResult:
+        return await self._download_internal(track_id, quality_profile)
+
+    async def download_selected(
+        self,
+        track_id: int,
+        quality_profile: QualityProfile,
+        *,
+        provider: MusicProviderName,
+        provider_media_id: str,
+        account_id: str | None = None,
+    ) -> DownloadResult:
+        """Process one exact Stage 25 candidate; no provider fallback occurs here."""
+        return await self._download_internal(
+            track_id,
+            quality_profile,
+            selected=(provider, provider_media_id, account_id),
+        )
+
+    async def _download_internal(
+        self,
+        track_id: int,
+        quality_profile: QualityProfile,
+        selected: tuple[MusicProviderName, str, str | None] | None = None,
+    ) -> DownloadResult:
         resolution = await self._quality_resolver.resolve(track_id, quality_profile)
+        if selected is not None:
+            provider_name, media_id, account_id = selected
+            resolution = replace(
+                resolution,
+                plans=tuple(
+                    plan
+                    for plan in resolution.plans
+                    if plan.provider is provider_name and plan.provider_track_id == media_id
+                ),
+            )
         if not resolution.plans:
             code = (
                 DownloadFailureCode.NO_AVAILABLE_PROVIDER
@@ -153,13 +188,34 @@ class DownloadPipeline:
                             last_code = code
                             self._artifacts.cleanup_attempt(job_id, plan_rank)
                             continue
-                    declared = await self._provider.download_source(
-                        plan.provider,
-                        plan.provider_track_id,
-                        job_id,
-                        plan_rank,
-                        timeout_seconds=self._download_timeout,
-                    )
+                    if selected is not None:
+                        try:
+                            declared = await self._provider.download_source(
+                                plan.provider,
+                                plan.provider_track_id,
+                                job_id,
+                                plan_rank,
+                                timeout_seconds=self._download_timeout,
+                                account_id=account_id,
+                            )
+                        except TypeError as exc:
+                            if "account_id" not in str(exc):
+                                raise
+                            declared = await self._provider.download_source(
+                                plan.provider,
+                                plan.provider_track_id,
+                                job_id,
+                                plan_rank,
+                                timeout_seconds=self._download_timeout,
+                            )
+                    else:
+                        declared = await self._provider.download_source(
+                            plan.provider,
+                            plan.provider_track_id,
+                            job_id,
+                            plan_rank,
+                            timeout_seconds=self._download_timeout,
+                        )
                     if declared.file_path is None:
                         raise MediaOperationError(DownloadFailureCode.SOURCE_VALIDATION_FAILED)
                     self._artifacts.ensure_owned(declared.file_path, job_id)

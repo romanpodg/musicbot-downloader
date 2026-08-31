@@ -41,6 +41,7 @@ from app.providers.onthespot.ipc import (
     GET_METADATA_METHOD,
     GET_TRACK_METADATA_METHOD,
     INITIALIZE_METHOD,
+    LIST_PROVIDER_ACCOUNTS_METHOD,
     LIST_SEARCHABLE_PROVIDERS_METHOD,
     MATCH_URL_METHOD,
     MAX_MESSAGE_BYTES,
@@ -373,6 +374,20 @@ class OnTheSpotWorker:
                 and account.get("status") == "active"
                 and account.get("service") in registered
                 and account.get("service") in _SEARCHABLE_SERVICES
+            }
+        )
+
+    def list_provider_accounts(self, provider: str) -> list[str]:
+        if not self._initialized:
+            self.initialize()
+        return sorted(
+            {
+                str(account.get("uuid"))
+                for account in self._runtime.account_pool
+                if isinstance(account, Mapping)
+                and account.get("service") == provider
+                and account.get("status") == "active"
+                and account.get("uuid")
             }
         )
 
@@ -1726,7 +1741,12 @@ class OnTheSpotWorker:
         return _source_result("AVAILABLE", native=native)
 
     def download_native(
-        self, provider: str, provider_track_id: str, job_id: str, plan_rank: int
+        self,
+        provider: str,
+        provider_track_id: str,
+        job_id: str,
+        plan_rank: int,
+        account_id: str | None = None,
     ) -> dict[str, Any]:
         """Run only pinned service download/decryption code; skip all quality post-processing."""
 
@@ -1736,7 +1756,7 @@ class OnTheSpotWorker:
         partial = self._download_destination(job_id, plan_rank)
         try:
             with _silence_upstream():
-                token = self._accounts.get_account_token(provider)
+                token = self._account_token(provider, account_id)
                 if token is None and provider in _AUTHENTICATED_SERVICES:
                     raise WorkerError("provider_authentication_error")
                 metadata_function = self._registry.get_metadata_function(provider, "track")
@@ -1833,6 +1853,31 @@ class OnTheSpotWorker:
             "lossless": False,
             "provider_decrypted": True,
         }
+
+    def _account_token(self, provider: str, account_id: str | None) -> Any:
+        if account_id is None:
+            return self._accounts.get_account_token(provider)
+        accounts = self._config.get("accounts", [])
+        if not isinstance(accounts, list):
+            raise WorkerError("provider_authentication_error")
+        index = next(
+            (
+                i
+                for i, account in enumerate(accounts)
+                if isinstance(account, Mapping)
+                and account.get("service") == provider
+                and str(account.get("uuid", "")) == account_id
+            ),
+            None,
+        )
+        if index is None:
+            raise WorkerError("provider_authentication_error")
+        previous = self._config.get("active_account_number", 0)
+        self._config.set("active_account_number", index)
+        try:
+            return self._accounts.get_account_token(provider)
+        finally:
+            self._config.set("active_account_number", previous)
 
     @staticmethod
     def _prepare_tidal(token: Any, provider_track_id: str) -> dict[str, Any] | None:
@@ -2383,6 +2428,11 @@ def main() -> int:
                 result = worker.resolve_album_id(provider, provider_album_id)
             elif method == LIST_SEARCHABLE_PROVIDERS_METHOD:
                 result = worker.list_searchable_providers()
+            elif method == LIST_PROVIDER_ACCOUNTS_METHOD:
+                provider = params.get("provider")
+                if not isinstance(provider, str):
+                    raise WorkerError("unsupported_provider")
+                result = worker.list_provider_accounts(provider)
             elif method == SEARCH_TRACKS_METHOD:
                 provider = params.get("provider")
                 query = params.get("query")
@@ -2474,15 +2524,19 @@ def main() -> int:
                 provider_track_id = params.get("provider_track_id")
                 job_id = params.get("job_id")
                 plan_rank = params.get("plan_rank")
+                account_id = params.get("account_id")
                 if (
                     not isinstance(provider, str)
                     or not isinstance(provider_track_id, str)
                     or not isinstance(job_id, str)
                     or isinstance(plan_rank, bool)
                     or not isinstance(plan_rank, int)
+                    or (account_id is not None and not isinstance(account_id, str))
                 ):
                     raise WorkerError("unsupported_provider")
-                result = worker.download_native(provider, provider_track_id, job_id, plan_rank)
+                result = worker.download_native(
+                    provider, provider_track_id, job_id, plan_rank, account_id
+                )
             elif method == SHUTDOWN_METHOD:
                 worker.shutdown()
                 protocol_stdout.write(_response(request_id, result={"stopped": True}))

@@ -58,6 +58,9 @@ RETRYABLE_DOWNLOAD_CODES = frozenset(
         DownloadFailureCode.PROVIDER_UNAVAILABLE,
         DownloadFailureCode.SOURCE_UNAVAILABLE,
         DownloadFailureCode.PROVIDER_ERROR,
+        DownloadFailureCode.PROVIDER_TEMPORARY,
+        DownloadFailureCode.PROVIDER_RATE_LIMITED,
+        DownloadFailureCode.NETWORK,
         DownloadFailureCode.DOWNLOAD_TIMEOUT,
         DownloadFailureCode.TEMP_STORAGE_UNAVAILABLE,
     }
@@ -144,7 +147,8 @@ class DownloadWorkerBackend:
                 if self._stage25_executor is not None
                 else await self._pipeline.download(job.track_id, job.quality_profile)
             )
-            await self._audit_stage25_attempts(job, stage25_request_id, result.attempts)
+            if self._stage25_executor is None:
+                await self._audit_stage25_attempts(job, stage25_request_id, result.attempts)
             stored_path = self._validate_result(result, job)
             try:
                 async with self._database.transaction() as repositories:
@@ -197,7 +201,8 @@ class DownloadWorkerBackend:
                 retryable=True,
             )
         except DownloadPipelineError as exc:
-            await self._audit_stage25_attempts(job, stage25_request_id, exc.attempts)
+            if self._stage25_executor is None:
+                await self._audit_stage25_attempts(job, stage25_request_id, exc.attempts)
             await self._retry(
                 job,
                 worker_id,

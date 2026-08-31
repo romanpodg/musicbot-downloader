@@ -175,6 +175,10 @@ class OnTheSpotProvider(MusicProvider):
                 providers.append(provider)
         return tuple(providers)
 
+    async def list_provider_accounts(self, provider: MusicProviderName) -> tuple[str, ...]:
+        values = await self._process_client.list_provider_accounts(provider.value)
+        return tuple(value for value in values if value)
+
     async def search_tracks(self, request: TrackSearchRequest) -> list[TrackSearchCandidate]:
         raw = await self._process_client.search_tracks(
             request.target_provider.value, request.query, request.limit
@@ -379,6 +383,7 @@ class OnTheSpotProvider(MusicProvider):
         plan_rank: int,
         *,
         timeout_seconds: float,
+        account_id: str | None = None,
     ) -> PreparedSourceMedia:
         raw = await self._process_client.download_native(
             provider.value,
@@ -386,6 +391,7 @@ class OnTheSpotProvider(MusicProvider):
             job_id,
             plan_rank,
             timeout_seconds=timeout_seconds,
+            account_id=account_id,
         )
         _raise_runtime_result(raw)
         path_value = raw.get("file_path")

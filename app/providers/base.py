@@ -161,6 +161,10 @@ class MusicProvider(ABC):
             error_code="provider_not_downloadable",
         )
 
+    async def list_provider_accounts(self, provider: MusicProviderName) -> tuple[str, ...]:
+        """Return sanitized durable account identifiers for Stage 25 selection."""
+        return ()
+
     async def close(self) -> None:
         """Release provider-owned resources, if any."""
         return None

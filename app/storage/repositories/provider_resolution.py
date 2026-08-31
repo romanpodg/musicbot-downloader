@@ -122,6 +122,14 @@ class ProviderResolutionRepository:
         )
         return int(value or 0) + 1
 
+    async def list_attempts(self, job_id: int) -> list[DownloadProviderAttemptRecord]:
+        rows = await self._session.scalars(
+            select(DownloadProviderAttemptRecord)
+            .where(DownloadProviderAttemptRecord.job_id == job_id)
+            .order_by(DownloadProviderAttemptRecord.attempt_number)
+        )
+        return list(rows)
+
     async def abandon_unfinished(self, job_id: int, now: datetime) -> int:
         result = await self._session.execute(
             update(DownloadProviderAttemptRecord)

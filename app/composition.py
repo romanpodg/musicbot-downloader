@@ -75,6 +75,7 @@ from app.services.recognized_track_resolution import RecognizedTrackResolutionAd
 from app.services.runtime_prerequisites import TemporaryDiskGuard
 from app.services.runtime_worker_control import RuntimeWorkerControlService
 from app.services.singleflight import SingleFlightService, SubscriberNotifier
+from app.services.stage25_execution import Stage25DownloadExecutor
 from app.services.telegram_album_coordinator import (
     TelegramAlbumCoordinator,
     TelegramAlbumCoordinatorManager,
@@ -307,6 +308,13 @@ async def compose_stage9(
         subscriber_notifier=notifier,
         candidate_resolver=provider_candidates,
         candidate_ranker=provider_candidate_ranker,
+        stage25_executor=Stage25DownloadExecutor(
+            database,
+            pipeline,
+            provider,
+            provider_candidates,
+            provider_candidate_ranker,
+        ),
     )
     upload_backend = UploadWorkerBackend(
         database,
