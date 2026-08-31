@@ -52,6 +52,8 @@ from app.providers.onthespot.ipc import (
     RESET_PROVIDER_AUTHENTICATION_METHOD,
     RESOLVE_ALBUM_ID_METHOD,
     RESOLVE_ALBUM_METHOD,
+    RESOLVE_PLAYLIST_ID_METHOD,
+    RESOLVE_PLAYLIST_METHOD,
     SEARCH_TRACKS_METHOD,
     SHUTDOWN_METHOD,
     SPOTIFY_COMPONENT_STATUS_METHOD,
@@ -342,6 +344,60 @@ class OnTheSpotWorker:
             "release_date": release_date,
             "duration_ms": duration_total if durations_complete else None,
             "tracks": tracks,
+        }
+
+    def resolve_playlist(self, url: str) -> dict[str, Any]:
+        matched = self.match_url(url)
+        if matched["item_type"] != "playlist":
+            raise WorkerError("unsupported_album")
+        return self.resolve_playlist_id(matched["service"], matched["item_id"])
+
+    def resolve_playlist_id(self, service: str, playlist_id: str) -> dict[str, Any]:
+        if service not in _DOWNLOAD_SERVICES or not playlist_id or len(playlist_id) > 2048:
+            raise WorkerError("unsupported_album")
+        get_playlist = self._registry.SERVICE_PLAYLIST_DATA_FUNCTIONS.get(service)
+        if get_playlist is None:
+            raise WorkerError("unsupported_album")
+        try:
+            with _silence_upstream():
+                token = self._accounts.get_account_token(service)
+                if service in _AUTHENTICATED_SERVICES and token is None:
+                    raise WorkerError("provider_authentication_error")
+                playlist_title, playlist_creator, raw_ids = get_playlist(token, playlist_id)
+        except WorkerError:
+            raise
+        except (KeyError, IndexError) as exc:
+            raise WorkerError("provider_authentication_error") from exc
+        except Exception as exc:
+            raise WorkerError("metadata_unavailable") from exc
+        if not isinstance(raw_ids, list) or not raw_ids or len(raw_ids) > MAX_ALBUM_TRACKS:
+            raise WorkerError("metadata_unavailable")
+        title = _album_text(playlist_title) or f"Playlist {playlist_id}"
+        creator = _album_text(playlist_creator)
+        items: list[dict[str, Any]] = []
+        for position, value in enumerate(raw_ids, 1):
+            media_id = str(value).strip()
+            if not media_id or len(media_id) > 2048:
+                raise WorkerError("metadata_unavailable")
+            try:
+                raw = self._raw_track_metadata(service, media_id)
+            except WorkerError:
+                raw = {}
+            items.append(
+                {
+                    "provider_media_id": media_id,
+                    "position": position,
+                    "title": _album_text(raw.get("title")),
+                    "artist": _album_text(raw.get("artists")),
+                    "duration_ms": _album_positive_int(raw.get("length")),
+                }
+            )
+        return {
+            "provider": service,
+            "provider_playlist_id": playlist_id,
+            "title": title,
+            "creator": creator,
+            "items": items,
         }
 
     def _raw_track_metadata(self, service: str, item_id: str) -> Mapping[str, Any]:
@@ -2426,6 +2482,17 @@ def main() -> int:
                 if not isinstance(provider, str) or not isinstance(provider_album_id, str):
                     raise WorkerError("unsupported_album")
                 result = worker.resolve_album_id(provider, provider_album_id)
+            elif method == RESOLVE_PLAYLIST_METHOD:
+                url = params.get("url")
+                if not isinstance(url, str):
+                    raise WorkerError("invalid_track_url")
+                result = worker.resolve_playlist(url)
+            elif method == RESOLVE_PLAYLIST_ID_METHOD:
+                provider = params.get("provider")
+                provider_playlist_id = params.get("provider_playlist_id")
+                if not isinstance(provider, str) or not isinstance(provider_playlist_id, str):
+                    raise WorkerError("unsupported_album")
+                result = worker.resolve_playlist_id(provider, provider_playlist_id)
             elif method == LIST_SEARCHABLE_PROVIDERS_METHOD:
                 result = worker.list_searchable_providers()
             elif method == LIST_PROVIDER_ACCOUNTS_METHOD:

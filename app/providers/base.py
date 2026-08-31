@@ -59,7 +59,7 @@ class MusicProvider(ABC):
         """Validate a single-track URL and return its provider identity."""
 
     async def classify_url(self, url: str) -> MediaReference:
-        """Classify a safe URL as a Track or Album input."""
+        """Classify a safe URL as a Track, Album, or Playlist input."""
 
         return self.detect_url(url)
 
@@ -80,6 +80,13 @@ class MusicProvider(ABC):
         raise UnsupportedAlbum()
 
     async def get_playlist(self, url: str) -> ResolvedCollection:
+        from app.core.exceptions import UnsupportedAlbum
+
+        raise UnsupportedAlbum()
+
+    async def get_playlist_by_id(
+        self, provider: MusicProviderName, provider_playlist_id: str
+    ) -> ResolvedCollection:
         from app.core.exceptions import UnsupportedAlbum
 
         raise UnsupportedAlbum()

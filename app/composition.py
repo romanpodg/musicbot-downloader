@@ -385,7 +385,9 @@ async def compose_stage9(
         telegram_bot_id=stage8.bot_identity.telegram_bot_id,
         wake_event=album_wake,
     )
-    media_requests = TelegramMediaRequestService(provider, requests, albums)
+    media_requests = TelegramMediaRequestService(
+        provider, requests, albums, batch_download, download_preferences
+    )
     authorization = TelegramAuthorizationService(database, owner_id=settings.owner_id)
     admin_overview = AdminOverviewService(
         database,

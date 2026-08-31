@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from app.core.enums import (
+    BatchSourceType,
     MusicProviderName,
     NativeCodec,
     NativeContainer,
@@ -35,6 +36,8 @@ from app.core.models import (
     ProviderCapabilities,
     ProviderHealthEntry,
     ProviderSourceCheck,
+    ResolvedCollection,
+    ResolvedCollectionItem,
     TrackSearchCandidate,
     TrackSearchRequest,
 )
@@ -152,6 +155,25 @@ class OnTheSpotProvider(MusicProvider):
             expected_track_id=provider_track_id,
             source_url=_provider_track_url(provider, provider_track_id),
         )
+
+    async def get_playlist(self, url: str) -> ResolvedCollection:
+        reference = await self.classify_url(url)
+        if not isinstance(reference, PlaylistReference):
+            raise UnsupportedAlbum()
+        raw = await self._process_client.resolve_playlist(reference.source_url)
+        return _playlist_collection(raw, reference)
+
+    async def get_playlist_by_id(
+        self, provider: MusicProviderName, provider_playlist_id: str
+    ) -> ResolvedCollection:
+        if not provider_playlist_id or len(provider_playlist_id) > 2048:
+            raise MetadataUnavailable()
+        source_url = _provider_playlist_url(provider, provider_playlist_id)
+        if source_url is None:
+            raise UnsupportedAlbum()
+        reference = PlaylistReference(provider, provider_playlist_id, source_url)
+        raw = await self._process_client.resolve_playlist_id(provider.value, provider_playlist_id)
+        return _playlist_collection(raw, reference)
 
     async def get_metadata(self, url: str) -> NormalizedTrackMetadata:
         detected = self.detect_url(url)
@@ -569,8 +591,8 @@ class OnTheSpotProvider(MusicProvider):
                 )
         if host == "music.apple.com" and len(segments) >= 3 and "playlist" in segments:
             index = segments.index("playlist")
-            if index + 1 < len(segments) and _PATH_SEGMENT.fullmatch(segments[index + 1]):
-                item_id = segments[index + 1]
+            item_id = segments[-1]
+            if index + 1 < len(segments) and _PATH_SEGMENT.fullmatch(item_id) and len(item_id) >= 2:
                 return PlaylistReference(
                     MusicProviderName.APPLE_MUSIC,
                     item_id,
@@ -730,6 +752,49 @@ def _bounded_album_text(value: Any, *, required: bool = False) -> str | None:
     return text
 
 
+def _playlist_collection(
+    raw: Mapping[str, Any], reference: PlaylistReference
+) -> ResolvedCollection:
+    if (
+        raw.get("provider") != reference.provider.value
+        or raw.get("provider_playlist_id") != reference.provider_playlist_id
+    ):
+        raise MetadataUnavailable()
+    title = _bounded_album_text(raw.get("title"), required=True)
+    creator = _bounded_album_text(raw.get("creator"))
+    raw_items = raw.get("items")
+    if not isinstance(raw_items, list) or not raw_items or len(raw_items) > MAX_ALBUM_TRACKS:
+        raise MetadataUnavailable()
+    items: list[ResolvedCollectionItem] = []
+    for position, item in enumerate(raw_items, 1):
+        if not isinstance(item, Mapping):
+            raise MetadataUnavailable()
+        media_id = item.get("provider_media_id")
+        if not isinstance(media_id, str) or not media_id or len(media_id) > 2048:
+            raise MetadataUnavailable()
+        if item.get("position", position) != position:
+            raise MetadataUnavailable()
+        items.append(
+            ResolvedCollectionItem(
+                position=position,
+                provider_media_id=media_id,
+                title=_bounded_album_text(item.get("title")),
+                artist=_bounded_album_text(item.get("artist")),
+                duration_ms=_wire_positive_int(item.get("duration_ms")),
+                source_reference=_safe_metadata_url(item.get("source_url"), reference.provider),
+            )
+        )
+    return ResolvedCollection(
+        source_type=BatchSourceType.PLAYLIST,
+        provider=reference.provider,
+        collection_id=reference.provider_playlist_id,
+        source_reference=reference.source_url,
+        title=title or "",
+        creator=creator,
+        items=tuple(items),
+    )
+
+
 def _wire_positive_int(value: Any) -> int | None:
     if value is None or isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         return None
@@ -779,6 +844,18 @@ def _provider_album_url(provider: MusicProviderName, item_id: str) -> str | None
         return f"https://tidal.com/browse/album/{item_id}"
     if provider is MusicProviderName.SOUNDCLOUD and item_id.startswith(("https://", "http://")):
         return item_id
+    return None
+
+
+def _provider_playlist_url(provider: MusicProviderName, item_id: str) -> str | None:
+    if provider is MusicProviderName.APPLE_MUSIC:
+        return f"https://music.apple.com/us/playlist/{item_id}"
+    if provider is MusicProviderName.DEEZER:
+        return f"https://www.deezer.com/playlist/{item_id}"
+    if provider is MusicProviderName.SPOTIFY:
+        return f"https://open.spotify.com/playlist/{item_id}"
+    if provider is MusicProviderName.TIDAL:
+        return f"https://tidal.com/browse/playlist/{item_id}"
     return None
 
 

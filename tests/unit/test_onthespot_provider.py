@@ -48,6 +48,18 @@ class FakeProcessClient:
     async def list_searchable_providers(self) -> list[str]:
         return ["deezer", "not_a_provider", "deezer"]
 
+    async def resolve_playlist(self, url: str) -> Mapping[str, Any]:
+        return {
+            "provider": "spotify",
+            "provider_playlist_id": "0123456789012345678901",
+            "title": "Snapshot playlist",
+            "creator": "Owner",
+            "items": [
+                {"position": 1, "provider_media_id": "track-a", "title": "A"},
+                {"position": 2, "provider_media_id": "track-b", "title": "B"},
+            ],
+        }
+
     async def search_tracks(self, provider: str, query: str, limit: int) -> list[Mapping[str, Any]]:
         self.requested_search = (provider, query, limit)
         return [
@@ -162,6 +174,19 @@ async def test_search_capabilities_and_candidates_are_normalized() -> None:
     assert len(candidates) == 1
     assert candidates[0].provider_track_id == "123"
     assert candidates[0].url == "https://www.deezer.com/track/123"
+
+
+@pytest.mark.asyncio
+async def test_playlist_snapshot_is_normalized_with_immutable_order() -> None:
+    provider = _provider(FakeProcessClient())
+    collection = await provider.get_playlist(
+        "https://open.spotify.com/playlist/0123456789012345678901"
+    )
+    assert collection.title == "Snapshot playlist"
+    assert [(item.position, item.provider_media_id) for item in collection.items] == [
+        (1, "track-a"),
+        (2, "track-b"),
+    ]
 
 
 @pytest.mark.asyncio

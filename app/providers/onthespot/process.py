@@ -49,6 +49,8 @@ from app.providers.onthespot.ipc import (
     RESET_PROVIDER_AUTHENTICATION_METHOD,
     RESOLVE_ALBUM_ID_METHOD,
     RESOLVE_ALBUM_METHOD,
+    RESOLVE_PLAYLIST_ID_METHOD,
+    RESOLVE_PLAYLIST_METHOD,
     SEARCH_TRACKS_METHOD,
     SHUTDOWN_METHOD,
     SPOTIFY_COMPONENT_STATUS_METHOD,
@@ -187,6 +189,23 @@ class OnTheSpotProcessClient:
         result = await self._request(
             RESOLVE_ALBUM_ID_METHOD,
             {"provider": provider, "provider_album_id": provider_album_id},
+        )
+        if not isinstance(result, dict):
+            raise MetadataUnavailable()
+        return result
+
+    async def resolve_playlist(self, url: str) -> Mapping[str, Any]:
+        result = await self._request(RESOLVE_PLAYLIST_METHOD, {"url": url})
+        if not isinstance(result, dict):
+            raise MetadataUnavailable()
+        return result
+
+    async def resolve_playlist_id(
+        self, provider: str, provider_playlist_id: str
+    ) -> Mapping[str, Any]:
+        result = await self._request(
+            RESOLVE_PLAYLIST_ID_METHOD,
+            {"provider": provider, "provider_playlist_id": provider_playlist_id},
         )
         if not isinstance(result, dict):
             raise MetadataUnavailable()

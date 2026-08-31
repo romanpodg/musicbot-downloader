@@ -16,8 +16,14 @@ from app.core.delivery_targets import PrivateUserTarget
 from app.core.download import DownloadDeliveryTarget, DownloadOptions, DownloadRequest
 from app.core.download_preferences import EffectiveDownloadProfile, UserDownloadPreferences
 from app.core.enums import BatchItemStatus, BatchSourceType, BatchStatus
+from app.core.exceptions import (
+    MetadataUnavailable,
+    ProviderAuthenticationError,
+    ProviderUnavailable,
+)
 from app.core.models import ResolvedCollection, ResolvedCollectionItem
 from app.core.search import Artist, Track
+from app.core.telegram_context import TelegramChatType, TelegramContext
 from app.storage import Database
 from app.storage.models import BatchDownloadRequest
 from app.storage.models.base import utc_now
@@ -41,6 +47,23 @@ class BatchLimitExceeded(ValueError):
 
 class ActiveBatchLimitExceeded(ValueError):
     pass
+
+
+_RETRYABLE_FAILURE_CODES = frozenset(
+    {
+        "NO_AVAILABLE_PROVIDER",
+        "AUTH_REQUIRED",
+        "PROVIDER_AUTH",
+        "PROVIDER_UNAVAILABLE",
+        "SOURCE_UNAVAILABLE",
+        "PROVIDER_ERROR",
+        "PROVIDER_TEMPORARY",
+        "PROVIDER_RATE_LIMITED",
+        "NETWORK",
+        "DOWNLOAD_TIMEOUT",
+        "TEMP_STORAGE_UNAVAILABLE",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +114,12 @@ class BatchDownloadService:
         parent_batch_id: int | None = None,
         retry_generation: int = 0,
     ) -> BatchDownloadRequest:
+        lock = self._admission_locks.setdefault(user_id, asyncio.Lock())
+        async with lock:
+            async with self.database.transaction() as repositories:
+                existing = await repositories.batch_download.get_by_confirmation(confirmation_id)
+                if existing is not None:
+                    return existing
         collection = await self.resolver.resolve_collection(source_type, source_reference)
         return await self.create_from_collection(
             user_id=user_id,
@@ -151,14 +180,16 @@ class BatchDownloadService:
                 BatchStatus.CANCELLED,
             }:
                 return 0
-            if batch.requester_user_id != target.user_id:
+            owner = await repositories.users.get(batch.requester_user_id)
+            if owner is None or target.user_id not in {owner.id, owner.telegram_id}:
                 return 0
             items = await repositories.batch_download.list_items(batch_id)
+            owner_telegram_id = owner.telegram_id
         admitted = 0
         child_target = DownloadDeliveryTarget(
-            user_id=target.user_id,
-            context=target.context,
-            delivery_target=PrivateUserTarget(target.user_id),
+            user_id=owner_telegram_id,
+            context=TelegramContext(owner_telegram_id, owner_telegram_id, TelegramChatType.PRIVATE),
+            delivery_target=PrivateUserTarget(owner_telegram_id),
             source_message_id=target.source_message_id,
         )
         for item in items:
@@ -191,12 +222,20 @@ class BatchDownloadService:
             try:
                 result = await self.child_admitter(request, target=child_target)
             except Exception as exc:
+                if isinstance(exc, ProviderAuthenticationError):
+                    error_code = "PROVIDER_AUTH"
+                elif isinstance(exc, ProviderUnavailable):
+                    error_code = "PROVIDER_UNAVAILABLE"
+                elif isinstance(exc, MetadataUnavailable):
+                    error_code = "MEDIA_NOT_FOUND"
+                else:
+                    error_code = "INTERNAL"
                 async with self.database.transaction() as repositories:
                     await repositories.batch_download.set_item(
                         item.id,
-                        status=BatchItemStatus.SKIPPED,
+                        status=BatchItemStatus.FAILED,
                         now=self.clock(),
-                        error_code="MEDIA_UNAVAILABLE",
+                        error_code=error_code,
                         error_message=str(exc)[:256],
                     )
                 continue
@@ -215,6 +254,10 @@ class BatchDownloadService:
                     download_request_id=request_id,
                 )
             admitted += 1
+            # Admission is intentionally cooperative: a large collection must
+            # yield between children so ordinary user requests can enter the
+            # same fair Stage 21 queue instead of waiting behind one fan-out.
+            await asyncio.sleep(0)
         return admitted
 
     async def cancel(self, batch_id: int, *, user_id: int) -> bool:
@@ -278,24 +321,39 @@ class BatchDownloadService:
             }:
                 return None
             items = await repositories.batch_download.list_items(batch_id)
+            retry_items_list: list[ResolvedCollectionItem] = []
+            for item in items:
+                retryable = False
+                if item.download_request_id is not None:
+                    job = await repositories.download_lifecycle.get_job_for_request(
+                        item.download_request_id
+                    )
+                    if job is not None and str(job.status.value) == "FAILED":
+                        code = job.error_code or item.error_code
+                        retryable = code in _RETRYABLE_FAILURE_CODES
+                elif item.status is BatchItemStatus.FAILED:
+                    retryable = item.error_code in _RETRYABLE_FAILURE_CODES
+                if retryable:
+                    retry_items_list.append(
+                        ResolvedCollectionItem(
+                            position=len(retry_items_list) + 1,
+                            provider_media_id=item.provider_media_id,
+                            title=item.title,
+                            artist=item.artist,
+                            duration_ms=item.duration_ms,
+                            source_reference=item.source_reference,
+                        )
+                    )
             retry_items = tuple(
                 ResolvedCollectionItem(
-                    position=index,
+                    position=item.position,
                     provider_media_id=item.provider_media_id,
                     title=item.title,
                     artist=item.artist,
                     duration_ms=item.duration_ms,
                     source_reference=item.source_reference,
                 )
-                for index, item in enumerate(
-                    (
-                        item
-                        for item in items
-                        if item.status is BatchItemStatus.FAILED
-                        and item.error_code != "MEDIA_UNAVAILABLE"
-                    ),
-                    start=1,
-                )
+                for item in retry_items_list
             )
             if not retry_items:
                 return None
@@ -339,6 +397,31 @@ class BatchDownloadService:
             await repositories.batch_download.recover_orphaned_admission(batch_id, self.clock())
             if batch.cancel_requested_at is not None:
                 await repositories.batch_download.cancel_pending(batch_id, self.clock())
+            items = await repositories.batch_download.list_items(batch_id)
+            for item in items:
+                if item.download_request_id is None:
+                    continue
+                job = await repositories.download_lifecycle.get_job_for_request(
+                    item.download_request_id
+                )
+                if job is None:
+                    continue
+                if job.status.value == "FAILED":
+                    await repositories.batch_download.set_item(
+                        item.id,
+                        status=BatchItemStatus.FAILED,
+                        now=self.clock(),
+                        error_code=job.error_code,
+                        error_message=job.error_message,
+                    )
+                elif job.status.value == "CANCELLED":
+                    await repositories.batch_download.set_item(
+                        item.id,
+                        status=BatchItemStatus.SKIPPED,
+                        now=self.clock(),
+                        error_code=job.error_code or "BATCH_CANCELLED",
+                        error_message=job.error_message,
+                    )
             counts = await repositories.batch_download.counts(batch_id)
             total = batch.total_items
             unfinished = sum(
@@ -392,4 +475,24 @@ class BatchDownloadService:
             ids = tuple(batch.id for batch in batches)
         for batch_id in ids:
             await self.reconcile(batch_id)
+            # Resume pending snapshot members after a process restart using the
+            # same ordinary Stage 21 admission path and private-user policy.
+            async with self.database.transaction() as repositories:
+                batch = await repositories.batch_download.get(batch_id)
+                owner = (
+                    await repositories.users.get(batch.requester_user_id)
+                    if batch is not None
+                    else None
+                )
+            if batch is not None and owner is not None and batch.cancel_requested_at is None:
+                context = TelegramContext(
+                    owner.telegram_id, owner.telegram_id, TelegramChatType.PRIVATE
+                )
+                target = DownloadDeliveryTarget(
+                    user_id=owner.telegram_id,
+                    context=context,
+                    delivery_target=PrivateUserTarget(owner.telegram_id),
+                    source_message_id=0,
+                )
+                await self.admit_pending(batch_id, target=target)
         return len(ids)

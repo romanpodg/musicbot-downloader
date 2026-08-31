@@ -470,7 +470,7 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
                     show_alert=True,
                 )
                 return
-            target = _batch_target(callback, user.id)
+            target = _batch_target(callback, user.telegram_id)
             await dependencies.batch_download.admit_pending(batch.id, target=target)
             await _remove_keyboard(callback)
             await _render_batch(callback, dependencies, batch.id, locale)
@@ -527,7 +527,7 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
             await _invalid_callback(callback, dependencies.presentation, locale)
             return
         await dependencies.batch_download.admit_pending(
-            retry.id, target=_batch_target(callback, user.id)
+            retry.id, target=_batch_target(callback, user.telegram_id)
         )
         await _render_batch(callback, dependencies, retry.id, locale)
         await callback.answer()
@@ -768,6 +768,24 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
                 if admission.album is not None:
                     await _send_album_request_card(message, user, admission.album.id, dependencies)
                     return
+                if admission.batch is not None:
+                    if dependencies.batch_download is None:
+                        raise UnsupportedMediaType()
+                    batch = admission.batch
+                    await dependencies.batch_download.admit_pending(
+                        batch.id, target=_message_batch_target(message, user.telegram_id)
+                    )
+                    progress = await dependencies.batch_download.progress(batch.id)
+                    if progress is not None:
+                        await message.answer(
+                            dependencies.presentation.batch_progress_text(
+                                batch.title, progress, locale, terminal=False
+                            ),
+                            reply_markup=dependencies.presentation.batch_progress_keyboard(
+                                locale, batch_id=batch.id
+                            ),
+                        )
+                    return
                 if admission.track is None:
                     raise UnsupportedMediaType()
                 request = admission.track
@@ -859,6 +877,19 @@ def _batch_target(callback: CallbackQuery, user_id: int) -> DownloadDeliveryTarg
         context=context,
         delivery_target=PrivateUserTarget(user_id),
         source_message_id=(message.message_id if isinstance(message, Message) else 1),
+    )
+
+
+def _message_batch_target(message: Message, user_id: int) -> DownloadDeliveryTarget:
+    context = telegram_context_from_values(user_id, message.chat.id, message.chat.type)
+    if context is None:
+        context = telegram_context_from_values(user_id, user_id, "private")
+    assert context is not None
+    return DownloadDeliveryTarget(
+        user_id=user_id,
+        context=context,
+        delivery_target=PrivateUserTarget(user_id),
+        source_message_id=message.message_id,
     )
 
 
