@@ -68,6 +68,12 @@ class DownloadPipelineBoundary(Protocol):
     async def download(self, track_id: int, quality_profile: QualityProfile) -> DownloadResult: ...
 
 
+class Stage25ExecutionBoundary(Protocol):
+    """Authoritative source execution seam for Stage 25-enabled workers."""
+
+    async def download(self, job: DownloadJob) -> DownloadResult: ...
+
+
 class WorkerBackend(Protocol):
     wake_event: asyncio.Event
 
@@ -92,6 +98,7 @@ class DownloadWorkerBackend:
         subscriber_notifier: SubscriberLifecycleNotifier | None = None,
         candidate_resolver: ProviderCandidateResolver | None = None,
         candidate_ranker: ProviderCandidateRanker | None = None,
+        stage25_executor: Stage25ExecutionBoundary | None = None,
     ) -> None:
         self._database = database
         self._pipeline = pipeline
@@ -103,6 +110,7 @@ class DownloadWorkerBackend:
         self._subscriber_notifier = subscriber_notifier
         self._candidate_resolver = candidate_resolver
         self._candidate_ranker = candidate_ranker or ProviderCandidateRanker()
+        self._stage25_executor = stage25_executor
 
     async def claim(self, worker_id: str) -> DownloadJob | None:
         now = self._clock()
@@ -131,7 +139,11 @@ class DownloadWorkerBackend:
         try:
             stage25_request_id = await self._prepare_stage25(job)
             # A retry always asks Stage 6 to resolve current runtime/auth state afresh.
-            result = await self._pipeline.download(job.track_id, job.quality_profile)
+            result = (
+                await self._stage25_executor.download(job)
+                if self._stage25_executor is not None
+                else await self._pipeline.download(job.track_id, job.quality_profile)
+            )
             await self._audit_stage25_attempts(job, stage25_request_id, result.attempts)
             stored_path = self._validate_result(result, job)
             try:
