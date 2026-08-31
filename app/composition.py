@@ -273,6 +273,8 @@ async def compose_stage9(
         database, capability_provider=getattr(provider, "provider_capabilities", None)
     )
     artifact_cache = TelegramArtifactCacheService(database)
+    provider_candidates = ProviderCandidateResolver(provider, database)
+    provider_candidate_ranker = ProviderCandidateRanker()
     stage8 = await compose_stage8(
         database,
         settings,
@@ -303,6 +305,8 @@ async def compose_stage9(
         artifacts,
         wake_event=download_wake,
         subscriber_notifier=notifier,
+        candidate_resolver=provider_candidates,
+        candidate_ranker=provider_candidate_ranker,
     )
     upload_backend = UploadWorkerBackend(
         database,
@@ -357,8 +361,6 @@ async def compose_stage9(
     )
     download_service = DownloadService(download_use_case)
     history = DownloadHistoryService(database, lifecycle=lifecycle, submissions=submissions)
-    provider_candidates = ProviderCandidateResolver(provider, database)
-    provider_candidate_ranker = ProviderCandidateRanker()
     batch_download = BatchDownloadService(
         database,
         provider,

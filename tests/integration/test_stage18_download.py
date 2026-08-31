@@ -59,6 +59,24 @@ class _UnusedTrackResolver:
         )
 
 
+@dataclass
+class _Stage25ResolverSpy:
+    calls: int = 0
+
+    async def resolve(self, identity, **kwargs):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        return ()
+
+
+@dataclass
+class _Stage25RankerSpy:
+    calls: int = 0
+
+    def rank(self, candidates, **kwargs):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        return tuple(candidates)
+
+
 class _Gateway:
     def __init__(self) -> None:
         self.sent: list[str] = []
@@ -223,7 +241,16 @@ async def test_stage18_confirmed_recognition_reuses_queue_workers_and_delivery(
     artifacts = DownloadArtifactManager(tmp_path / "artifacts")
     notifier = SubscriberNotifier()
     pipeline = _Pipeline(artifacts, source_id)
-    downloader = DownloadWorkerBackend(database, pipeline, artifacts, subscriber_notifier=notifier)
+    resolver_spy = _Stage25ResolverSpy()
+    ranker_spy = _Stage25RankerSpy()
+    downloader = DownloadWorkerBackend(
+        database,
+        pipeline,
+        artifacts,
+        subscriber_notifier=notifier,
+        candidate_resolver=resolver_spy,  # type: ignore[arg-type]
+        candidate_ranker=ranker_spy,  # type: ignore[arg-type]
+    )
     download_job = await downloader.claim("stage18-download")
     assert download_job is not None
     await downloader.process(download_job, "stage18-download")
@@ -250,4 +277,6 @@ async def test_stage18_confirmed_recognition_reuses_queue_workers_and_delivery(
         assert completed is not None
         assert completed.status is TelegramDeliveryStatus.DELIVERED
     assert pipeline.calls == 1
+    assert resolver_spy.calls == 1
+    assert ranker_spy.calls == 1
     assert gateway.sent == ["stage18-file-id"]

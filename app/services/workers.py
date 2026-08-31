@@ -24,8 +24,10 @@ from app.core.models import (
     UploadRequest,
     WorkerPoolSnapshot,
 )
+from app.core.provider_resolution import CanonicalMediaIdentity, ProviderCandidateRanker
 from app.services.artifacts import ArtifactPathError, DownloadArtifactManager
 from app.services.download_lifecycle import DownloadLifecycleService
+from app.services.provider_candidates import ProviderCandidateResolver
 from app.services.queues import (
     DownloadQueueService,
     SubscriberLifecycleNotifier,
@@ -88,6 +90,8 @@ class DownloadWorkerBackend:
         lease_seconds: float = DEFAULT_LEASE_SECONDS,
         wake_event: asyncio.Event | None = None,
         subscriber_notifier: SubscriberLifecycleNotifier | None = None,
+        candidate_resolver: ProviderCandidateResolver | None = None,
+        candidate_ranker: ProviderCandidateRanker | None = None,
     ) -> None:
         self._database = database
         self._pipeline = pipeline
@@ -97,6 +101,8 @@ class DownloadWorkerBackend:
         self._lease = timedelta(seconds=lease_seconds)
         self.wake_event = wake_event or asyncio.Event()
         self._subscriber_notifier = subscriber_notifier
+        self._candidate_resolver = candidate_resolver
+        self._candidate_ranker = candidate_ranker or ProviderCandidateRanker()
 
     async def claim(self, worker_id: str) -> DownloadJob | None:
         now = self._clock()
@@ -121,9 +127,12 @@ class DownloadWorkerBackend:
         if not isinstance(job, DownloadJob):
             raise TypeError("download worker received wrong job type")
         result: DownloadResult | None = None
+        stage25_request_id: int | None = None
         try:
+            stage25_request_id = await self._prepare_stage25(job)
             # A retry always asks Stage 6 to resolve current runtime/auth state afresh.
             result = await self._pipeline.download(job.track_id, job.quality_profile)
+            await self._audit_stage25_attempts(job, stage25_request_id, result.attempts)
             stored_path = self._validate_result(result, job)
             try:
                 async with self._database.transaction() as repositories:
@@ -176,6 +185,7 @@ class DownloadWorkerBackend:
                 retryable=True,
             )
         except DownloadPipelineError as exc:
+            await self._audit_stage25_attempts(job, stage25_request_id, exc.attempts)
             await self._retry(
                 job,
                 worker_id,
@@ -196,6 +206,73 @@ class DownloadWorkerBackend:
                 extra={"job_id": job.id, "job_type": "download", "worker_id": worker_id},
             )
             await self._fail(job, worker_id, QueueErrorCode.DOWNLOAD_WORKER_ERROR.value)
+
+    async def _prepare_stage25(self, job: DownloadJob) -> int | None:
+        """Resolve/rank Stage 25 candidates after cache miss and before source execution."""
+        if self._candidate_resolver is None:
+            return None
+        async with self._database.transaction() as repositories:
+            track = await repositories.tracks.get_track_by_id(job.track_id)
+            request = await repositories.download_lifecycle.latest_request_for_track(job.track_id)
+        if track is None:
+            return request.id if request is not None else None
+        identity = CanonicalMediaIdentity.from_values(
+            title=track.title or "Unknown",
+            artist=track.artist or "Unknown",
+            album=track.album,
+            isrc=track.isrc,
+            duration_ms=track.duration_ms,
+        )
+        try:
+            candidates = await self._candidate_resolver.resolve(
+                identity,
+                source_provider=request.provider if request is not None else None,
+                source_media_id=request.provider_media_id if request is not None else None,
+                request_id=request.id if request is not None else None,
+            )
+            self._candidate_ranker.rank(
+                candidates,
+                source_provider=request.provider if request is not None else None,
+                profile=request.effective_profile if request is not None else None,
+                exact_replay=bool(request and request.replay_of_request_id),
+            )
+        except Exception:
+            # Discovery is advisory; the established source pipeline remains viable.
+            logger.info(
+                "Stage 25 candidate preparation unavailable", extra={"track_id": job.track_id}
+            )
+        return request.id if request is not None else None
+
+    async def _audit_stage25_attempts(
+        self, job: DownloadJob, request_id: int | None, attempts: object
+    ) -> None:
+        if request_id is None or not isinstance(attempts, tuple):
+            return
+        async with self._database.transaction() as repositories:
+            lifecycle = await repositories.download_lifecycle.get_job_for_request(request_id)
+            candidates = await repositories.provider_resolution.list_candidates(request_id)
+            if lifecycle is None:
+                return
+            by_key = {(row.provider, row.provider_media_id): row for row in candidates}
+            for item in attempts:
+                key = (item.provider.value, item.provider_track_id)
+                candidate = by_key.get(key)
+                if candidate is None:
+                    continue
+                number = await repositories.provider_resolution.next_attempt_number(lifecycle.id)
+                row = await repositories.provider_resolution.start_attempt(
+                    job_id=lifecycle.id,
+                    candidate_id=candidate.id,
+                    attempt_number=number,
+                    provider_account_id=None,
+                    now=self._clock(),
+                )
+                await repositories.provider_resolution.finish_attempt(
+                    row.id,
+                    status=item.status.value,
+                    now=self._clock(),
+                    failure_code=item.failure_code.value if item.failure_code else None,
+                )
 
     def _validate_result(self, result: DownloadResult, job: DownloadJob) -> str:
         if result.track_id != job.track_id or result.requested_profile is not job.quality_profile:

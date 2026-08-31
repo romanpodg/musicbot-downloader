@@ -174,6 +174,15 @@ class DownloadLifecycleRepository:
     async def get_request(self, request_id: int) -> DownloadRequestRecord | None:
         return await self._session.get(DownloadRequestRecord, request_id)
 
+    async def latest_request_for_track(self, track_id: int) -> DownloadRequestRecord | None:
+        value = await self._session.scalar(
+            select(DownloadRequestRecord)
+            .where(DownloadRequestRecord.source_reference == str(track_id))
+            .order_by(DownloadRequestRecord.id.desc())
+            .limit(1)
+        )
+        return value
+
     async def get_job(self, job_id: int) -> DownloadLifecycleJob | None:
         return await self._session.get(DownloadLifecycleJob, job_id)
 
