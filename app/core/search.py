@@ -42,6 +42,7 @@ class Track:
     provider_track_id: str
     album: Album | None = None
     duration_ms: int | None = None
+    isrc: str | None = None
 
     def __post_init__(self) -> None:
         _require_text(self.id, "track ID")

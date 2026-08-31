@@ -16,6 +16,7 @@ from app.config import Settings
 from app.core.enums import MusicProviderName
 from app.core.models import TelegramBotIdentity
 from app.core.provider_accounts import ProviderAuthorizationMethod
+from app.core.provider_resolution import ProviderCandidateRanker
 from app.i18n import LocalizationService
 from app.providers.account_management import (
     ProviderAccountRuntimeProbe,
@@ -60,6 +61,7 @@ from app.services.download_requests import ExistingDeliverySubmissionService
 from app.services.media import MediaProbe, Transcoder
 from app.services.provider_accounts import ProviderAccountManagementService
 from app.services.provider_authorization import ProviderAuthorizationCoordinator
+from app.services.provider_candidates import ProviderCandidateResolver
 from app.services.provider_health import ProviderHealthProbe, ProviderHealthService
 from app.services.provider_resolution import ProviderResolver
 from app.services.quality_resolution import QualityResolver
@@ -179,6 +181,8 @@ class Stage9Components:
     batch_download: BatchDownloadService
     artifact_cache: TelegramArtifactCacheService
     history: DownloadHistoryService
+    provider_candidates: ProviderCandidateResolver
+    provider_candidate_ranker: ProviderCandidateRanker
 
     async def start(self) -> None:
         try:
@@ -353,6 +357,8 @@ async def compose_stage9(
     )
     download_service = DownloadService(download_use_case)
     history = DownloadHistoryService(database, lifecycle=lifecycle, submissions=submissions)
+    provider_candidates = ProviderCandidateResolver(provider, database)
+    provider_candidate_ranker = ProviderCandidateRanker()
     batch_download = BatchDownloadService(
         database,
         provider,
@@ -564,4 +570,6 @@ async def compose_stage9(
         batch_download=batch_download,
         artifact_cache=artifact_cache,
         history=history,
+        provider_candidates=provider_candidates,
+        provider_candidate_ranker=provider_candidate_ranker,
     )

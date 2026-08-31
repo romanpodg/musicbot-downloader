@@ -25,6 +25,7 @@ from app.storage.repositories import (
     DownloadJobRepository,
     DownloadLifecycleRepository,
     OperationalAuditRepository,
+    ProviderResolutionRepository,
     RuntimeSettingsRepository,
     SingleFlightRepository,
     TelegramAlbumRepository,
@@ -59,6 +60,7 @@ class Repositories:
     download_lifecycle: DownloadLifecycleRepository
     download_preferences: UserDownloadPreferencesRepository
     batch_download: BatchDownloadRepository
+    provider_resolution: ProviderResolutionRepository
 
 
 class Database:
@@ -109,6 +111,7 @@ class Database:
             download_lifecycle=DownloadLifecycleRepository(session),
             download_preferences=UserDownloadPreferencesRepository(session),
             batch_download=BatchDownloadRepository(session),
+            provider_resolution=ProviderResolutionRepository(session),
         )
 
     @staticmethod

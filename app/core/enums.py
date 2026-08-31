@@ -95,6 +95,7 @@ class DownloadFailureCode(StrEnum):
     PROVIDER_RATE_LIMITED = "PROVIDER_RATE_LIMITED"
     PROVIDER_AUTH = "PROVIDER_AUTH"
     MEDIA_NOT_FOUND = "MEDIA_NOT_FOUND"
+    MEDIA_UNAVAILABLE = "MEDIA_UNAVAILABLE"
     NETWORK = "NETWORK"
     PROCESSING = "PROCESSING"
     DELIVERY_TEMPORARY = "DELIVERY_TEMPORARY"
@@ -372,6 +373,21 @@ class ProviderHealthErrorCode(StrEnum):
 class ProviderResolutionStatus(StrEnum):
     AVAILABLE = "AVAILABLE"
     NO_AVAILABLE_PROVIDER = "NO_AVAILABLE_PROVIDER"
+
+
+class ProviderAttemptStatus(StrEnum):
+    STARTED = "STARTED"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    ABANDONED = "ABANDONED"
+
+
+class ProviderAccountHealthState(StrEnum):
+    HEALTHY = "HEALTHY"
+    DEGRADED = "DEGRADED"
+    COOLDOWN = "COOLDOWN"
+    AUTH_FAILED = "AUTH_FAILED"
+    DISABLED = "DISABLED"
 
 
 class TrackMatchDecision(StrEnum):

@@ -10,6 +10,12 @@ from app.storage.models.download_lifecycle import (
 )
 from app.storage.models.download_preferences import UserDownloadPreferencesRecord
 from app.storage.models.operational_audit import OperationalAuditEvent
+from app.storage.models.provider_resolution import (
+    DownloadProviderAttemptRecord,
+    DownloadProviderCandidateRecord,
+    ProviderAttempt,
+    ProviderCandidateRecord,
+)
 from app.storage.models.queue import (
     DownloadFlight,
     DownloadJob,
@@ -51,4 +57,8 @@ __all__ = [
     "TelegramAlbumRequest",
     "UploadJob",
     "User",
+    "DownloadProviderCandidateRecord",
+    "DownloadProviderAttemptRecord",
+    "ProviderCandidateRecord",
+    "ProviderAttempt",
 ]

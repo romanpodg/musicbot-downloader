@@ -21,11 +21,20 @@ from app.core.models import (
     ProviderResolutionResult,
     ProviderSourceCheck,
 )
+from app.core.provider_resolution import ProviderCandidate, ProviderCandidateRanker
 from app.providers.base import MusicProvider
+from app.services.provider_candidates import ProviderCandidateResolver
 from app.storage import Database
 from app.storage.models import TrackSource
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "ProviderResolver",
+    "ProviderCandidateResolver",
+    "ProviderCandidate",
+    "ProviderCandidateRanker",
+]
 
 
 class ProviderResolver:
