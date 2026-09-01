@@ -50,6 +50,7 @@ from app.services.artifact_cleanup import (
 from app.services.artifacts import ActiveArtifactRegistry, DownloadArtifactManager
 from app.services.authorization import TelegramAuthorizationService
 from app.services.batch_download import BatchDownloadService
+from app.services.collection_status_presentation import CollectionStatusPresentationService
 from app.services.crash_recovery import CrashRecoveryService
 from app.services.deep_links import DeepLinkRegistryService
 from app.services.delivery import DeliveryPreparationService
@@ -187,6 +188,7 @@ class Stage9Components:
     batch_download: BatchDownloadService
     artifact_cache: TelegramArtifactCacheService
     status_presentation: TelegramStatusPresentationService
+    collection_presentation: CollectionStatusPresentationService
     history: DownloadHistoryService
     provider_candidates: ProviderCandidateResolver
     provider_candidate_ranker: ProviderCandidateRanker
@@ -198,10 +200,11 @@ class Stage9Components:
             lifecycle = getattr(self, "download_lifecycle", None)
             if lifecycle is not None:
                 await lifecycle.recover()
-            await self.status_presentation.reconcile_startup()
             batch_service = getattr(self, "batch_download", None)
             if batch_service is not None:
                 await batch_service.reconcile_all()
+            await self.status_presentation.reconcile_startup()
+            await self.collection_presentation.reconcile_startup()
             artifact_cache = getattr(self, "artifact_cache", None)
             if artifact_cache is not None:
                 await artifact_cache.prune(max_entries=1000)
@@ -413,6 +416,9 @@ async def compose_stage9(
         submissions=submissions,
         batch_download=batch_download,
         preferences=download_preferences,
+    )
+    collection_presentation = CollectionStatusPresentationService(
+        database, batch_download, stage8.gateway
     )
     download_activity = DownloadActivityService(database)
     chat_contexts = ChatContextAccessService(database, DeliveryTargetResolver(), stage8.gateway)
@@ -634,6 +640,7 @@ async def compose_stage9(
         batch_download=batch_download,
         artifact_cache=artifact_cache,
         status_presentation=TelegramStatusPresentationService(database, stage8.gateway),
+        collection_presentation=collection_presentation,
         history=history,
         provider_candidates=provider_candidates,
         provider_candidate_ranker=provider_candidate_ranker,

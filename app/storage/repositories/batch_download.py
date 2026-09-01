@@ -76,6 +76,25 @@ class BatchDownloadRepository:
         )
         return bool(cast(CursorResult[Any], result).rowcount)
 
+    async def list_parent_presentation_candidates(self, *, limit: int) -> list[int]:
+        if not 1 <= limit <= 100:
+            raise ValueError("invalid presentation candidate limit")
+        rows = await self._session.scalars(
+            select(BatchDownloadRequest.id)
+            .where(BatchDownloadRequest.parent_message_id.is_not(None))
+            .order_by(BatchDownloadRequest.updated_at.desc(), BatchDownloadRequest.id.desc())
+            .limit(limit)
+        )
+        return list(rows)
+
+    async def replace_parent_message(self, *, batch_id: int, message_id: int) -> bool:
+        result = await self._session.execute(
+            update(BatchDownloadRequest)
+            .where(BatchDownloadRequest.id == batch_id)
+            .values(parent_message_id=message_id)
+        )
+        return bool(cast(CursorResult[Any], result).rowcount)
+
     async def active_count(self, user_id: int) -> int:
         return int(
             (
