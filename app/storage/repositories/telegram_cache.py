@@ -9,6 +9,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import QualityProfile, TelegramCacheStatus
+from app.core.media_artifact import legacy_quality_fingerprint
 from app.core.models import DownloadArtifactMetadata, TelegramUploadReceipt
 from app.storage.models import TelegramFileCache, TrackSource
 
@@ -28,6 +29,7 @@ class TelegramFileCacheRepository:
         telegram_bot_id: int,
         track_id: int,
         quality_profile: QualityProfile,
+        artifact_fingerprint: str | None = None,
     ) -> TelegramFileCache | None:
         return (
             await self._session.scalars(
@@ -35,6 +37,11 @@ class TelegramFileCacheRepository:
                     TelegramFileCache.telegram_bot_id == telegram_bot_id,
                     TelegramFileCache.track_id == track_id,
                     TelegramFileCache.quality_profile == quality_profile,
+                    *(
+                        [TelegramFileCache.artifact_fingerprint == artifact_fingerprint]
+                        if artifact_fingerprint is not None
+                        else []
+                    ),
                     TelegramFileCache.status == TelegramCacheStatus.ACTIVE,
                 )
             )
@@ -88,6 +95,7 @@ class TelegramFileCacheRepository:
         *,
         track_id: int,
         quality_profile: QualityProfile,
+        artifact_fingerprint: str | None = None,
         receipt: TelegramUploadReceipt,
         artifact: DownloadArtifactMetadata,
         now: datetime,
@@ -99,6 +107,8 @@ class TelegramFileCacheRepository:
             "telegram_bot_id": receipt.telegram_bot_id,
             "track_id": track_id,
             "quality_profile": quality_profile,
+            "artifact_fingerprint": artifact_fingerprint
+            or legacy_quality_fingerprint(quality_profile),
             "telegram_file_id": receipt.file_id,
             "telegram_file_unique_id": receipt.file_unique_id,
             "telegram_media_kind": receipt.media_kind,
@@ -137,6 +147,7 @@ class TelegramFileCacheRepository:
                     TelegramFileCache.telegram_bot_id,
                     TelegramFileCache.track_id,
                     TelegramFileCache.quality_profile,
+                    TelegramFileCache.artifact_fingerprint,
                 ],
                 set_=update_values,
             )
@@ -146,6 +157,7 @@ class TelegramFileCacheRepository:
             telegram_bot_id=receipt.telegram_bot_id,
             track_id=track_id,
             quality_profile=quality_profile,
+            artifact_fingerprint=str(values["artifact_fingerprint"]),
         )
         if cached is None:
             raise RuntimeError("cache upsert did not produce an active row")

@@ -54,6 +54,7 @@ class DeliveryPreparationService:
         track_id: int,
         quality_profile: QualityProfile,
         request_key: str | None = None,
+        artifact_fingerprint: str | None = None,
     ) -> DeliveryPreparationResult:
         if not isinstance(quality_profile, QualityProfile):
             raise ValueError("invalid quality profile")
@@ -69,6 +70,7 @@ class DeliveryPreparationService:
                 telegram_bot_id=self._telegram_bot_id,
                 track_id=track_id,
                 quality_profile=quality_profile,
+                artifact_fingerprint=artifact_fingerprint,
             )
             if cached is not None:
                 return DeliveryPreparationResult(
@@ -81,6 +83,7 @@ class DeliveryPreparationService:
                 track_id=track_id,
                 quality_profile=quality_profile,
                 request_key=request_key,
+                artifact_fingerprint=artifact_fingerprint,
                 max_active=self._max_size,
                 now=self._clock(),
                 acquire_lock=False,
@@ -110,6 +113,7 @@ class DeliveryPreparationService:
                 telegram_bot_id=self._telegram_bot_id,
                 track_id=record.download_job.track_id,
                 quality_profile=record.download_job.quality_profile,
+                artifact_fingerprint=record.download_job.artifact_fingerprint,
             )
             if cached is None:
                 raise DeliveryInvariantError()

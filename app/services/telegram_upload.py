@@ -64,6 +64,7 @@ class DeliveryService:
             telegram_bot_id=identity.telegram_bot_id,
             track_id=request.track_id,
             quality_profile=request.quality_profile,
+            artifact_fingerprint=request.artifact_fingerprint,
         )
         if existing is not None:
             return UploadResult(external_id=str(existing.cache_id))
@@ -106,6 +107,7 @@ class DeliveryService:
             cached = await self._cache.upsert_success(
                 track_id=request.track_id,
                 quality_profile=request.quality_profile,
+                artifact_fingerprint=request.artifact_fingerprint,
                 receipt=receipt,
                 artifact=artifact,
             )
@@ -114,6 +116,7 @@ class DeliveryService:
                 telegram_bot_id=identity.telegram_bot_id,
                 track_id=request.track_id,
                 quality_profile=request.quality_profile,
+                artifact_fingerprint=request.artifact_fingerprint,
             )
             if winner is not None:
                 return UploadResult(external_id=str(winner.cache_id))

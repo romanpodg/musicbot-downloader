@@ -266,6 +266,7 @@ class DownloadJobView:
     finished_at: datetime | None
     last_error_code: str | None
     cancel_requested: bool
+    artifact_fingerprint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -282,6 +283,7 @@ class UploadJobView:
     finished_at: datetime | None
     last_error_code: str | None
     cancel_requested: bool
+    artifact_fingerprint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,6 +295,7 @@ class UploadRequest:
     artifact_job_id: str
     artifact_path: Path
     artifact: DownloadArtifactMetadata | None = None
+    artifact_fingerprint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -329,6 +332,7 @@ class CachedTelegramFile:
     telegram_bot_id: int
     track_id: int
     quality_profile: QualityProfile
+    artifact_fingerprint: str | None
     file_id: str
     file_unique_id: str
     media_kind: TelegramMediaKind

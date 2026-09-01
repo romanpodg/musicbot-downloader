@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import QualityProfile, QueueErrorCode, QueueJobStatus, SubscriberStatus
 from app.core.exceptions import QueueFullError, TrackNotFound
+from app.core.media_artifact import legacy_quality_fingerprint
 from app.storage.models import (
     DownloadFlight,
     DownloadJob,
@@ -59,6 +60,7 @@ class SingleFlightRepository:
         *,
         track_id: int,
         quality_profile: QualityProfile,
+        artifact_fingerprint: str | None = None,
         request_key: str | None,
         max_active: int,
         now: datetime,
@@ -72,7 +74,8 @@ class SingleFlightRepository:
             raise TrackNotFound()
 
         reconciled = False
-        flight = await self._flight_for_key(track_id, quality_profile)
+        fingerprint = artifact_fingerprint or legacy_quality_fingerprint(quality_profile)
+        flight = await self._flight_for_key(track_id, quality_profile, fingerprint)
         if flight is not None:
             eligible = await self._reconcile_flight(flight, now)
             reconciled = not eligible
@@ -95,6 +98,7 @@ class SingleFlightRepository:
         job = DownloadJob(
             track_id=track_id,
             quality_profile=quality_profile,
+            artifact_fingerprint=fingerprint,
             status=QueueJobStatus.QUEUED,
             queued_at=now,
             available_at=now,
@@ -105,6 +109,7 @@ class SingleFlightRepository:
             DownloadFlight(
                 track_id=track_id,
                 quality_profile=quality_profile,
+                artifact_fingerprint=fingerprint,
                 download_job_id=job.id,
             )
         )
@@ -246,13 +251,14 @@ class SingleFlightRepository:
         return closed
 
     async def _flight_for_key(
-        self, track_id: int, quality_profile: QualityProfile
+        self, track_id: int, quality_profile: QualityProfile, artifact_fingerprint: str
     ) -> DownloadFlight | None:
         return (
             await self._session.scalars(
                 select(DownloadFlight).where(
                     DownloadFlight.track_id == track_id,
                     DownloadFlight.quality_profile == quality_profile,
+                    DownloadFlight.artifact_fingerprint == artifact_fingerprint,
                 )
             )
         ).one_or_none()

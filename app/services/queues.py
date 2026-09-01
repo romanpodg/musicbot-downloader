@@ -424,6 +424,7 @@ def download_job_view(job: DownloadJob) -> DownloadJobView:
         job.finished_at,
         job.last_error_code,
         job.cancel_requested,
+        job.artifact_fingerprint,
     )
 
 
@@ -441,6 +442,7 @@ def _upload_view(job: UploadJob) -> UploadJobView:
         job.finished_at,
         job.last_error_code,
         job.cancel_requested,
+        job.artifact_fingerprint,
     )
 
 

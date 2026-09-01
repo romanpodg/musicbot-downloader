@@ -14,6 +14,7 @@ from app.core.enums import (
     TelegramDeliveryStatus,
     TelegramMediaKind,
 )
+from app.core.media_artifact import MediaArtifactSpec
 from app.i18n import LocalizationService
 from app.services.delivery import DeliveryPreparationService
 from app.services.download_lifecycle import DownloadLifecycleService
@@ -82,6 +83,7 @@ class TelegramDeliveryWorker:
                     track_id=request.track_id,
                     quality_profile=request.quality_profile,
                     request_key=self._request_key(request),
+                    artifact_fingerprint=await self._artifact_fingerprint(request),
                 )
                 async with self._database.transaction() as repositories:
                     await repositories.telegram_delivery.set_preparation(
@@ -300,6 +302,34 @@ class TelegramDeliveryWorker:
     async def _lifecycle_request(self, request_id: int) -> DownloadRequestRecord | None:
         async with self._database.transaction() as repositories:
             return await repositories.download_lifecycle.get_request(request_id)
+
+    async def _artifact_fingerprint(self, request: TelegramDeliveryRequest) -> str | None:
+        """Derive technical identity only from the admitted immutable request."""
+
+        if self._lifecycle is None:
+            return None
+        async with self._database.transaction() as repositories:
+            pair = await repositories.download_lifecycle.get_by_telegram_request(request.id)
+            track = await repositories.tracks.get_track_by_id(request.track_id)
+        if pair is None or track is None:
+            return None
+        lifecycle_request = await self._lifecycle_request(pair[0].request_id)
+        profile = lifecycle_request.effective_profile if lifecycle_request is not None else None
+        if profile is None:
+            return None
+        metadata = {
+            key: value
+            for key, value in {
+                "title": track.title,
+                "artist": track.artist,
+                "album": track.album,
+                "date": str(track.release_date) if track.release_date else None,
+                "isrc": track.isrc,
+                "explicit": "1" if track.explicit else None,
+            }.items()
+            if value
+        }
+        return MediaArtifactSpec.from_profile(profile, metadata=metadata).fingerprint
 
     async def _record_artifact_cache(self, request: TelegramDeliveryRequest, file_id: str) -> None:
         if self._artifact_cache is None or self._lifecycle is None:

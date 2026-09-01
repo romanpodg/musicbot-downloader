@@ -66,6 +66,7 @@ class TelegramFileCache(TimestampMixin, Base):
             "telegram_bot_id",
             "track_id",
             "quality_profile",
+            "artifact_fingerprint",
             name="uq_telegram_file_cache_key",
         ),
         Index("ix_telegram_file_cache_status_created", "status", "created_at"),
@@ -79,6 +80,7 @@ class TelegramFileCache(TimestampMixin, Base):
     quality_profile: Mapped[QualityProfile] = mapped_column(
         _enum(QualityProfile, "qualityprofile", 16), nullable=False
     )
+    artifact_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
     telegram_file_id: Mapped[str] = mapped_column(String(512), nullable=False)
     telegram_file_unique_id: Mapped[str] = mapped_column(String(512), nullable=False)
     telegram_media_kind: Mapped[TelegramMediaKind] = mapped_column(

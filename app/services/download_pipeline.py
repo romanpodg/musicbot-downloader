@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+from app.core.download_preferences import EffectiveDownloadProfile
 from app.core.enums import (
     DownloadAttemptStatus,
     DownloadFailureCode,
@@ -35,6 +36,7 @@ from app.core.models import (
     DownloadAttempt,
     DownloadPlan,
     DownloadResult,
+    OutputSpecification,
     PreparedSourceMedia,
     ProviderSourceCheck,
     QualityResolutionResult,
@@ -105,8 +107,13 @@ class DownloadPipeline:
         self._download_timeout = download_timeout
         self._disk_guard = disk_guard
 
-    async def download(self, track_id: int, quality_profile: QualityProfile) -> DownloadResult:
-        return await self._download_internal(track_id, quality_profile)
+    async def download(
+        self,
+        track_id: int,
+        quality_profile: QualityProfile,
+        profile: EffectiveDownloadProfile | None = None,
+    ) -> DownloadResult:
+        return await self._download_internal(track_id, quality_profile, profile=profile)
 
     async def download_selected(
         self,
@@ -116,12 +123,14 @@ class DownloadPipeline:
         provider: MusicProviderName,
         provider_media_id: str,
         account_id: str | None = None,
+        profile: EffectiveDownloadProfile | None = None,
     ) -> DownloadResult:
         """Process one exact Stage 25 candidate; no provider fallback occurs here."""
         return await self._download_internal(
             track_id,
             quality_profile,
             selected=(provider, provider_media_id, account_id),
+            profile=profile,
         )
 
     async def _download_internal(
@@ -129,6 +138,7 @@ class DownloadPipeline:
         track_id: int,
         quality_profile: QualityProfile,
         selected: tuple[MusicProviderName, str, str | None] | None = None,
+        profile: EffectiveDownloadProfile | None = None,
     ) -> DownloadResult:
         resolution = await self._quality_resolver.resolve(track_id, quality_profile)
         if selected is not None:
@@ -233,7 +243,7 @@ class DownloadPipeline:
                     )
                     if not media_satisfies_requirement(source, plan.source_expectation):
                         raise MediaOperationError(DownloadFailureCode.SOURCE_REQUIREMENT_MISMATCH)
-                    final_path = await self._execute_plan(job_id, plan, source, metadata)
+                    final_path = await self._execute_plan(job_id, plan, source, metadata, profile)
                     output = await self._probe.probe(
                         final_path,
                         provider=plan.provider,
@@ -324,16 +334,33 @@ class DownloadPipeline:
         plan: DownloadPlan,
         source: PreparedSourceMedia,
         metadata: dict[str, str],
+        profile: EffectiveDownloadProfile | None = None,
     ) -> Path:
         if source.file_path is None:
             raise MediaOperationError(DownloadFailureCode.SOURCE_VALIDATION_FAILED)
-        extension = _output_extension(plan, source.container)
+        if profile is not None and profile.effective_format.value != "original":
+            plan = replace(
+                plan, output_specification=_output_for_format(profile, plan.output_specification)
+            )
+            if plan.output_specification.container is not source.container:
+                plan = replace(plan, operation=DownloadPlanOperation.TRANSCODE)
+        if profile is not None and not profile.embed_metadata:
+            metadata = {}
+        extension = (
+            _container_extension(source.container)
+            if profile is not None and profile.effective_format.value == "original"
+            else _output_extension(plan, source.container)
+        )
         final_path = self._artifacts.final_path(job_id, extension)
         if plan.operation is DownloadPlanOperation.DIRECT:
             os.replace(source.file_path, final_path)
             await self._transcoder.tag_copy(final_path, metadata)
             return final_path
-        if source.lossless is not True:
+        if source.lossless is not True and not (
+            profile is not None
+            and profile.effective_format.value == "flac"
+            and profile.effective_quality.value != "lossless"
+        ):
             raise MediaOperationError(DownloadFailureCode.SOURCE_REQUIREMENT_MISMATCH)
         partial = final_path.with_suffix(final_path.suffix + ".partial")
         try:
@@ -382,7 +409,9 @@ class DownloadPipeline:
                     "title": track.title,
                     "artist": track.artist,
                     "album": track.album,
+                    "date": str(track.release_date) if track.release_date else None,
                     "isrc": track.isrc,
+                    "explicit": "1" if track.explicit else None,
                 }.items()
                 if value
             }
@@ -428,9 +457,47 @@ def _output_extension(plan: DownloadPlan, source_container: NativeContainer | No
         return "mp3"
     if plan.output_specification.container is NativeContainer.M4A:
         return "m4a"
-    if plan.output_specification.lossless and source_container is NativeContainer.FLAC:
+    if plan.output_specification.container is NativeContainer.FLAC:
         return "flac"
+    if plan.output_specification.preserve_source and source_container is not None:
+        return {
+            NativeContainer.OGG: "ogg",
+            NativeContainer.WEBM: "webm",
+            NativeContainer.MP3: "mp3",
+            NativeContainer.M4A: "m4a",
+            NativeContainer.FLAC: "flac",
+        }.get(source_container, "bin")
     raise MediaOperationError(DownloadFailureCode.INVALID_PLAN)
+
+
+def _container_extension(container: NativeContainer | None) -> str:
+    if container is None:
+        raise MediaOperationError(DownloadFailureCode.INVALID_PLAN)
+    value = {
+        NativeContainer.MP3: "mp3",
+        NativeContainer.M4A: "m4a",
+        NativeContainer.FLAC: "flac",
+        NativeContainer.OGG: "ogg",
+        NativeContainer.WEBM: "webm",
+    }.get(container)
+    if value is None:
+        raise MediaOperationError(DownloadFailureCode.INVALID_PLAN)
+    return value
+
+
+def _output_for_format(
+    profile: EffectiveDownloadProfile, current: OutputSpecification
+) -> OutputSpecification:
+    """Translate frozen format preference into the existing output contract."""
+    fmt = profile.effective_format.value
+    if fmt == "flac":
+        return OutputSpecification(NativeCodec.FLAC, NativeContainer.FLAC, None, False)
+    if fmt == "mp3":
+        bitrate = 320 if profile.quality_profile.value in {"MP3_320", "AAC_256"} else 128
+        return OutputSpecification(NativeCodec.MP3, NativeContainer.MP3, bitrate, False)
+    if fmt == "m4a":
+        return OutputSpecification(NativeCodec.AAC, NativeContainer.M4A, 256, False)
+    return current
 
 
 def _encoder_for(plan: DownloadPlan) -> str | None:
@@ -440,4 +507,6 @@ def _encoder_for(plan: DownloadPlan) -> str | None:
         return "libmp3lame"
     if plan.output_specification.codec is NativeCodec.AAC:
         return "aac"
+    if plan.output_specification.codec is NativeCodec.FLAC:
+        return "flac"
     return None

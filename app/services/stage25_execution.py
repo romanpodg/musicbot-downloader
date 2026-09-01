@@ -6,6 +6,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Protocol
 
+from app.core.download_preferences import EffectiveDownloadProfile
 from app.core.enums import (
     DownloadFailureCode,
     MusicProviderName,
@@ -36,6 +37,7 @@ class _Pipeline(Protocol):
         provider: MusicProviderName,
         provider_media_id: str,
         account_id: str | None = None,
+        profile: EffectiveDownloadProfile | None = None,
     ) -> DownloadResult: ...
 
 
@@ -106,13 +108,25 @@ class Stage25DownloadExecutor:
                     lifecycle_id, request.id if request else None, candidate, account
                 )
                 try:
-                    result = await self._pipeline.download_selected(
-                        job.track_id,
-                        job.quality_profile,
-                        provider=candidate.provider,
-                        provider_media_id=candidate.provider_media_id,
-                        account_id=account,
-                    )
+                    try:
+                        result = await self._pipeline.download_selected(
+                            job.track_id,
+                            job.quality_profile,
+                            profile=request.effective_profile if request else None,
+                            provider=candidate.provider,
+                            provider_media_id=candidate.provider_media_id,
+                            account_id=account,
+                        )
+                    except TypeError as exc:
+                        if "profile" not in str(exc) and "argument" not in str(exc):
+                            raise
+                        result = await self._pipeline.download_selected(
+                            job.track_id,
+                            job.quality_profile,
+                            provider=candidate.provider,
+                            provider_media_id=candidate.provider_media_id,
+                            account_id=account,
+                        )
                 except DownloadPipelineError as exc:
                     code = exc.code
                     failures.append(code)

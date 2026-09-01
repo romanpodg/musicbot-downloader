@@ -35,7 +35,13 @@ class DownloadJobRepository:
         self._session = session
 
     async def submit(
-        self, *, track_id: int, quality_profile: QualityProfile, max_active: int, now: datetime
+        self,
+        *,
+        track_id: int,
+        quality_profile: QualityProfile,
+        max_active: int,
+        now: datetime,
+        artifact_fingerprint: str | None = None,
     ) -> DownloadJob:
         # SQLite's reserved write lock serializes the admission COUNT + INSERT pair.
         await self._session.execute(text("BEGIN IMMEDIATE"))
@@ -49,6 +55,7 @@ class DownloadJobRepository:
         job = DownloadJob(
             track_id=track_id,
             quality_profile=quality_profile,
+            artifact_fingerprint=artifact_fingerprint,
             status=QueueJobStatus.QUEUED,
             queued_at=now,
             available_at=now,
@@ -219,6 +226,7 @@ class DownloadJobRepository:
             download_job_id=job.id,
             track_id=job.track_id,
             quality_profile=job.quality_profile,
+            artifact_fingerprint=job.artifact_fingerprint,
             status=QueueJobStatus.QUEUED,
             artifact_job_id=artifact_job_id,
             artifact_path=artifact_path,

@@ -7,7 +7,9 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any
 
-ARTIFACT_PROCESSING_VERSION = 1
+from app.core.media_artifact import MediaArtifactSpec
+
+ARTIFACT_PROCESSING_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +22,8 @@ class TelegramCacheKey:
     embed_metadata: bool
     embed_cover: bool
     artifact_processing_version: int = ARTIFACT_PROCESSING_VERSION
+    metadata_identity: tuple[tuple[str, str], ...] = ()
+    artwork_identity: str | None = None
 
     @classmethod
     def from_request(cls, request: Any) -> TelegramCacheKey | None:
@@ -34,6 +38,11 @@ class TelegramCacheKey:
         )
         if any(value is None for value in values):
             return None
+        metadata: dict[str, str] = {}
+        for key in ("media_title", "media_artist", "media_album"):
+            value = getattr(request, key, None)
+            if value:
+                metadata[key] = str(value)
         return cls(
             provider=str(
                 request.provider.value if hasattr(request.provider, "value") else request.provider
@@ -56,17 +65,36 @@ class TelegramCacheKey:
             ),
             embed_metadata=bool(request.embed_metadata),
             embed_cover=bool(request.embed_cover),
+            metadata_identity=tuple(sorted(metadata.items())) if request.embed_metadata else (),
+        )
+
+    @classmethod
+    def from_artifact_spec(
+        cls, *, provider: str, provider_media_id: str, spec: MediaArtifactSpec
+    ) -> TelegramCacheKey:
+        return cls(
+            provider=provider,
+            provider_media_id=provider_media_id,
+            effective_quality=spec.effective_quality,
+            effective_format=spec.effective_format,
+            delivery_mode="",
+            embed_metadata=spec.embed_metadata,
+            embed_cover=spec.embed_cover,
+            artifact_processing_version=spec.processor_version,
+            metadata_identity=spec.metadata_identity,
+            artwork_identity=spec.artwork_identity,
         )
 
     def canonical_json(self) -> str:
         return json.dumps(
             {
                 "artifact_processing_version": self.artifact_processing_version,
-                "delivery_mode": self.delivery_mode,
                 "effective_format": self.effective_format,
                 "effective_quality": self.effective_quality,
                 "embed_cover": self.embed_cover,
                 "embed_metadata": self.embed_metadata,
+                "metadata_identity": dict(self.metadata_identity),
+                "artwork_identity": self.artwork_identity,
                 "provider": self.provider,
                 "provider_media_id": self.provider_media_id,
             },

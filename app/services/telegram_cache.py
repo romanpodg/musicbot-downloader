@@ -43,12 +43,14 @@ class TelegramFileCacheService:
         telegram_bot_id: int,
         track_id: int,
         quality_profile: QualityProfile,
+        artifact_fingerprint: str | None = None,
     ) -> CachedTelegramFile | None:
         async with self._database.transaction() as repositories:
             cached = await repositories.telegram_cache.get_active(
                 telegram_bot_id=telegram_bot_id,
                 track_id=track_id,
                 quality_profile=quality_profile,
+                artifact_fingerprint=artifact_fingerprint,
             )
             return _cache_view(cached) if cached is not None else None
 
@@ -90,6 +92,7 @@ class TelegramFileCacheService:
         *,
         track_id: int,
         quality_profile: QualityProfile,
+        artifact_fingerprint: str | None = None,
         receipt: TelegramUploadReceipt,
         artifact: DownloadArtifactMetadata,
     ) -> CachedTelegramFile:
@@ -101,6 +104,7 @@ class TelegramFileCacheService:
                     cached = await repositories.telegram_cache.upsert_success(
                         track_id=track_id,
                         quality_profile=quality_profile,
+                        artifact_fingerprint=artifact_fingerprint,
                         receipt=receipt,
                         artifact=artifact,
                         now=self._clock(),
@@ -154,6 +158,7 @@ def _cache_view(row: TelegramFileCache) -> CachedTelegramFile:
         telegram_bot_id=row.telegram_bot_id,
         track_id=row.track_id,
         quality_profile=row.quality_profile,
+        artifact_fingerprint=row.artifact_fingerprint,
         file_id=row.telegram_file_id,
         file_unique_id=row.telegram_file_unique_id,
         media_kind=row.telegram_media_kind,

@@ -104,6 +104,7 @@ class SingleFlightService:
         track_id: int,
         quality_profile: QualityProfile,
         request_key: str | None = None,
+        artifact_fingerprint: str | None = None,
     ) -> SingleFlightSubmission:
         if not isinstance(quality_profile, QualityProfile):
             raise ValueError("invalid quality profile")
@@ -112,6 +113,7 @@ class SingleFlightService:
             record = await repositories.singleflight.submit(
                 track_id=track_id,
                 quality_profile=quality_profile,
+                artifact_fingerprint=artifact_fingerprint,
                 request_key=request_key,
                 max_active=self._max_size,
                 now=self._clock(),
@@ -136,6 +138,7 @@ class SingleFlightService:
                 "subscriber_id": result.subscriber.id,
                 "track_id": track_id,
                 "quality_profile": quality_profile.value,
+                "artifact_fingerprint": artifact_fingerprint,
                 "flight_joined": result.joined_existing_flight,
                 "subscriber_status": result.subscriber.status.value,
             },

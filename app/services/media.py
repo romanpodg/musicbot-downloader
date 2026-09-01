@@ -6,6 +6,8 @@ import asyncio
 import json
 import os
 import shutil
+import urllib.parse
+import urllib.request
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Final
@@ -22,6 +24,39 @@ class MediaOperationError(Exception):
     def __init__(self, code: DownloadFailureCode) -> None:
         super().__init__()
         self.code = code
+
+
+class ArtworkFetcher:
+    """Bounded, scheme-restricted optional artwork acquisition."""
+
+    def __init__(self, *, timeout: float = 10.0, max_bytes: int = 5 * 1024 * 1024) -> None:
+        self.timeout = timeout
+        self.max_bytes = max_bytes
+
+    async def fetch(self, url: str, destination: Path) -> bool:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return False
+
+        def _read() -> bytes:
+            request = urllib.request.Request(url, headers={"User-Agent": "musicbot/1"})
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:  # noqa: S310
+                data = response.read(self.max_bytes + 1)
+            return bytes(data)
+
+        try:
+            data = await asyncio.to_thread(_read)
+        except Exception:
+            return False
+        if len(data) == 0 or len(data) > self.max_bytes or not _supported_image(data):
+            return False
+        await asyncio.to_thread(destination.parent.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(destination.write_bytes, data)
+        return True
+
+
+def _supported_image(data: bytes) -> bool:
+    return data.startswith(b"\x89PNG\r\n\x1a\n") or data.startswith(b"\xff\xd8\xff")
 
 
 class MediaProbe:
@@ -114,6 +149,7 @@ class Transcoder:
         partial_output: Path,
         output: OutputSpecification,
         metadata: Mapping[str, str],
+        artwork: Path | None = None,
     ) -> tuple[str, ...]:
         source = _owned_file(source, self._temp_root)
         partial_output = _owned_path(partial_output, self._temp_root)
@@ -130,6 +166,9 @@ class Transcoder:
             "0:a:0",
             "-vn",
         ]
+        if artwork is not None:
+            artwork = _owned_file(artwork, self._temp_root)
+            common.extend(["-i", os.fspath(artwork), "-map", "1:0"])
         if output.codec is NativeCodec.MP3 and output.bitrate_kbps in {128, 320}:
             encoding = [
                 "-c:a",
@@ -152,10 +191,25 @@ class Transcoder:
                 "-f",
                 "ipod",
             ]
+        elif output.codec is NativeCodec.FLAC and output.container is NativeContainer.FLAC:
+            encoding = ["-c:a", "flac", "-f", "flac"]
         else:
             raise MediaOperationError(DownloadFailureCode.INVALID_PLAN)
         tags: list[str] = []
-        for key in ("title", "artist", "album", "isrc"):
+        if artwork is not None:
+            tags.extend(("-c:v", "mjpeg", "-disposition:v", "attached_pic"))
+        for key in (
+            "title",
+            "artist",
+            "album",
+            "album_artist",
+            "track",
+            "disc",
+            "date",
+            "isrc",
+            "copyright",
+            "explicit",
+        ):
             value = metadata.get(key)
             if value:
                 tags.extend(("-metadata", f"{key}={value}"))
@@ -167,20 +221,23 @@ class Transcoder:
         partial_output: Path,
         output: OutputSpecification,
         metadata: Mapping[str, str],
+        artwork: Path | None = None,
     ) -> None:
         if not self.available():
             raise MediaOperationError(DownloadFailureCode.TRANSCODER_UNAVAILABLE)
-        command = self.command(source, partial_output, output, metadata)
+        command = self.command(source, partial_output, output, metadata, artwork)
         await _run(
             command,
             timeout_seconds=self._timeout,
             failure=DownloadFailureCode.TRANSCODE_FAILED,
         )
 
-    async def tag_copy(self, path: Path, metadata: Mapping[str, str]) -> bool:
+    async def tag_copy(
+        self, path: Path, metadata: Mapping[str, str], artwork: Path | None = None
+    ) -> bool:
         """Best-effort stream-copy tagging; absence/failure never degrades audio."""
 
-        if not metadata or not self.available():
+        if not self.available():
             return False
         source = _owned_file(path, self._temp_root)
         muxer = {".mp3": "mp3", ".m4a": "ipod", ".flac": "flac"}.get(source.suffix.lower())
@@ -197,11 +254,40 @@ class Transcoder:
             "-i",
             os.fspath(source),
             "-map",
-            "0",
+            "0:a:0",
             "-c",
             "copy",
         ]
-        for key in ("title", "artist", "album", "isrc"):
+        if artwork is not None:
+            artwork = _owned_file(artwork, self._temp_root)
+            command.extend(
+                (
+                    "-i",
+                    os.fspath(artwork),
+                    "-map",
+                    "0",
+                    "-map",
+                    "1:0",
+                    "-c:v",
+                    "mjpeg",
+                    "-disposition:v",
+                    "attached_pic",
+                )
+            )
+        if not metadata:
+            command.extend(("-map_metadata", "-1"))
+        for key in (
+            "title",
+            "artist",
+            "album",
+            "album_artist",
+            "track",
+            "disc",
+            "date",
+            "isrc",
+            "copyright",
+            "explicit",
+        ):
             value = metadata.get(key)
             if value:
                 command.extend(("-metadata", f"{key}={value}"))
@@ -261,7 +347,9 @@ def output_satisfies_specification(
         return media.lossless is True
     if media.codec is not output.codec or media.container is not output.container:
         return False
-    if output.bitrate_kbps is None or media.bitrate_kbps is None:
+    if output.bitrate_kbps is None:
+        return True
+    if media.bitrate_kbps is None:
         return False
     return abs(media.bitrate_kbps - output.bitrate_kbps) <= max(
         16, round(output.bitrate_kbps * BITRATE_TOLERANCE_RATIO)

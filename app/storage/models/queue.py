@@ -92,6 +92,7 @@ class DownloadJob(TimestampMixin, Base):
     quality_profile: Mapped[QualityProfile] = mapped_column(
         _enum(QualityProfile, "qualityprofile", 16), nullable=False
     )
+    artifact_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
     status: Mapped[QueueJobStatus] = mapped_column(
         _enum(QueueJobStatus, "queuejobstatus", 16), nullable=False
     )
@@ -148,6 +149,7 @@ class UploadJob(TimestampMixin, Base):
     quality_profile: Mapped[QualityProfile] = mapped_column(
         _enum(QualityProfile, "qualityprofile", 16), nullable=False
     )
+    artifact_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
     status: Mapped[QueueJobStatus] = mapped_column(
         _enum(QueueJobStatus, "queuejobstatus", 16), nullable=False
     )
@@ -201,7 +203,9 @@ class DownloadFlight(TimestampMixin, Base):
             "quality_profile IN ('MP3_128', 'MP3_320', 'AAC_256', 'LOSSLESS')",
             name="ck_download_flights_quality_profile",
         ),
-        UniqueConstraint("track_id", "quality_profile", name="uq_download_flights_key"),
+        UniqueConstraint(
+            "track_id", "quality_profile", "artifact_fingerprint", name="uq_download_flights_key"
+        ),
         UniqueConstraint("download_job_id", name="uq_download_flights_download_job_id"),
     )
 
@@ -212,6 +216,7 @@ class DownloadFlight(TimestampMixin, Base):
     quality_profile: Mapped[QualityProfile] = mapped_column(
         _enum(QualityProfile, "qualityprofile", 16), nullable=False
     )
+    artifact_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
     download_job_id: Mapped[int] = mapped_column(
         ForeignKey("download_jobs.id", ondelete="CASCADE"), nullable=False
     )

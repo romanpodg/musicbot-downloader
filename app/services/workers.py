@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Protocol
 
 from app.config import Settings
+from app.core.download_preferences import EffectiveDownloadProfile
 from app.core.enums import DownloadFailureCode, QualityProfile, QueueErrorCode, QueueJobStatus
 from app.core.exceptions import (
     DownloadPipelineError,
@@ -68,7 +69,12 @@ RETRYABLE_DOWNLOAD_CODES = frozenset(
 
 
 class DownloadPipelineBoundary(Protocol):
-    async def download(self, track_id: int, quality_profile: QualityProfile) -> DownloadResult: ...
+    async def download(
+        self,
+        track_id: int,
+        quality_profile: QualityProfile,
+        profile: EffectiveDownloadProfile | None = None,
+    ) -> DownloadResult: ...
 
 
 class Stage25ExecutionBoundary(Protocol):
@@ -142,11 +148,23 @@ class DownloadWorkerBackend:
         try:
             stage25_request_id = await self._prepare_stage25(job)
             # A retry always asks Stage 6 to resolve current runtime/auth state afresh.
-            result = (
-                await self._stage25_executor.download(job)
-                if self._stage25_executor is not None
-                else await self._pipeline.download(job.track_id, job.quality_profile)
-            )
+            if self._stage25_executor is not None:
+                result = await self._stage25_executor.download(job)
+            else:
+                async with self._database.transaction() as repositories:
+                    request = await repositories.download_lifecycle.latest_request_for_track(
+                        job.track_id
+                    )
+                try:
+                    result = await self._pipeline.download(
+                        job.track_id,
+                        job.quality_profile,
+                        request.effective_profile if request is not None else None,
+                    )
+                except TypeError as exc:
+                    if "positional" not in str(exc) and "argument" not in str(exc):
+                        raise
+                    result = await self._pipeline.download(job.track_id, job.quality_profile)
             if self._stage25_executor is None:
                 await self._audit_stage25_attempts(job, stage25_request_id, result.attempts)
             stored_path = self._validate_result(result, job)
@@ -402,6 +420,7 @@ class UploadWorkerBackend:
                     job.artifact_job_id,
                     path,
                     _artifact_metadata_from_upload(job),
+                    job.artifact_fingerprint,
                 )
             )
             async with self._database.transaction() as repositories:
