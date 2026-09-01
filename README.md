@@ -54,6 +54,7 @@ Current delivery roadmap:
 - Stage 19: Channel/Bot Integration: transport-neutral Telegram contexts, explicit delivery
   targets, persisted chat policies and channel bindings, and context-secure group/channel routing.
 - Stage 20 — Architecture & Production Review
+- Stage 26 — Metadata & Media Processing (specification/audit: [docs/stage26-media-processing.md](docs/stage26-media-processing.md)); implementation not yet complete.
 
 Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
 deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage
