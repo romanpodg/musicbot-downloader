@@ -8,8 +8,11 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
+from app.core.enums import MusicProviderName
 from app.core.models import QueueRuntimeSnapshot
 from app.services.authorization import AdminPermission, TelegramAuthorizationService
+from app.services.provider_health import ProviderHealthService
+from app.services.provider_limits import ProviderRateLimiter
 from app.storage import Database
 from app.storage.models.base import utc_now
 
@@ -28,11 +31,21 @@ class StorageDiagnostic:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderDiagnostic:
+    provider: MusicProviderName
+    health: str
+    active_operations: int
+    throttle: str
+
+
+@dataclass(frozen=True, slots=True)
 class SystemDiagnostic:
     queues: QueueRuntimeSnapshot
     storage: StorageDiagnostic
     recent_failures: int
     expired_claims: int
+    providers: tuple[ProviderDiagnostic, ...]
+    reasons: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +69,9 @@ class SystemDiagnosticsService:
         temp_reserve_bytes: int,
         temp_max_bytes: int,
         stuck_threshold_seconds: float = 1800.0,
+        per_user_active_limit: int | None = None,
+        provider_health: ProviderHealthService | None = None,
+        provider_limiter: ProviderRateLimiter | None = None,
         authorization: TelegramAuthorizationService | None = None,
     ) -> None:
         if min(temp_reserve_bytes, temp_max_bytes) < 0 or stuck_threshold_seconds <= 0:
@@ -66,6 +82,9 @@ class SystemDiagnosticsService:
         self._reserve = temp_reserve_bytes
         self._maximum = temp_max_bytes
         self._stuck = stuck_threshold_seconds
+        self._per_user_active_limit = per_user_active_limit
+        self._provider_health = provider_health
+        self._provider_limiter = provider_limiter
         self._authorization = authorization
 
     async def system(self, actor_user_id: int | None = None) -> SystemDiagnostic:
@@ -84,6 +103,13 @@ class SystemDiagnosticsService:
             expired += await repositories.upload_jobs.count_stuck_jobs(
                 now - timedelta(seconds=self._stuck)
             )
+            user_cap_blocked = (
+                await repositories.download_jobs.count_queued_blocked_by_user_limit(
+                    self._per_user_active_limit
+                )
+                if self._per_user_active_limit is not None
+                else 0
+            )
         usage = shutil.disk_usage(self._temp_dir)
         used = _directory_size(self._temp_dir)
         pressure = "normal"
@@ -91,11 +117,30 @@ class SystemDiagnosticsService:
             pressure = "blocked"
         elif usage.free < self._reserve * 2 or used > self._maximum * 0.9:
             pressure = "warning"
+        providers = await self._provider_diagnostics(actor_user_id)
+        reasons: list[str] = []
+        if queues.download_jobs.queued or queues.upload_jobs.queued:
+            reasons.append("normal queued work")
+        if (
+            queues.download_jobs.queued
+            and queues.download.actual_workers >= queues.download.desired_workers
+        ):
+            reasons.append("global download capacity saturation")
+        if user_cap_blocked:
+            reasons.append("per-user download concurrency cap")
+        if any(provider.throttle == "waiting" for provider in providers):
+            reasons.append("provider local throttling")
+        if pressure != "normal":
+            reasons.append("storage pressure")
+        if expired:
+            reasons.append("expired or stuck work")
         return SystemDiagnostic(
-            queues,
-            StorageDiagnostic(used, usage.free, self._reserve, self._maximum, pressure),
-            recent,
-            expired,
+            queues=queues,
+            storage=StorageDiagnostic(used, usage.free, self._reserve, self._maximum, pressure),
+            recent_failures=recent,
+            expired_claims=expired,
+            providers=providers,
+            reasons=tuple(reasons),
         )
 
     async def job(self, job_id: int, actor_user_id: int | None = None) -> JobDiagnostic | None:
@@ -138,6 +183,39 @@ class SystemDiagnosticsService:
                 actor_user_id, AdminPermission.ADMIN_PANEL_VIEW
             )
 
+    async def _provider_diagnostics(
+        self, actor_user_id: int | None
+    ) -> tuple[ProviderDiagnostic, ...]:
+        health_by_provider: dict[MusicProviderName, str] = {}
+        if self._provider_health is not None:
+            if actor_user_id is None:
+                return ()
+            snapshot = await self._provider_health.check_all(actor_user_id)
+            health_by_provider = {
+                entry.provider: entry.status.value.lower() for entry in snapshot.entries
+            }
+        limiter = self._provider_limiter
+        limiter_by_provider = (
+            {item.provider: item for item in limiter.snapshot(tuple(health_by_provider))}
+            if limiter is not None
+            else {}
+        )
+        providers = sorted(
+            set(health_by_provider) | set(limiter_by_provider), key=lambda item: item.value
+        )
+        diagnostics: list[ProviderDiagnostic] = []
+        for provider in providers:
+            limit = limiter_by_provider.get(provider)
+            diagnostics.append(
+                ProviderDiagnostic(
+                    provider=provider,
+                    health=health_by_provider.get(provider, "unknown"),
+                    active_operations=limit.active_operations if limit is not None else 0,
+                    throttle=limit.throttle if limit is not None else "ready",
+                )
+            )
+        return tuple(diagnostics)
+
 
 def _directory_size(root: Path) -> int:
     total = 0
@@ -152,4 +230,10 @@ def _directory_size(root: Path) -> int:
     return total
 
 
-__all__ = ["JobDiagnostic", "StorageDiagnostic", "SystemDiagnostic", "SystemDiagnosticsService"]
+__all__ = [
+    "JobDiagnostic",
+    "ProviderDiagnostic",
+    "StorageDiagnostic",
+    "SystemDiagnostic",
+    "SystemDiagnosticsService",
+]

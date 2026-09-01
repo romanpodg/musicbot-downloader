@@ -26,6 +26,7 @@ from app.core.models import (
     WorkerPoolSnapshot,
 )
 from app.core.provider_resolution import CanonicalMediaIdentity, ProviderCandidateRanker
+from app.services.artifact_cleanup import StaleArtifactCleanupService
 from app.services.artifacts import ArtifactPathError, DownloadArtifactManager
 from app.services.download_lifecycle import DownloadLifecycleService
 from app.services.provider_candidates import ProviderCandidateResolver
@@ -36,6 +37,7 @@ from app.services.queues import (
     UploadQueueService,
     WorkerSettingsService,
 )
+from app.services.runtime_prerequisites import TemporaryDiskGuard
 from app.storage import Database
 from app.storage.models import DownloadJob, UploadJob
 from app.storage.models.base import utc_now
@@ -109,6 +111,8 @@ class DownloadWorkerBackend:
         candidate_ranker: ProviderCandidateRanker | None = None,
         stage25_executor: Stage25ExecutionBoundary | None = None,
         per_user_active_limit: int | None = None,
+        disk_guard: TemporaryDiskGuard | None = None,
+        artifact_cleanup: StaleArtifactCleanupService | None = None,
     ) -> None:
         self._database = database
         self._pipeline = pipeline
@@ -122,6 +126,8 @@ class DownloadWorkerBackend:
         self._candidate_ranker = candidate_ranker or ProviderCandidateRanker()
         self._stage25_executor = stage25_executor
         self._per_user_active_limit = per_user_active_limit
+        self._disk_guard = disk_guard
+        self._artifact_cleanup = artifact_cleanup
 
     async def claim(self, worker_id: str) -> DownloadJob | None:
         now = self._clock()
@@ -151,6 +157,7 @@ class DownloadWorkerBackend:
         result: DownloadResult | None = None
         stage25_request_id: int | None = None
         try:
+            await self._ensure_storage_available()
             stage25_request_id = await self._prepare_stage25(job)
             # A retry always asks Stage 6 to resolve current runtime/auth state afresh.
             if self._stage25_executor is not None:
@@ -246,6 +253,28 @@ class DownloadWorkerBackend:
                 extra={"job_id": job.id, "job_type": "download", "worker_id": worker_id},
             )
             await self._fail(job, worker_id, QueueErrorCode.DOWNLOAD_WORKER_ERROR.value)
+
+    async def _ensure_storage_available(self) -> None:
+        """Sweep only safely stale artifacts once before deferring new media work."""
+
+        if self._disk_guard is None:
+            return
+        try:
+            self._disk_guard.ensure_available()
+            return
+        except OSError:
+            if self._artifact_cleanup is not None:
+                try:
+                    await self._artifact_cleanup.sweep()
+                except Exception:
+                    logger.exception("stale artifact cleanup failed under storage pressure")
+            try:
+                self._disk_guard.ensure_available()
+            except OSError as second_error:
+                raise DownloadPipelineError(
+                    DownloadFailureCode.TEMP_STORAGE_UNAVAILABLE
+                ) from second_error
+            logger.info("storage pressure cleared by stale artifact cleanup")
 
     async def _prepare_stage25(self, job: DownloadJob) -> int | None:
         """Resolve/rank Stage 25 candidates after cache miss and before source execution."""

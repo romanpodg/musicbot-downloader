@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from app.core.enums import AlbumRequestStatus, BatchSourceType, MusicProviderName, QualityProfile
-from app.core.exceptions import DatabaseConcurrencyError
+from app.core.exceptions import AlbumTooLarge, DatabaseConcurrencyError
 from app.core.models import AlbumSnapshot, ResolvedCollection, ResolvedCollectionItem
 from app.providers.base import MusicProvider
 from app.storage import Database
@@ -79,11 +79,15 @@ class TelegramAlbumRequestService:
         *,
         telegram_bot_id: int,
         wake_event: asyncio.Event | None = None,
+        max_items: int = 100,
     ) -> None:
+        if max_items < 1:
+            raise ValueError("album item limit must be positive")
         self._database = database
         self._resolver = resolver
         self._telegram_bot_id = telegram_bot_id
         self._wake_event = wake_event
+        self._max_items = max_items
 
     async def request_album(
         self,
@@ -132,6 +136,11 @@ class TelegramAlbumRequestService:
         source_message_id: int,
         snapshot: AlbumSnapshot,
     ) -> TelegramAlbumRequest:
+        # This is the legacy album-card route.  It remains available for
+        # selection/coordinator recovery, so it enforces the same production
+        # collection ceiling before durable snapshot or child work exists.
+        if len(snapshot.tracks) > self._max_items:
+            raise AlbumTooLarge()
         try:
             async with self._database.transaction() as repositories:
                 existing = await repositories.telegram_album.get_by_message(

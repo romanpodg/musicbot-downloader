@@ -248,6 +248,28 @@ class DownloadJobRepository:
             or 0
         )
 
+    async def count_queued_blocked_by_user_limit(self, limit: int) -> int:
+        """Bounded diagnostics for queued requests presently behind a user cap."""
+
+        if limit < 1:
+            return 0
+        candidates = list(
+            await self._session.scalars(
+                select(DownloadJob.id)
+                .where(
+                    DownloadJob.status == QueueJobStatus.QUEUED,
+                    DownloadJob.cancel_requested.is_(False),
+                )
+                .order_by(DownloadJob.queued_at, DownloadJob.id)
+                .limit(100)
+            )
+        )
+        blocked = 0
+        for job_id in candidates:
+            if not await self._under_user_limit(job_id, limit):
+                blocked += 1
+        return blocked
+
     async def heartbeat(self, job_id: int, worker_id: str, lease_expires_at: datetime) -> bool:
         result = await self._session.execute(
             update(DownloadJob)

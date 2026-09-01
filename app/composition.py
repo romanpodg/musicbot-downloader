@@ -286,6 +286,23 @@ async def compose_stage9(
         download_wake_event=download_wake,
         notifier=notifier,
     )
+    # The worker preflight invokes this same conservative cleanup authority
+    # before deferring artifact-producing work under storage pressure.
+    artifact_cleanup = StaleArtifactCleanupService(
+        database,
+        settings.temp_dir,
+        artifact_registry,
+        stale_after_seconds=settings.temp_artifact_stale_after_seconds,
+    )
+    disk_guard = TemporaryDiskGuard(
+        settings.temp_dir,
+        settings.temp_disk_min_free_bytes,
+        maximum_usage_bytes=settings.temp_dir_max_bytes,
+    )
+    provider_limiter = ProviderRateLimiter(
+        interval_seconds=settings.provider_rate_limit_interval_seconds,
+        max_concurrent=settings.provider_max_concurrent_operations,
+    )
     pipeline = DownloadPipeline(
         database,
         QualityResolver(ProviderResolver(database, provider)),
@@ -302,15 +319,8 @@ async def compose_stage9(
             timeout=settings.transcode_timeout_seconds,
         ),
         download_timeout=settings.download_timeout_seconds,
-        disk_guard=TemporaryDiskGuard(
-            settings.temp_dir,
-            settings.temp_disk_min_free_bytes,
-            maximum_usage_bytes=settings.temp_dir_max_bytes,
-        ),
-        provider_limiter=ProviderRateLimiter(
-            interval_seconds=settings.provider_rate_limit_interval_seconds,
-            max_concurrent=settings.provider_max_concurrent_operations,
-        ),
+        disk_guard=disk_guard,
+        provider_limiter=provider_limiter,
     )
     download_backend = DownloadWorkerBackend(
         database,
@@ -328,6 +338,8 @@ async def compose_stage9(
             provider_candidate_ranker,
         ),
         per_user_active_limit=settings.per_user_active_download_limit,
+        disk_guard=disk_guard,
+        artifact_cleanup=artifact_cleanup,
     )
     upload_backend = UploadWorkerBackend(
         database,
@@ -404,6 +416,7 @@ async def compose_stage9(
         TelegramAlbumResolver(provider),
         telegram_bot_id=stage8.bot_identity.telegram_bot_id,
         wake_event=album_wake,
+        max_items=settings.max_batch_items,
     )
     media_requests = TelegramMediaRequestService(
         provider, requests, albums, batch_download, download_preferences
@@ -434,6 +447,9 @@ async def compose_stage9(
         temp_reserve_bytes=settings.temp_disk_min_free_bytes,
         temp_max_bytes=settings.temp_dir_max_bytes,
         stuck_threshold_seconds=settings.stuck_job_threshold_seconds,
+        per_user_active_limit=settings.per_user_active_download_limit,
+        provider_health=provider_health,
+        provider_limiter=provider_limiter,
         authorization=authorization,
     )
     account_backend = ProviderRuntimeAccountBackend(
@@ -578,12 +594,6 @@ async def compose_stage9(
         album_coordinator_service,
         telegram_bot_id=stage8.bot_identity.telegram_bot_id,
         delivery_max_attempts=settings.telegram_delivery_max_attempts,
-    )
-    artifact_cleanup = StaleArtifactCleanupService(
-        database,
-        settings.temp_dir,
-        artifact_registry,
-        stale_after_seconds=settings.temp_artifact_stale_after_seconds,
     )
     cleanup_manager = StaleArtifactCleanupManager(
         artifact_cleanup,

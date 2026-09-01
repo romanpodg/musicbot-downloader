@@ -311,6 +311,7 @@ class Stage25DownloadExecutor:
             DownloadFailureCode.PROCESSING,
             DownloadFailureCode.TRANSCODE_FAILED,
             DownloadFailureCode.OUTPUT_VALIDATION_FAILED,
+            DownloadFailureCode.TEMP_STORAGE_UNAVAILABLE,
         }:
             return
         async with self._database.transaction() as repositories:

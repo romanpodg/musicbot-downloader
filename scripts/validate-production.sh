@@ -13,6 +13,11 @@ LOCK_CONTAINER="musicbot-stage124-lock-${RUN_ID}"
 WRITER_CONTAINER="musicbot-stage124-writer-${RUN_ID}"
 FIXTURE_PATH="$ROOT_DIR/scripts/container_fixture.py"
 
+# The working tree and production image must agree on exactly one Alembic
+# head.  Deriving this through Alembic keeps future migrations covered and
+# fails closed if the repository ever grows a branch in its migration graph.
+EXPECTED_ALEMBIC_HEAD="$(uv run python -c "from alembic.config import Config; from alembic.script import ScriptDirectory; heads=ScriptDirectory.from_config(Config('alembic.ini')).get_heads(); assert len(heads) == 1, f'expected one Alembic head, got {heads!r}'; print(heads[0])")"
+
 # Git Bash/MSYS rewrites Linux container paths (for example /tmp/musicbot)
 # before passing them to the Windows Docker CLI. Disable that rewriting for
 # Docker arguments, while giving Docker the one host bind mount in native form.
@@ -35,6 +40,12 @@ fi
 
 docker image inspect "$IMAGE" --format 'image={{.Id}} platform={{.Os}}/{{.Architecture}} size_bytes={{.Size}}'
 docker image inspect "$VALIDATION_IMAGE" >/dev/null
+IMAGE_ALEMBIC_HEAD="$(docker run --rm --entrypoint python "$IMAGE" -c "from alembic.config import Config; from alembic.script import ScriptDirectory; heads=ScriptDirectory.from_config(Config('alembic.ini')).get_heads(); assert len(heads) == 1, f'expected one Alembic head, got {heads!r}'; print(heads[0])")"
+if [[ "$IMAGE_ALEMBIC_HEAD" != "$EXPECTED_ALEMBIC_HEAD" ]]; then
+  echo "production image Alembic head $IMAGE_ALEMBIC_HEAD does not match repository head $EXPECTED_ALEMBIC_HEAD" >&2
+  exit 1
+fi
+echo "alembic_expected_head=$EXPECTED_ALEMBIC_HEAD"
 docker compose config --quiet
 docker volume create "$DATA_VOLUME" >/dev/null
 docker volume create "$UPGRADE_VOLUME" >/dev/null
@@ -131,7 +142,7 @@ fi
 run_data python -m app.tools.ops backup create /data/release-backup.db --json
 [[ "$(run_data stat -c '%a' /data/release-backup.db)" == "600" ]]
 run_data python -c \
-  "import sqlite3; c=sqlite3.connect('/data/release-backup.db'); assert c.execute('pragma integrity_check').fetchone()==('ok',); assert c.execute('select version_num from alembic_version').fetchone()==('20260825_0012',)"
+  "import sqlite3; c=sqlite3.connect('/data/release-backup.db'); assert c.execute('pragma integrity_check').fetchone()==('ok',); assert c.execute('select version_num from alembic_version').fetchone()==('$EXPECTED_ALEMBIC_HEAD',)"
 docker stop --time 10 "$WRITER_CONTAINER" >/dev/null
 docker rm "$WRITER_CONTAINER" >/dev/null
 run_fixture mutate

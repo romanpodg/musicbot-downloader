@@ -12,6 +12,9 @@ def test_release_smoke_is_fail_fast_scoped_and_noninteractive() -> None:
     assert "docker image inspect" in script
     assert "docker compose config --quiet" in script
     assert "alembic upgrade head" in script
+    assert "ScriptDirectory.from_config" in script
+    assert "expected one Alembic head" in script
+    assert "IMAGE_ALEMBIC_HEAD" in script
     assert "alembic downgrade 20260820_0010" in script
     assert "python -m app.main --check" in script
     assert "python -m app.tools.ops backup create" in script
@@ -26,6 +29,7 @@ def test_release_smoke_is_fail_fast_scoped_and_noninteractive() -> None:
     assert "read -" not in script
     assert "docker volume prune" not in script
     assert "docker system prune" not in script
+    assert "20260825_0012" not in script
 
 
 def test_linux_ci_runs_host_and_production_image_gates_without_publishing() -> None:

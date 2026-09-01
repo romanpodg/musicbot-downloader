@@ -223,6 +223,15 @@ class AdminPresentation:
     def system_text(self, diagnostic: SystemDiagnostic, locale: str) -> str:
         q = diagnostic.queues
         s = diagnostic.storage
+        providers = (
+            "\n".join(
+                f"{provider.provider.value.title()}: health {provider.health}; "
+                f"active {provider.active_operations}; throttle {provider.throttle}"
+                for provider in diagnostic.providers
+            )
+            or "No provider diagnostics"
+        )
+        reasons = ", ".join(diagnostic.reasons) or "none"
         rendered = (
             f"System\n\nQueue\n"
             f"Download: {q.download_jobs.running} running / {q.download_jobs.queued} queued\n"
@@ -231,6 +240,8 @@ class AdminPresentation:
             f"Upload: {q.upload.actual_workers} / {q.upload.desired_workers}\n\n"
             f"Storage\nUsed: {s.used_bytes} bytes\n"
             f"Free: {s.free_bytes} bytes\nPressure: {s.pressure}\n\n"
+            f"Providers\n{providers}\n\n"
+            f"Conditions: {reasons}\n\n"
             f"Recovery\nExpired/stuck: {diagnostic.expired_claims}\n"
             f"Failed (1h): {diagnostic.recent_failures}"
         )

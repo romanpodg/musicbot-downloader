@@ -9,6 +9,9 @@ import sqlite3
 import time
 from pathlib import Path
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+
 from app.services.instance_lock import (
     ApplicationInstanceAlreadyRunningError,
     ApplicationInstanceLock,
@@ -26,6 +29,13 @@ def _connect() -> sqlite3.Connection:
     connection.execute("PRAGMA foreign_keys=ON")
     connection.execute("PRAGMA busy_timeout=5000")
     return connection
+
+
+def _current_alembic_head() -> str:
+    heads = ScriptDirectory.from_config(Config("alembic.ini")).get_heads()
+    if len(heads) != 1:
+        raise RuntimeError(f"expected exactly one Alembic head, got {heads!r}")
+    return heads[0]
 
 
 def _seed_preupgrade() -> None:
@@ -215,7 +225,7 @@ def _verify_durable(expected_username: str) -> None:
         raise RuntimeError(
             f"SQLite pragma mismatch: {journal_mode!r}, {foreign_keys!r}, {busy_timeout!r}"
         )
-    if integrity != "ok" or revision != "20260825_0012":
+    if integrity != "ok" or revision != _current_alembic_head():
         raise RuntimeError(f"database validation failed: {integrity!r}, {revision!r}")
     media_suffixes = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".webm"}
     persistent_media = [
