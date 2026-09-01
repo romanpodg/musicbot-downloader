@@ -109,6 +109,12 @@ class AiogramTelegramGateway:
             raise _normalized_error(exc) from None
         return TelegramDeliveryReceipt(message.chat.id, message.message_id)
 
+    async def edit_text(self, chat_id: int, message_id: int, text: str) -> None:
+        try:
+            await self._bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text)
+        except TelegramAPIError as exc:
+            raise _normalized_error(exc) from None
+
     async def can_send_messages(self, chat_id: int) -> bool:
         """Return only a safe capability result; callers do not need raw member details."""
 

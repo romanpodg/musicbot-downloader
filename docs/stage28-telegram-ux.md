@@ -49,13 +49,18 @@ the idempotency authority.
 
 ## Deliberately incomplete work
 
-The first Stage 28 increment does **not** yet wire durable status-message
-references and the edit policy into lifecycle worker completion/recovery.  As a
-result, terminal presentation is refreshed by the user-facing downloads view,
-but it is not yet proactively reconciled after every worker transition or
-restart.  Collection aggregate cards, full localized Stage 28 copy, and a
-single end-to-end presenter bridge for history/settings/recognition also remain
-to be completed before the stage can be accepted.
+The existing durable `telegram_delivery_requests.card_message_id`, together
+with its persisted bot, origin chat, and owner, is the status-message routing
+reference.  It contains no presentation text or lifecycle shadow state.  The
+delivery worker first reconciles the authoritative lifecycle and then invokes
+`TelegramStatusPresentationService`, which maps that state through the shared
+presenter and edits the same message.  A terminal edit failure may send one
+replacement and atomically move the reference; a presentation failure never
+changes delivery success or lifecycle state.
+
+Collection aggregate cards, full localized Stage 28 copy, and a single
+end-to-end presenter bridge for history/settings/recognition remain to be
+completed before the stage can be accepted.
 
 The missing wiring must extend the existing Telegram gateway and lifecycle
 completion hooks; it must not add a second queue, status state machine, or

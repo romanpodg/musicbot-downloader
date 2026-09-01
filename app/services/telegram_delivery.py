@@ -20,6 +20,7 @@ from app.services.delivery import DeliveryPreparationService
 from app.services.download_lifecycle import DownloadLifecycleService
 from app.services.telegram_artifact_cache import TelegramArtifactCacheService
 from app.services.telegram_cache import TelegramFileCacheService
+from app.services.telegram_status_presentation import TelegramStatusPresentationService
 from app.storage import Database
 from app.storage.models import DownloadRequestRecord, TelegramDeliveryRequest
 from app.storage.models.base import utc_now
@@ -45,6 +46,7 @@ class TelegramDeliveryWorker:
         lease_seconds: float = DEFAULT_LEASE_SECONDS,
         lifecycle: DownloadLifecycleService | None = None,
         artifact_cache: TelegramArtifactCacheService | None = None,
+        status_presentation: TelegramStatusPresentationService | None = None,
         delivery_timeout_seconds: float = 60.0,
     ) -> None:
         self._database = database
@@ -57,6 +59,7 @@ class TelegramDeliveryWorker:
         self._lease = timedelta(seconds=lease_seconds)
         self._lifecycle = lifecycle
         self._artifact_cache = artifact_cache
+        self._status_presentation = status_presentation
         self._delivery_timeout = delivery_timeout_seconds
 
     async def claim(self, worker_id: str) -> TelegramDeliveryRequest | None:
@@ -170,6 +173,8 @@ class TelegramDeliveryWorker:
                             current.status.value,
                             current.last_error_code,
                         )
+                        if self._status_presentation is not None:
+                            await self._status_presentation.reconcile_delivery(request.id)
                 except Exception:
                     logger.info(
                         "Could not reconcile download lifecycle",

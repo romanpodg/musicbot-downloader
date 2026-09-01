@@ -228,6 +228,15 @@ class TelegramDeliveryRepository:
         )
         return _changed(result)
 
+    async def replace_card_message(self, *, request_id: int, message_id: int) -> bool:
+        """Move a terminal presentation reference after one replacement send."""
+        result = await self._session.execute(
+            update(TelegramDeliveryRequest)
+            .where(TelegramDeliveryRequest.id == request_id)
+            .values(card_message_id=message_id)
+        )
+        return _changed(result)
+
     async def _transition(
         self,
         *,

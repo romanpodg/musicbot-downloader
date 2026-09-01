@@ -90,6 +90,7 @@ from app.services.telegram_context import ChatContextAccessService, DeliveryTarg
 from app.services.telegram_delivery import TelegramDeliveryFanoutManager, TelegramDeliveryWorker
 from app.services.telegram_media_requests import TelegramMediaRequestService
 from app.services.telegram_requests import ResolveTrackAdapter, TelegramTrackRequestService
+from app.services.telegram_status_presentation import TelegramStatusPresentationService
 from app.services.telegram_upload import TelegramCacheUploadExecutor
 from app.services.telegram_users import TelegramUserService
 from app.services.track_recognition import RuleBasedRecognitionEngine, TrackRecognitionService
@@ -574,6 +575,7 @@ async def compose_stage9(
         wake_event=delivery_wake,
         lifecycle=lifecycle,
         artifact_cache=artifact_cache,
+        status_presentation=TelegramStatusPresentationService(database, stage8.gateway),
         delivery_timeout_seconds=settings.telegram_delivery_timeout_seconds,
     )
     fanout = TelegramDeliveryFanoutManager(
