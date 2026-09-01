@@ -145,6 +145,9 @@ class DownloadLifecycleRepository:
             .outerjoin(DownloadDelivery, DownloadDelivery.job_id == DownloadLifecycleJob.id)
             .where(
                 DownloadRequestRecord.requester_user_id == user_id,
+                DownloadLifecycleJob.status == DownloadJobStatus.SUCCEEDED,
+                DownloadDelivery.status == DownloadDeliveryStatus.DELIVERED,
+                DownloadDelivery.delivered_at.is_not(None),
                 ~exists(
                     select(1).where(
                         BatchDownloadItem.download_request_id == DownloadRequestRecord.id

@@ -368,7 +368,6 @@ async def compose_stage9(
         RecognizedTrackResolutionAdapter(track_resolution), submissions
     )
     download_service = DownloadService(download_use_case)
-    history = DownloadHistoryService(database, lifecycle=lifecycle, submissions=submissions)
     batch_download = BatchDownloadService(
         database,
         provider,
@@ -376,6 +375,13 @@ async def compose_stage9(
         child_canceller=lifecycle.cancel,
         max_items=settings.max_batch_items,
         max_active_batches_per_user=settings.max_active_batches_per_user,
+    )
+    history = DownloadHistoryService(
+        database,
+        lifecycle=lifecycle,
+        submissions=submissions,
+        batch_download=batch_download,
+        preferences=download_preferences,
     )
     chat_contexts = ChatContextAccessService(database, DeliveryTargetResolver(), stage8.gateway)
     ux_flows = UxFlowService(users, ux_states, search_use_case, download_service)

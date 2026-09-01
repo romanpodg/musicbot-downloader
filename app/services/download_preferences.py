@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime
 
-from app.core.download_preferences import UserDownloadPreferences
+from app.core.download_preferences import UserDownloadPreferences, default_preferences
 from app.core.enums import DeliveryMode, FormatPreference, QualityPreference
 from app.storage import Database
 from app.storage.models.base import utc_now
@@ -91,6 +91,33 @@ class UserDownloadPreferencesService:
         self, user_id: int, quality: QualityPreference
     ) -> UserDownloadPreferences:
         return await self.update(user_id, quality=quality)
+
+    async def reset(self, user_id: int, *, now: datetime | None = None) -> UserDownloadPreferences:
+        """Restore the canonical domain defaults durably and idempotently."""
+        if user_id <= 0:
+            raise ValueError("preference user ID must be positive")
+        defaults = default_preferences(user_id)
+        async with self._database.transaction() as repositories:
+            record = await repositories.download_preferences.upsert(defaults, now=now or utc_now())
+        return UserDownloadPreferences(
+            user_id=record.user_id,
+            quality=record.quality,
+            format=record.format,
+            delivery_mode=record.delivery_mode,
+            embed_metadata=record.embed_metadata,
+            embed_cover=record.embed_cover,
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+        )
+
+    async def reset_for_telegram_user(
+        self, telegram_id: int, *, now: datetime | None = None
+    ) -> UserDownloadPreferences:
+        async with self._database.transaction() as repositories:
+            user = await repositories.users.get_by_telegram_id(telegram_id)
+            if user is None:
+                raise ValueError("Telegram user must be observed first")
+        return await self.reset(user.id, now=now)
 
     async def update_format(
         self, user_id: int, format: FormatPreference

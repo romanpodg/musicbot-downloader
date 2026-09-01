@@ -49,6 +49,8 @@ class UserDownloadPreferences:
         ):
             if not isinstance(value, enum_type):
                 raise TypeError(f"invalid preference value: {value!r}")
+        if not isinstance(self.embed_metadata, bool) or not isinstance(self.embed_cover, bool):
+            raise TypeError("metadata and cover preferences must be boolean")
         if self.quality is QualityPreference.LOSSLESS and self.format in {
             FormatPreference.MP3,
             FormatPreference.M4A,

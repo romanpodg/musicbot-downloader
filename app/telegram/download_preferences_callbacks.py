@@ -14,6 +14,7 @@ class PreferenceSetting(StrEnum):
     DELIVERY = "d"
     METADATA = "m"
     COVER = "c"
+    RESET = "r"
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +56,9 @@ def parse_preference_callback(value: str | None) -> PreferenceCallback | None:
         try:
             DeliveryMode(parts[2])
         except ValueError:
+            return None
+    elif setting is PreferenceSetting.RESET:
+        if parts[2] != "reset":
             return None
     elif parts[2] not in {"on", "off"}:
         return None

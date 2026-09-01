@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from app.core.telegram_artifact_cache import TelegramCacheKey
 from app.telegram.presentation import (
     encode_history_batch,
+    encode_history_batch_repeat,
     encode_history_list,
     encode_history_repeat,
     encode_history_track,
@@ -44,6 +45,7 @@ def test_stage24_history_callbacks_are_compact_and_strict() -> None:
     assert parse_history_callback(encode_history_list("2026-01-01T00:00:00+00:00|4")).cursor
     assert parse_history_callback(encode_history_track(4)).identifier == 4
     assert parse_history_callback(encode_history_batch(5)).action == "batch"
+    assert parse_history_callback(encode_history_batch_repeat(5)).action == "brepeat"
     assert parse_history_callback(encode_history_repeat(6)).action == "repeat"
     assert parse_history_callback("h24:track:not-an-id") is None
     assert parse_history_callback("h24:repeat:0") is None

@@ -210,8 +210,23 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
                 await _edit_or_send(
                     callback,
                     dependencies.presentation.history_batch_text(batch_entry, locale),
-                    InlineKeyboardMarkup(inline_keyboard=[]),
+                    dependencies.presentation.history_batch_keyboard(batch_entry, locale),
                 )
+            elif (
+                parsed.action == "brepeat"
+                and parsed.identifier is not None
+                and isinstance(callback.message, Message)
+                and dependencies.batch_download is not None
+            ):
+                target = _batch_target(callback, user.telegram_id)
+                batch = await dependencies.history.repeat_batch(
+                    user.telegram_id, parsed.identifier, target=target
+                )
+                if batch is None:
+                    await _invalid_callback(callback, dependencies.presentation, locale)
+                    return
+                await dependencies.batch_download.admit_pending(batch.id, target=target)
+                await callback.message.edit_text("Download queued")
             elif (
                 parsed.action == "repeat"
                 and parsed.identifier is not None

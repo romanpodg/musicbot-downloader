@@ -130,6 +130,23 @@ class ProviderResolutionRepository:
         )
         return list(rows)
 
+    async def successful_provider(self, job_id: int) -> str | None:
+        """Return the provider that actually produced the successful artifact."""
+        value = await self._session.scalar(
+            select(DownloadProviderCandidateRecord.provider)
+            .join(
+                DownloadProviderAttemptRecord,
+                DownloadProviderAttemptRecord.candidate_id == DownloadProviderCandidateRecord.id,
+            )
+            .where(
+                DownloadProviderAttemptRecord.job_id == job_id,
+                DownloadProviderAttemptRecord.status == "SUCCEEDED",
+            )
+            .order_by(DownloadProviderAttemptRecord.attempt_number.desc())
+            .limit(1)
+        )
+        return str(value) if value is not None else None
+
     async def abandon_unfinished(self, job_id: int, now: datetime) -> int:
         result = await self._session.execute(
             update(DownloadProviderAttemptRecord)

@@ -8,7 +8,7 @@ from enum import StrEnum
 from typing import Protocol
 
 from app.core.delivery_targets import DeliveryTarget
-from app.core.enums import QualityProfile, TelegramDeliveryStatus
+from app.core.enums import QualityPreference, QualityProfile, TelegramDeliveryStatus
 from app.core.exceptions import DatabaseConcurrencyError
 from app.providers.base import MusicProvider
 from app.services.track_resolution import ResolveTrackService
@@ -144,6 +144,14 @@ class TelegramTrackRequestService:
                 if await repositories.tracks.get_track_by_id(track_id) is None:
                     raise ValueError("Deep-link Track target no longer exists")
                 quality = stored_user.preferred_quality_profile
+                # Stage 22 preferences are the effective user defaults.  Keep
+                # the legacy explicit-quality prompt for users who have never
+                # persisted Stage 22 settings, while honoring a durable
+                # settings change for all future admissions.
+                if quality is None:
+                    preference_record = await repositories.download_preferences.get(user.id)
+                    if preference_record is not None:
+                        quality = _quality_profile_for_preference(preference_record.quality)
                 request = await repositories.telegram_delivery.create(
                     telegram_bot_id=self._telegram_bot_id,
                     user_id=user.id,
@@ -369,3 +377,12 @@ def _track_card(request: TelegramDeliveryRequest, track: Track) -> TrackCard:
         duration_ms=track.duration_ms,
         card_message_id=request.card_message_id,
     )
+
+
+def _quality_profile_for_preference(preference: QualityPreference) -> QualityProfile:
+    return {
+        QualityPreference.LOSSLESS: QualityProfile.LOSSLESS,
+        QualityPreference.HIGH: QualityProfile.MP3_320,
+        QualityPreference.BEST_AVAILABLE: QualityProfile.MP3_320,
+        QualityPreference.STANDARD: QualityProfile.MP3_128,
+    }[preference]

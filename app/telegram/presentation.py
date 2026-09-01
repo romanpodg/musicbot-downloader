@@ -202,7 +202,10 @@ def parse_album_page(value: str | None) -> AlbumPageCallback | None:
 
 
 def encode_history_list(cursor: str | None = None) -> str:
-    return "h24:list" if not cursor else f"h24:list:{cursor}"
+    value = "h24:list" if not cursor else f"h24:list:{cursor}"
+    if len(value.encode()) > 64:
+        raise ValueError("history callback exceeds Telegram limit")
+    return value
 
 
 def encode_history_track(request_id: int) -> str:
@@ -217,8 +220,12 @@ def encode_history_repeat(request_id: int) -> str:
     return f"h24:repeat:{request_id}"
 
 
+def encode_history_batch_repeat(batch_id: int) -> str:
+    return f"h24:brepeat:{batch_id}"
+
+
 def parse_history_callback(value: str | None) -> HistoryCallback | None:
-    if not value or not value.startswith("h24:"):
+    if not value or len(value.encode()) > 64 or not value.startswith("h24:"):
         return None
     parts = value.split(":", 2)
     if parts[1] == "list":
@@ -229,7 +236,7 @@ def parse_history_callback(value: str | None) -> HistoryCallback | None:
         identifier = int(parts[2])
     except ValueError:
         return None
-    if identifier <= 0 or parts[1] not in {"track", "batch", "repeat"}:
+    if identifier <= 0 or parts[1] not in {"track", "batch", "repeat", "brepeat"}:
         return None
     return HistoryCallback(parts[1], identifier)
 
@@ -380,6 +387,10 @@ class TelegramPresentation:
         lines = [f"{entry.artist} — {entry.title}"]
         if entry.album:
             lines.append(entry.album)
+        if entry.delivered_at is not None:
+            lines.append(f"Delivered: {entry.delivered_at.isoformat()}")
+        if entry.provider:
+            lines.append(f"Provider: {entry.provider}")
         if entry.profile:
             lines.extend(
                 (
@@ -416,6 +427,22 @@ class TelegramPresentation:
             f"✓ {entry.succeeded_items} delivered\n✗ {entry.failed_items} failed\n"
             f"Status: {entry.status.title()}"
         )
+
+    def history_batch_keyboard(self, entry: object, locale: str) -> InlineKeyboardMarkup:
+        from app.services.download_history import BatchHistoryEntry
+
+        rows = []
+        if isinstance(entry, BatchHistoryEntry) and entry.repeat_available:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text="Download again",
+                        callback_data=encode_history_batch_repeat(entry.batch_id),
+                    )
+                ]
+            )
+        rows.append([InlineKeyboardButton(text="Back", callback_data=encode_history_list())])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def quality_keyboard(
         self,

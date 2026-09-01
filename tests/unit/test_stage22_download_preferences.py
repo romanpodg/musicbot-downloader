@@ -101,3 +101,6 @@ def test_settings_callback_is_strict_and_typed() -> None:
     assert parsed is not None and parsed.setting is PreferenceSetting.QUALITY
     assert parse_preference_callback("dp1:q:not-a-quality") is None
     assert parse_preference_callback("dp1:m:maybe") is None
+    reset = encode_preference_callback(PreferenceSetting.RESET, "reset")
+    assert parse_preference_callback(reset) is not None
+    assert parse_preference_callback("dp1:r:not-reset") is None

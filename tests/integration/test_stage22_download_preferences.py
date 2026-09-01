@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.enums import DeliveryMode, QualityPreference
+from app.core.enums import DeliveryMode, FormatPreference, QualityPreference
 from app.services.download_preferences import UserDownloadPreferencesService
 
 
@@ -24,3 +24,23 @@ async def test_missing_row_defaults_and_atomic_upsert(database) -> None:
         record = await repositories.download_preferences.get(user.id)
         assert record is not None
         assert record.quality is QualityPreference.LOSSLESS
+
+
+@pytest.mark.asyncio
+async def test_reset_defaults_is_durable_and_canonical(database) -> None:
+    async with database.transaction() as repositories:
+        user = await repositories.users.create_user(22002)
+    service = UserDownloadPreferencesService(database)
+    await service.update(
+        user.id,
+        quality=QualityPreference.LOSSLESS,
+        format=FormatPreference.FLAC,
+        embed_cover=False,
+    )
+    reset = await service.reset(user.id)
+    assert reset.quality is QualityPreference.BEST_AVAILABLE
+    assert reset.format is FormatPreference.ORIGINAL
+    assert reset.embed_cover is True
+    recreated = UserDownloadPreferencesService(database)
+    loaded = await recreated.get_for_user(user.id)
+    assert loaded == reset

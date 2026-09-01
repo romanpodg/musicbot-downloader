@@ -30,6 +30,7 @@ class BatchDownloadRepository:
         statement = select(BatchDownloadRequest).where(
             BatchDownloadRequest.requester_user_id == user_id,
             BatchDownloadRequest.parent_batch_id.is_(None),
+            BatchDownloadRequest.status.in_((BatchStatus.COMPLETED, BatchStatus.PARTIAL)),
         )
         if after is not None:
             created_at, batch_id = after

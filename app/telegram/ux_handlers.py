@@ -146,8 +146,21 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
                 values = {"delivery_mode": DeliveryMode(parsed.value)}
             elif parsed.setting is PreferenceSetting.METADATA:
                 values = {"embed_metadata": parsed.value == "on"}
-            else:
+            elif parsed.setting is PreferenceSetting.COVER:
                 values = {"embed_cover": parsed.value == "on"}
+            else:
+                prefs = await dependencies.download_preferences.reset_for_telegram_user(
+                    callback.from_user.id
+                )
+                user = await dependencies.users.observe(_profile(callback.from_user))
+                locale = dependencies.users.locale_for(user)
+                if isinstance(callback.message, Message):
+                    await callback.message.edit_text(
+                        _settings_text(prefs, locale),
+                        reply_markup=_settings_keyboard(prefs, locale),
+                    )
+                await callback.answer()
+                return
             prefs = await dependencies.download_preferences.update_for_telegram_user(
                 callback.from_user.id, **values
             )
@@ -519,6 +532,12 @@ def _settings_keyboard(prefs: object, locale: str) -> InlineKeyboardMarkup:
                     PreferenceSetting.COVER, "off" if prefs.embed_cover else "on"
                 ),
             ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="Reset defaults",
+                callback_data=encode_preference_callback(PreferenceSetting.RESET, "reset"),
+            )
         ],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
