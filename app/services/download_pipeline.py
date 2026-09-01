@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -50,6 +52,7 @@ from app.services.media import (
     media_satisfies_requirement,
     output_satisfies_specification,
 )
+from app.services.provider_limits import ProviderRateLimiter
 from app.services.runtime_prerequisites import TemporaryDiskGuard
 from app.storage import Database
 
@@ -97,6 +100,7 @@ class DownloadPipeline:
         *,
         download_timeout: float = 600,
         disk_guard: TemporaryDiskGuard | None = None,
+        provider_limiter: ProviderRateLimiter | None = None,
     ) -> None:
         self._database = database
         self._quality_resolver = quality_resolver
@@ -106,6 +110,7 @@ class DownloadPipeline:
         self._transcoder = transcoder
         self._download_timeout = download_timeout
         self._disk_guard = disk_guard
+        self._provider_limiter = provider_limiter
 
     async def download(
         self,
@@ -173,9 +178,10 @@ class DownloadPipeline:
                 try:
                     self._validate_plan(plan, track_id, quality_profile)
                     self._artifacts.attempt_path(job_id, plan_rank)
-                    runtime = await self._provider.check_source(
-                        plan.provider, plan.provider_track_id
-                    )
+                    async with self._provider_operation(plan.provider):
+                        runtime = await self._provider.check_source(
+                            plan.provider, plan.provider_track_id
+                        )
                     if runtime.status is not ProviderRuntimeStatus.AVAILABLE:
                         code = _runtime_failure(runtime.status)
                         attempts.append(
@@ -185,9 +191,10 @@ class DownloadPipeline:
                         self._artifacts.cleanup_attempt(job_id, plan_rank)
                         continue
                     if plan.readiness is DownloadPlanReadiness.REQUIRES_PREFLIGHT:
-                        prepared = await self._provider.prepare_source(
-                            plan.provider, plan.provider_track_id
-                        )
+                        async with self._provider_operation(plan.provider):
+                            prepared = await self._provider.prepare_source(
+                                plan.provider, plan.provider_track_id
+                            )
                         if prepared is None or not media_satisfies_requirement(
                             prepared, plan.source_expectation
                         ):
@@ -200,17 +207,28 @@ class DownloadPipeline:
                             continue
                     if selected is not None:
                         try:
-                            declared = await self._provider.download_source(
-                                plan.provider,
-                                plan.provider_track_id,
-                                job_id,
-                                plan_rank,
-                                timeout_seconds=self._download_timeout,
-                                account_id=account_id,
-                            )
+                            async with self._provider_operation(plan.provider):
+                                declared = await self._provider.download_source(
+                                    plan.provider,
+                                    plan.provider_track_id,
+                                    job_id,
+                                    plan_rank,
+                                    timeout_seconds=self._download_timeout,
+                                    account_id=account_id,
+                                )
                         except TypeError as exc:
                             if "account_id" not in str(exc):
                                 raise
+                            async with self._provider_operation(plan.provider):
+                                declared = await self._provider.download_source(
+                                    plan.provider,
+                                    plan.provider_track_id,
+                                    job_id,
+                                    plan_rank,
+                                    timeout_seconds=self._download_timeout,
+                                )
+                    else:
+                        async with self._provider_operation(plan.provider):
                             declared = await self._provider.download_source(
                                 plan.provider,
                                 plan.provider_track_id,
@@ -218,14 +236,6 @@ class DownloadPipeline:
                                 plan_rank,
                                 timeout_seconds=self._download_timeout,
                             )
-                    else:
-                        declared = await self._provider.download_source(
-                            plan.provider,
-                            plan.provider_track_id,
-                            job_id,
-                            plan_rank,
-                            timeout_seconds=self._download_timeout,
-                        )
                     if declared.file_path is None:
                         raise MediaOperationError(DownloadFailureCode.SOURCE_VALIDATION_FAILED)
                     self._artifacts.ensure_owned(declared.file_path, job_id)
@@ -327,6 +337,14 @@ class DownloadPipeline:
             # Durable UploadJob ownership (after handoff) and the stale grace
             # period take over once Stage 6 returns to its caller.
             self._artifacts.mark_inactive(job_id)
+
+    @asynccontextmanager
+    async def _provider_operation(self, provider: MusicProviderName) -> AsyncIterator[None]:
+        if self._provider_limiter is None:
+            yield
+            return
+        async with self._provider_limiter.operation(provider):
+            yield
 
     async def _execute_plan(
         self,

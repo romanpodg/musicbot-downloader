@@ -108,6 +108,7 @@ class DownloadWorkerBackend:
         candidate_resolver: ProviderCandidateResolver | None = None,
         candidate_ranker: ProviderCandidateRanker | None = None,
         stage25_executor: Stage25ExecutionBoundary | None = None,
+        per_user_active_limit: int | None = None,
     ) -> None:
         self._database = database
         self._pipeline = pipeline
@@ -120,16 +121,20 @@ class DownloadWorkerBackend:
         self._candidate_resolver = candidate_resolver
         self._candidate_ranker = candidate_ranker or ProviderCandidateRanker()
         self._stage25_executor = stage25_executor
+        self._per_user_active_limit = per_user_active_limit
 
     async def claim(self, worker_id: str) -> DownloadJob | None:
         now = self._clock()
         async with self._database.transaction() as repositories:
+            # Serialize eligibility + claim in SQLite's single-runtime model.
+            await repositories.download_jobs.begin_immediate()
             await repositories.download_jobs.recover_expired(now, self._max_attempts)
             reconciled = await repositories.singleflight.reconcile_all(now)
             job = await repositories.download_jobs.claim(
                 worker_id=worker_id,
                 now=now,
                 lease_expires_at=now + self._lease,
+                per_user_limit=self._per_user_active_limit,
             )
         await self._notify_if(reconciled > 0)
         return job
@@ -373,6 +378,7 @@ class UploadWorkerBackend:
         lease_seconds: float = DEFAULT_LEASE_SECONDS,
         wake_event: asyncio.Event | None = None,
         subscriber_notifier: SubscriberLifecycleNotifier | None = None,
+        upload_timeout_seconds: float = 600.0,
     ) -> None:
         self._database = database
         self._executor = executor
@@ -382,6 +388,7 @@ class UploadWorkerBackend:
         self._lease = timedelta(seconds=lease_seconds)
         self.wake_event = wake_event or asyncio.Event()
         self._subscriber_notifier = subscriber_notifier
+        self._upload_timeout = upload_timeout_seconds
 
     async def claim(self, worker_id: str) -> UploadJob | None:
         now = self._clock()
@@ -411,18 +418,19 @@ class UploadWorkerBackend:
         try:
             path = self._queue.validate_artifact(job.artifact_job_id, job.artifact_path)
             valid_path = True
-            await self._executor.upload(
-                UploadRequest(
-                    job.id,
-                    job.download_job_id,
-                    job.track_id,
-                    job.quality_profile,
-                    job.artifact_job_id,
-                    path,
-                    _artifact_metadata_from_upload(job),
-                    job.artifact_fingerprint,
+            async with asyncio.timeout(self._upload_timeout):
+                await self._executor.upload(
+                    UploadRequest(
+                        job.id,
+                        job.download_job_id,
+                        job.track_id,
+                        job.quality_profile,
+                        job.artifact_job_id,
+                        path,
+                        _artifact_metadata_from_upload(job),
+                        job.artifact_fingerprint,
+                    )
                 )
-            )
             async with self._database.transaction() as repositories:
                 succeeded = await repositories.upload_jobs.succeed(
                     job_id=job.id, worker_id=worker_id, now=self._clock()
@@ -458,6 +466,15 @@ class UploadWorkerBackend:
                 exc.code.value,
                 retryable=True,
                 retry_after_seconds=exc.retry_after_seconds,
+            )
+            if status in {QueueJobStatus.CANCELLED, QueueJobStatus.FAILED} and valid_path:
+                self._queue.release_owned(job.artifact_job_id, job.artifact_path)
+        except TimeoutError:
+            status = await self._transition_failure(
+                job,
+                worker_id,
+                QueueErrorCode.UPLOAD_RETRYABLE.value,
+                retryable=True,
             )
             if status in {QueueJobStatus.CANCELLED, QueueJobStatus.FAILED} and valid_path:
                 self._queue.release_owned(job.artifact_job_id, job.artifact_path)

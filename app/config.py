@@ -75,11 +75,19 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite+aiosqlite:///./data/bot.db"
     temp_dir: Path = Path("./temp")
+    # Stage 27 resource policy.  Worker maxima remain the global execution
+    # authority; these aliases expose the policy explicitly without creating
+    # a second semaphore/queue boundary.
+    temp_dir_max_bytes: int = Field(default=10_737_418_240, ge=1)
     temp_disk_min_free_bytes: int = Field(default=268_435_456, ge=0)
     temp_cleanup_interval_seconds: float = Field(default=600.0, ge=60.0, le=86_400.0)
     temp_artifact_stale_after_seconds: float = Field(default=3600.0, ge=60.0)
     download_timeout_seconds: float = Field(default=600.0, gt=0)
     transcode_timeout_seconds: float = Field(default=300.0, gt=0)
+    ffprobe_timeout_seconds: float = Field(default=30.0, gt=0)
+    upload_timeout_seconds: float = Field(default=600.0, gt=0)
+    telegram_delivery_timeout_seconds: float = Field(default=60.0, gt=0)
+    stuck_job_threshold_seconds: float = Field(default=1800.0, gt=0)
     ffmpeg_binary: str | None = None
     ffprobe_binary: str | None = None
 
@@ -92,6 +100,9 @@ class Settings(BaseSettings):
     queue_max_size: int = Field(default=1000, ge=1)
     max_batch_items: int = Field(default=100, ge=1, le=10000)
     max_active_batches_per_user: int = Field(default=2, ge=1, le=100)
+    per_user_active_download_limit: int = Field(default=2, ge=1, le=1000)
+    provider_rate_limit_interval_seconds: float = Field(default=0.0, ge=0, le=3600)
+    provider_max_concurrent_operations: int = Field(default=1, ge=1, le=100)
 
     default_locale: str = "en"
     supported_locales: LocaleTuple = ("en", "ru")
@@ -145,7 +156,6 @@ class Settings(BaseSettings):
             raise ValueError(
                 "TEMP_ARTIFACT_STALE_AFTER_SECONDS must be >= TEMP_CLEANUP_INTERVAL_SECONDS"
             )
-
         self.default_locale = _normalize_locale(self.default_locale)
         self.supported_locales = tuple(_normalize_locale(item) for item in self.supported_locales)
         if not self.supported_locales or any(not item for item in self.supported_locales):
@@ -176,6 +186,22 @@ class Settings(BaseSettings):
         ):
             raise ValueError("SQLite DATABASE_URL must use the aiosqlite async driver")
         return self
+
+    @property
+    def global_active_download_limit(self) -> int:
+        """Global download capacity, authoritatively bounded by worker max."""
+
+        return self.download_workers_max
+
+    @property
+    def global_active_upload_limit(self) -> int:
+        """Global upload capacity, authoritatively bounded by worker max."""
+
+        return self.upload_workers_max
+
+    @property
+    def max_collection_size(self) -> int:
+        return self.max_batch_items
 
     def telegram_cache_configuration(self) -> tuple[str, int | str]:
         """Validate Telegram-only settings at the Stage 8 composition boundary."""

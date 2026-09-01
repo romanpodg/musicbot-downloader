@@ -8,6 +8,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.i18n import LocalizationService
 from app.services.admin_overview import AuthorizedAdminOverview
+from app.services.system_diagnostics import JobDiagnostic, SystemDiagnostic
 from app.telegram.admin_management_presentation import (
     AdminManagementCallbackAction,
     encode_admin_management_callback,
@@ -218,6 +219,39 @@ class AdminPresentation:
             ]
         )
         return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    def system_text(self, diagnostic: SystemDiagnostic, locale: str) -> str:
+        q = diagnostic.queues
+        s = diagnostic.storage
+        rendered = (
+            f"System\n\nQueue\n"
+            f"Download: {q.download_jobs.running} running / {q.download_jobs.queued} queued\n"
+            f"Upload: {q.upload_jobs.running} running / {q.upload_jobs.queued} queued\n\n"
+            f"Workers\nDownload: {q.download.actual_workers} / {q.download.desired_workers}\n"
+            f"Upload: {q.upload.actual_workers} / {q.upload.desired_workers}\n\n"
+            f"Storage\nUsed: {s.used_bytes} bytes\n"
+            f"Free: {s.free_bytes} bytes\nPressure: {s.pressure}\n\n"
+            f"Recovery\nExpired/stuck: {diagnostic.expired_claims}\n"
+            f"Failed (1h): {diagnostic.recent_failures}"
+        )
+        if len(rendered) > 4096:
+            raise ValueError("system diagnostic exceeds Telegram message limit")
+        return rendered
+
+    def job_text(self, diagnostic: JobDiagnostic, locale: str) -> str:
+        lines = [
+            f"Job {diagnostic.job_id}",
+            f"Status: {diagnostic.status}",
+            f"Attempts: {diagnostic.attempt_count}",
+        ]
+        if diagnostic.last_error_code:
+            lines.append(f"Error: {diagnostic.last_error_code}")
+        for item in diagnostic.provider_attempts[:20]:
+            lines.append(
+                f"Provider attempt: {item.get('status')}"
+                + (f" ({item.get('failure_code')})" if item.get("failure_code") else "")
+            )
+        return "\n".join(lines)[:4096]
 
 
 def _count(value: int) -> str:

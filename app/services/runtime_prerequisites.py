@@ -37,19 +37,48 @@ class TemporaryDiskGuard:
         minimum_free_bytes: int,
         *,
         disk_usage: Callable[[Path], DiskUsage] = _disk_usage,
+        maximum_usage_bytes: int | None = None,
     ) -> None:
         self._temp_dir = temp_dir.expanduser().resolve()
         self._minimum_free_bytes = minimum_free_bytes
         self._disk_usage = disk_usage
+        self._maximum_usage_bytes = maximum_usage_bytes
 
     @property
     def minimum_free_bytes(self) -> int:
         return self._minimum_free_bytes
 
     def ensure_available(self) -> None:
-        free = self._disk_usage(self._temp_dir).free
+        usage = self._disk_usage(self._temp_dir)
+        free = usage.free
         if free < self._minimum_free_bytes:
             raise OSError(errno.ENOSPC, "temporary storage reserve is exhausted")
+        if self._maximum_usage_bytes is not None:
+            used = _directory_size(self._temp_dir)
+            if used >= self._maximum_usage_bytes:
+                raise OSError(errno.ENOSPC, "temporary storage usage limit is exhausted")
+
+    def snapshot(self) -> tuple[int, int, bool]:
+        """Return used bytes, free bytes, and whether new work is blocked."""
+        free = self._disk_usage(self._temp_dir).free
+        used = _directory_size(self._temp_dir)
+        blocked = free < self._minimum_free_bytes or (
+            self._maximum_usage_bytes is not None and used >= self._maximum_usage_bytes
+        )
+        return used, free, blocked
+
+
+def _directory_size(root: Path) -> int:
+    total = 0
+    if not root.exists():
+        return 0
+    for path in root.rglob("*"):
+        try:
+            if path.is_file() and not path.is_symlink():
+                total += path.stat().st_size
+        except OSError:
+            continue
+    return total
 
 
 class RuntimePrerequisiteService:

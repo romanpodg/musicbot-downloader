@@ -100,14 +100,18 @@ chmod 600 .env
 | `OWNER_ID` | Optional positive Telegram user ID; the value is never logged |
 | `DATABASE_URL` | Compose forces `sqlite+aiosqlite:////data/musicbot.db` |
 | `TEMP_DIR` | Compose forces ephemeral `/tmp/musicbot` |
+| `TEMP_DIR_MAX_BYTES` | Maximum managed TEMP_DIR artifact usage; default 10 GiB |
 | `TEMP_DISK_MIN_FREE_BYTES` | Acquisition safety floor; default `268435456` (256 MiB) |
 | `TEMP_CLEANUP_INTERVAL_SECONDS` | Cleanup watchdog interval; default `600`, bounded to 60–86400 seconds |
 | `TEMP_ARTIFACT_STALE_AFTER_SECONDS` | Minimum orphan age; default `3600`, at least the cleanup interval |
 | `FFMPEG_BINARY`, `FFPROBE_BINARY` | Optional explicit executable paths; PATH by default |
-| `DOWNLOAD_TIMEOUT_SECONDS`, `TRANSCODE_TIMEOUT_SECONDS` | Positive operation timeouts |
+| `DOWNLOAD_TIMEOUT_SECONDS`, `TRANSCODE_TIMEOUT_SECONDS`, `FFPROBE_TIMEOUT_SECONDS` | Positive provider and processing timeouts |
+| `UPLOAD_TIMEOUT_SECONDS`, `TELEGRAM_DELIVERY_TIMEOUT_SECONDS` | Bounded Telegram upload and delivery calls |
 | `DOWNLOAD_WORKERS_DEFAULT`, `DOWNLOAD_WORKERS_MAX` | Initial and maximum download workers |
 | `UPLOAD_WORKERS_DEFAULT`, `UPLOAD_WORKERS_MAX` | Initial and maximum upload workers |
 | `QUEUE_MAX_SIZE` | Persistent queue admission bound |
+| `PER_USER_ACTIVE_DOWNLOAD_LIMIT` | Active artifact-producing work limit per requester |
+| `PROVIDER_RATE_LIMIT_INTERVAL_SECONDS`, `PROVIDER_MAX_CONCURRENT_OPERATIONS` | Shared per-provider local pacing policy |
 | `INTERNAL_API_ENABLED` | `false` by default |
 | `INTERNAL_API_HOST`, `INTERNAL_API_PORT` | Secure default `127.0.0.1:8081` |
 | `INTERNAL_API_TOKEN` | Runtime secret, at least 32 trimmed characters when enabled |

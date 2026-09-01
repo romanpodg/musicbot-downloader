@@ -63,6 +63,7 @@ from app.services.provider_accounts import ProviderAccountManagementService
 from app.services.provider_authorization import ProviderAuthorizationCoordinator
 from app.services.provider_candidates import ProviderCandidateResolver
 from app.services.provider_health import ProviderHealthProbe, ProviderHealthService
+from app.services.provider_limits import ProviderRateLimiter
 from app.services.provider_resolution import ProviderResolver
 from app.services.quality_resolution import QualityResolver
 from app.services.queues import (
@@ -76,6 +77,7 @@ from app.services.runtime_prerequisites import TemporaryDiskGuard
 from app.services.runtime_worker_control import RuntimeWorkerControlService
 from app.services.singleflight import SingleFlightService, SubscriberNotifier
 from app.services.stage25_execution import Stage25DownloadExecutor
+from app.services.system_diagnostics import SystemDiagnosticsService
 from app.services.telegram_album_coordinator import (
     TelegramAlbumCoordinator,
     TelegramAlbumCoordinatorManager,
@@ -184,6 +186,7 @@ class Stage9Components:
     history: DownloadHistoryService
     provider_candidates: ProviderCandidateResolver
     provider_candidate_ranker: ProviderCandidateRanker
+    diagnostics: SystemDiagnosticsService
 
     async def start(self) -> None:
         try:
@@ -288,7 +291,11 @@ async def compose_stage9(
         QualityResolver(ProviderResolver(database, provider)),
         cast(NativeDownloadBoundary, provider),
         artifacts,
-        MediaProbe(settings.temp_dir, settings.ffprobe_binary),
+        MediaProbe(
+            settings.temp_dir,
+            settings.ffprobe_binary,
+            timeout=settings.ffprobe_timeout_seconds,
+        ),
         Transcoder(
             settings.temp_dir,
             settings.ffmpeg_binary,
@@ -298,6 +305,11 @@ async def compose_stage9(
         disk_guard=TemporaryDiskGuard(
             settings.temp_dir,
             settings.temp_disk_min_free_bytes,
+            maximum_usage_bytes=settings.temp_dir_max_bytes,
+        ),
+        provider_limiter=ProviderRateLimiter(
+            interval_seconds=settings.provider_rate_limit_interval_seconds,
+            max_concurrent=settings.provider_max_concurrent_operations,
         ),
     )
     download_backend = DownloadWorkerBackend(
@@ -315,6 +327,7 @@ async def compose_stage9(
             provider_candidates,
             provider_candidate_ranker,
         ),
+        per_user_active_limit=settings.per_user_active_download_limit,
     )
     upload_backend = UploadWorkerBackend(
         database,
@@ -322,6 +335,7 @@ async def compose_stage9(
         uploads,
         wake_event=upload_wake,
         subscriber_notifier=notifier,
+        upload_timeout_seconds=settings.upload_timeout_seconds,
     )
     worker_settings = WorkerSettingsService(database, settings)
     queue_manager = QueueManager(
@@ -413,6 +427,15 @@ async def compose_stage9(
         queue_manager,
     )
     provider_health = ProviderHealthService(cast(ProviderHealthProbe, provider), authorization)
+    diagnostics = SystemDiagnosticsService(
+        database,
+        queue_manager,
+        temp_dir=settings.temp_dir,
+        temp_reserve_bytes=settings.temp_disk_min_free_bytes,
+        temp_max_bytes=settings.temp_dir_max_bytes,
+        stuck_threshold_seconds=settings.stuck_job_threshold_seconds,
+        authorization=authorization,
+    )
     account_backend = ProviderRuntimeAccountBackend(
         cast(ProviderAccountRuntimeProbe, provider),
         authorization_methods={
@@ -482,6 +505,7 @@ async def compose_stage9(
                 provider_accounts,
                 provider_accounts_presentation,
                 provider_authorization_ui,
+                diagnostics,
             )
         )
     )
@@ -528,6 +552,7 @@ async def compose_stage9(
         wake_event=delivery_wake,
         lifecycle=lifecycle,
         artifact_cache=artifact_cache,
+        delivery_timeout_seconds=settings.telegram_delivery_timeout_seconds,
     )
     fanout = TelegramDeliveryFanoutManager(
         delivery_worker,
@@ -590,4 +615,5 @@ async def compose_stage9(
         history=history,
         provider_candidates=provider_candidates,
         provider_candidate_ranker=provider_candidate_ranker,
+        diagnostics=diagnostics,
     )

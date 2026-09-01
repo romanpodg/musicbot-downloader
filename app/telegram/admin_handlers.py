@@ -40,6 +40,7 @@ from app.services.runtime_worker_control import (
     WorkerMutationStatus,
     WorkerPoolType,
 )
+from app.services.system_diagnostics import SystemDiagnosticsService
 from app.services.telegram_users import TelegramUserProfile, TelegramUserService
 from app.storage.models import User
 from app.telegram.admin_management_presentation import (
@@ -86,6 +87,7 @@ class AdminHandlerDependencies:
     provider_accounts: ProviderAccountManagementService | None = None
     provider_accounts_presentation: ProviderAccountsPresentation | None = None
     provider_authorization_ui: ProviderAuthorizationUiManager | None = None
+    diagnostics: SystemDiagnosticsService | None = None
 
 
 def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
@@ -288,6 +290,39 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
                 locale, authoritative_owner=result.access.is_authoritative_owner
             ),
         )
+
+    @router.message(Command("system"))
+    async def system_command(message: Message) -> None:
+        user = await _observe_message(message, dependencies.users)
+        if user is None or dependencies.diagnostics is None:
+            return
+        locale = dependencies.users.locale_for(user)
+        try:
+            diagnostic = await dependencies.diagnostics.system(user.id)
+        except AuthorizationError:
+            await message.answer(dependencies.presentation.text("admin.access_denied", locale))
+            return
+        except Exception:
+            await message.answer(dependencies.presentation.text("admin.refresh_failed", locale))
+            return
+        await message.answer(dependencies.presentation.system_text(diagnostic, locale))
+
+    @router.message(Command("job"))
+    async def job_command(message: Message) -> None:
+        user = await _observe_message(message, dependencies.users)
+        if user is None or dependencies.diagnostics is None:
+            return
+        locale = dependencies.users.locale_for(user)
+        parts = (message.text or "").split()
+        try:
+            job_id = int(parts[1]) if len(parts) == 2 else 0
+            diagnostic = await dependencies.diagnostics.job(job_id, user.id)
+        except (ValueError, AuthorizationError):
+            diagnostic = None
+        if diagnostic is None:
+            await message.answer(dependencies.presentation.text("admin.access_denied", locale))
+            return
+        await message.answer(dependencies.presentation.job_text(diagnostic, locale))
 
     @router.callback_query(F.data.startswith("adm1:"))
     async def admin_callback(callback: CallbackQuery) -> None:

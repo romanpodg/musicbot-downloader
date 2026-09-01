@@ -68,6 +68,9 @@ class OperationalStatus:
     temp_reserve_bytes: int
     audit_event_count: int
     audit_latest_at: datetime | None
+    temp_used_bytes: int = 0
+    temp_max_bytes: int = 0
+    temp_pressure: str = "normal"
 
 
 class _UnavailableDependency:
@@ -181,6 +184,11 @@ async def _status(settings: Settings) -> OperationalStatus:
             temp_dir=str(settings.temp_dir.expanduser().resolve()),
             temp_free_bytes=shutil.disk_usage(settings.temp_dir).free,
             temp_reserve_bytes=settings.temp_disk_min_free_bytes,
+            temp_used_bytes=_directory_size(settings.temp_dir),
+            temp_max_bytes=settings.temp_dir_max_bytes,
+            temp_pressure=_pressure(
+                settings.temp_dir, settings.temp_disk_min_free_bytes, settings.temp_dir_max_bytes
+            ),
             audit_event_count=audit_count,
             audit_latest_at=audit_latest,
         )
@@ -254,6 +262,29 @@ async def _backup(settings: Settings, destination: Path) -> Any:
         return await SQLiteBackupService(database).create(destination)
     finally:
         await database.dispose()
+
+
+def _directory_size(root: Path) -> int:
+    total = 0
+    if not root.exists():
+        return 0
+    for path in root.rglob("*"):
+        try:
+            if path.is_file() and not path.is_symlink():
+                total += path.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _pressure(root: Path, reserve: int, maximum: int) -> str:
+    usage = shutil.disk_usage(root)
+    used = _directory_size(root)
+    if usage.free < reserve or used >= maximum:
+        return "blocked"
+    if usage.free < reserve * 2 or used > maximum * 0.9:
+        return "warning"
+    return "normal"
 
 
 def _normalized(value: Any) -> Any:

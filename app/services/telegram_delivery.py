@@ -45,6 +45,7 @@ class TelegramDeliveryWorker:
         lease_seconds: float = DEFAULT_LEASE_SECONDS,
         lifecycle: DownloadLifecycleService | None = None,
         artifact_cache: TelegramArtifactCacheService | None = None,
+        delivery_timeout_seconds: float = 60.0,
     ) -> None:
         self._database = database
         self._preparation = preparation
@@ -56,6 +57,7 @@ class TelegramDeliveryWorker:
         self._lease = timedelta(seconds=lease_seconds)
         self._lifecycle = lifecycle
         self._artifact_cache = artifact_cache
+        self._delivery_timeout = delivery_timeout_seconds
 
     async def claim(self, worker_id: str) -> TelegramDeliveryRequest | None:
         now = utc_now()
@@ -114,10 +116,11 @@ class TelegramDeliveryWorker:
                 await self._repair(request, worker_id, cached.cache_id)
                 return
             spec = TelegramCachedMediaSpec(request.delivery_target.chat_id, cached.file_id)
-            if cached.media_kind is TelegramMediaKind.AUDIO:
-                receipt = await self._gateway.send_cached_audio(spec)
-            else:
-                receipt = await self._gateway.send_cached_document(spec)
+            async with asyncio.timeout(self._delivery_timeout):
+                if cached.media_kind is TelegramMediaKind.AUDIO:
+                    receipt = await self._gateway.send_cached_audio(spec)
+                else:
+                    receipt = await self._gateway.send_cached_document(spec)
             async with self._database.transaction() as repositories:
                 delivered = await repositories.telegram_delivery.delivered(
                     request_id=request.id,
@@ -148,6 +151,8 @@ class TelegramDeliveryWorker:
                 retryable=exc.retryable,
                 retry_after_seconds=exc.retry_after_seconds,
             )
+        except TimeoutError:
+            await self._retry(request, worker_id, "TELEGRAM_TRANSPORT_ERROR", retryable=True)
         except Exception:
             logger.exception(
                 "Telegram delivery worker failure",

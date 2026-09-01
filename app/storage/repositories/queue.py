@@ -15,7 +15,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.enums import QualityProfile, QueueJobStatus
 from app.core.exceptions import QueueFullError, TrackNotFound
 from app.core.models import DownloadArtifactMetadata
-from app.storage.models import DownloadJob, RuntimeSettings, Track, TrackSource, UploadJob
+from app.storage.models import (
+    DownloadJob,
+    JobSubscriber,
+    RuntimeSettings,
+    TelegramDeliveryRequest,
+    Track,
+    TrackSource,
+    UploadJob,
+)
 
 TERMINAL_STATUSES = (
     QueueJobStatus.SUCCEEDED,
@@ -33,6 +41,9 @@ class UploadLeaseRecovery:
 class DownloadJobRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def begin_immediate(self) -> None:
+        await self._session.execute(text("BEGIN IMMEDIATE"))
 
     async def submit(
         self,
@@ -139,25 +150,38 @@ class DownloadJobRepository:
         return _rowcount(cancelled) + _rowcount(exhausted) + _rowcount(requeued)
 
     async def claim(
-        self, *, worker_id: str, now: datetime, lease_expires_at: datetime
+        self,
+        *,
+        worker_id: str,
+        now: datetime,
+        lease_expires_at: datetime,
+        per_user_limit: int | None = None,
     ) -> DownloadJob | None:
-        candidate = (
-            select(DownloadJob.id)
+        statement = (
+            select(DownloadJob)
             .where(
                 DownloadJob.status == QueueJobStatus.QUEUED,
                 DownloadJob.available_at <= now,
                 DownloadJob.cancel_requested.is_(False),
             )
             .order_by(DownloadJob.queued_at, DownloadJob.id)
-            .limit(1)
-            .scalar_subquery()
+            .limit(100)
         )
-        statement = (
+
+        candidates = list(await self._session.scalars(statement))
+        selected: DownloadJob | None = None
+        for candidate in candidates:
+            if per_user_limit is not None and not await self._under_user_limit(
+                candidate.id, per_user_limit
+            ):
+                continue
+            selected = candidate
+            break
+        if selected is None:
+            return None
+        result = await self._session.execute(
             update(DownloadJob)
-            .where(
-                DownloadJob.id == candidate,
-                DownloadJob.status == QueueJobStatus.QUEUED,
-            )
+            .where(DownloadJob.id == selected.id, DownloadJob.status == QueueJobStatus.QUEUED)
             .values(
                 status=QueueJobStatus.RUNNING,
                 attempt_count=DownloadJob.attempt_count + 1,
@@ -168,7 +192,61 @@ class DownloadJobRepository:
             )
             .returning(DownloadJob)
         )
-        return (await self._session.scalars(statement)).one_or_none()
+        return result.scalar_one_or_none()
+
+    async def _under_user_limit(self, job_id: int, limit: int) -> bool:
+        users = await self._session.scalars(
+            select(TelegramDeliveryRequest.user_id)
+            .join(JobSubscriber, TelegramDeliveryRequest.subscriber_id == JobSubscriber.id)
+            .where(
+                JobSubscriber.download_job_id == job_id,
+                TelegramDeliveryRequest.user_id.is_not(None),
+            )
+            .distinct()
+        )
+        for user_id in users:
+            active = await self._session.scalar(
+                select(func.count(func.distinct(DownloadJob.id)))
+                .join(
+                    JobSubscriber,
+                    JobSubscriber.download_job_id == DownloadJob.id,
+                )
+                .join(
+                    TelegramDeliveryRequest,
+                    TelegramDeliveryRequest.subscriber_id == JobSubscriber.id,
+                )
+                .where(
+                    DownloadJob.status == QueueJobStatus.RUNNING,
+                    TelegramDeliveryRequest.user_id == user_id,
+                )
+            )
+            if int(active or 0) >= limit:
+                return False
+        return True
+
+    async def count_terminal_failures(self, since: datetime) -> int:
+        return int(
+            await self._session.scalar(
+                select(func.count(DownloadJob.id)).where(
+                    DownloadJob.status == QueueJobStatus.FAILED,
+                    DownloadJob.finished_at.is_not(None),
+                    DownloadJob.finished_at >= since,
+                )
+            )
+            or 0
+        )
+
+    async def count_stuck_jobs(self, before: datetime) -> int:
+        return int(
+            await self._session.scalar(
+                select(func.count(DownloadJob.id)).where(
+                    DownloadJob.status == QueueJobStatus.RUNNING,
+                    DownloadJob.started_at.is_not(None),
+                    DownloadJob.started_at <= before,
+                )
+            )
+            or 0
+        )
 
     async def heartbeat(self, job_id: int, worker_id: str, lease_expires_at: datetime) -> bool:
         result = await self._session.execute(
@@ -380,6 +458,30 @@ class UploadJobRepository:
                 select(func.count(UploadJob.id)).where(
                     UploadJob.status == QueueJobStatus.RUNNING,
                     UploadJob.lease_expires_at <= now,
+                )
+            )
+            or 0
+        )
+
+    async def count_terminal_failures(self, since: datetime) -> int:
+        return int(
+            await self._session.scalar(
+                select(func.count(UploadJob.id)).where(
+                    UploadJob.status == QueueJobStatus.FAILED,
+                    UploadJob.finished_at.is_not(None),
+                    UploadJob.finished_at >= since,
+                )
+            )
+            or 0
+        )
+
+    async def count_stuck_jobs(self, before: datetime) -> int:
+        return int(
+            await self._session.scalar(
+                select(func.count(UploadJob.id)).where(
+                    UploadJob.status == QueueJobStatus.RUNNING,
+                    UploadJob.started_at.is_not(None),
+                    UploadJob.started_at <= before,
                 )
             )
             or 0
