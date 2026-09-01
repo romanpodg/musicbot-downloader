@@ -174,6 +174,25 @@ class DownloadLifecycleRepository:
             rows.all(),
         )
 
+    async def list_activity(
+        self, user_id: int, *, limit: int
+    ) -> list[tuple[DownloadRequestRecord, DownloadLifecycleJob, DownloadDelivery | None]]:
+        """Bounded owner-scoped activity for the ordinary Telegram Downloads screen."""
+        if not 1 <= limit <= 50:
+            raise ValueError("invalid activity limit")
+        rows = await self._session.execute(
+            select(DownloadRequestRecord, DownloadLifecycleJob, DownloadDelivery)
+            .join(DownloadLifecycleJob, DownloadLifecycleJob.request_id == DownloadRequestRecord.id)
+            .outerjoin(DownloadDelivery, DownloadDelivery.job_id == DownloadLifecycleJob.id)
+            .where(DownloadRequestRecord.requester_user_id == user_id)
+            .order_by(DownloadRequestRecord.updated_at.desc(), DownloadRequestRecord.id.desc())
+            .limit(limit)
+        )
+        return cast(
+            list[tuple[DownloadRequestRecord, DownloadLifecycleJob, DownloadDelivery | None]],
+            rows.all(),
+        )
+
     async def get_request(self, request_id: int) -> DownloadRequestRecord | None:
         return await self._session.get(DownloadRequestRecord, request_id)
 

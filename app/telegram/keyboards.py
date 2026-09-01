@@ -19,8 +19,9 @@ class UxKeyboardFactory:
         return InlineKeyboardMarkup(
             inline_keyboard=[
                 [self._button("ux.button.search", locale, "menu", "section", UxMenu.SEARCH)],
-                [self._button("ux.button.account", locale, "menu", "section", UxMenu.ACCOUNT)],
-                [self._button("ux.button.providers", locale, "menu", "section", UxMenu.PROVIDERS)],
+                [InlineKeyboardButton(text="Recognize", callback_data="ux1:menu:section:search")],
+                [InlineKeyboardButton(text="Downloads", callback_data="u28:downloads")],
+                [InlineKeyboardButton(text="History", callback_data="h24:list")],
                 [self._button("ux.button.settings", locale, "menu", "section", UxMenu.SETTINGS)],
             ]
         )

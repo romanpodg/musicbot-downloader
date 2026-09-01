@@ -30,8 +30,9 @@ def test_stage14_keyboard_factory_reuses_validated_callbacks() -> None:
     callbacks = [button.callback_data for row in main.inline_keyboard for button in row]
     assert callbacks == [
         "ux1:menu:section:search",
-        "ux1:menu:section:account",
-        "ux1:menu:section:providers",
+        "ux1:menu:section:search",
+        "u28:downloads",
+        "h24:list",
         "ux1:menu:section:settings",
     ]
     assert factory.for_menu("en", UxMenu.MAIN) == main

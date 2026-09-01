@@ -332,15 +332,26 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
         if request_id is None:
             await _invalid_callback(callback, dependencies.presentation, locale)
             return
+        # Acknowledge before the durable admission path so Telegram never keeps
+        # a spinner while SQLite/queue work is taking place.
+        await callback.answer()
         result = await dependencies.requests.start_default_quality(
             request_id=request_id, telegram_user_id=callback.from_user.id
         )
         if not result.accepted:
-            await _answer_action_failure(callback, dependencies.presentation, locale, result)
+            await _answer_action_failure(
+                callback, dependencies.presentation, locale, result, acknowledged=True
+            )
             return
-        await _remove_keyboard(callback)
-        await callback.answer(
-            dependencies.presentation.text("bot.preparing_download_short", locale)
+        card = await dependencies.requests.track_card(
+            request_id=request_id, telegram_user_id=callback.from_user.id
+        )
+        if card is None:
+            return
+        await _edit_or_send(
+            callback,
+            f"{dependencies.presentation.track_card_text(card, locale)}\n\nPreparing…",
+            InlineKeyboardMarkup(inline_keyboard=[]),
         )
 
     @router.callback_query(F.data.startswith("to1:"))
@@ -378,18 +389,26 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
         if parsed is None:
             await _invalid_callback(callback, dependencies.presentation, locale)
             return
+        await callback.answer()
         result = await dependencies.requests.choose_track_quality(
             request_id=parsed.request_id,
             telegram_user_id=callback.from_user.id,
             quality_profile=parsed.quality_profile,
         )
         if not result.accepted:
-            await _answer_action_failure(callback, dependencies.presentation, locale, result)
+            await _answer_action_failure(
+                callback, dependencies.presentation, locale, result, acknowledged=True
+            )
             return
-        await _remove_keyboard(callback)
-        await callback.answer(
-            dependencies.presentation.text("bot.preparing_download_short", locale)
+        card = await dependencies.requests.track_card(
+            request_id=parsed.request_id, telegram_user_id=callback.from_user.id
         )
+        if card is not None:
+            await _edit_or_send(
+                callback,
+                f"{dependencies.presentation.track_card_text(card, locale)}\n\nPreparing…",
+                InlineKeyboardMarkup(inline_keyboard=[]),
+            )
 
     @router.callback_query(F.data.startswith("tb1:"))
     async def track_quality_back(callback: CallbackQuery) -> None:
@@ -1110,6 +1129,8 @@ async def _answer_action_failure(
     presentation: TelegramPresentation,
     locale: str,
     result: TrackRequestActionResult,
+    *,
+    acknowledged: bool = False,
 ) -> None:
     if result.outcome in {
         TrackRequestActionOutcome.FORBIDDEN,
@@ -1120,6 +1141,14 @@ async def _answer_action_failure(
         key = "bot.request_already_completed"
     else:
         key = "bot.request_already_started"
+    if acknowledged:
+        if isinstance(callback.message, Message):
+            await _edit_or_send(
+                callback,
+                presentation.text(key, locale),
+                InlineKeyboardMarkup(inline_keyboard=[]),
+            )
+        return
     await callback.answer(presentation.text(key, locale), show_alert=True)
 
 

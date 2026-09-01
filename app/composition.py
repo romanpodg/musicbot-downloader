@@ -53,6 +53,7 @@ from app.services.batch_download import BatchDownloadService
 from app.services.crash_recovery import CrashRecoveryService
 from app.services.deep_links import DeepLinkRegistryService
 from app.services.delivery import DeliveryPreparationService
+from app.services.download_activity import DownloadActivityService
 from app.services.download_history import DownloadHistoryService
 from app.services.download_lifecycle import DownloadLifecycleService
 from app.services.download_pipeline import DownloadPipeline, NativeDownloadBoundary
@@ -107,6 +108,7 @@ from app.telegram.presentation import TelegramPresentation
 from app.telegram.provider_accounts_presentation import ProviderAccountsPresentation
 from app.telegram.provider_authorization_ui import ProviderAuthorizationUiManager
 from app.telegram.provider_health_presentation import ProviderHealthPresentation
+from app.telegram.ux28_handlers import Stage28HandlerDependencies, create_stage28_router
 from app.telegram.ux_handlers import UxHandlerDependencies, create_ux_router
 from app.telegram.worker_control_presentation import WorkerControlPresentation
 
@@ -409,6 +411,7 @@ async def compose_stage9(
         batch_download=batch_download,
         preferences=download_preferences,
     )
+    download_activity = DownloadActivityService(database)
     chat_contexts = ChatContextAccessService(database, DeliveryTargetResolver(), stage8.gateway)
     ux_flows = UxFlowService(users, ux_states, search_use_case, download_service)
     albums = TelegramAlbumRequestService(
@@ -526,6 +529,9 @@ async def compose_stage9(
         )
     )
     telegram_presentation = TelegramPresentation(i18n)
+    dispatcher.include_router(
+        create_stage28_router(Stage28HandlerDependencies(users, download_activity))
+    )
     dispatcher.include_router(
         create_ux_router(
             UxHandlerDependencies(

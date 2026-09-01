@@ -59,6 +59,9 @@ Current delivery roadmap:
 - Stage 26: profile-aware media artifact processing and identity.
 - Stage 27: production limits, resource safety, and bounded operational diagnostics; see
   [Stage 27 contract](docs/stage27-production-hardening.md).
+- Stage 28: Telegram UX and interaction consistency, including a shared lifecycle-status
+  presentation boundary and an owner-scoped `/downloads` screen; see
+  [Stage 28 contract](docs/stage28-telegram-ux.md).
 
 Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
 deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage
