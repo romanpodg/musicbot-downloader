@@ -58,6 +58,12 @@ presenter and edits the same message.  A terminal edit failure may send one
 replacement and atomically move the reference; a presentation failure never
 changes delivery success or lifecycle state.
 
+`Stage9Components.start()` runs the bounded (50 request) status-reference
+sweep only after durable crash/lifecycle recovery.  The sweep reads current
+durable state for each candidate and isolates Telegram failures, so it cannot
+block startup or replay downloads.  A later startup reuses any persisted
+replacement message reference.
+
 Collection aggregate cards, full localized Stage 28 copy, and a single
 end-to-end presenter bridge for history/settings/recognition remain to be
 completed before the stage can be accepted.

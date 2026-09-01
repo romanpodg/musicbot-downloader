@@ -61,6 +61,24 @@ class TelegramStatusPresentationService:
                     extra={"request_id": telegram_request_id},
                 )
 
+    async def reconcile_startup(self, *, limit: int = 50) -> int:
+        """Best-effort bounded repair after durable recovery has completed."""
+        async with self._database.transaction() as repositories:
+            candidates = await repositories.telegram_delivery.list_status_presentation_candidates(
+                limit=limit
+            )
+        repaired = 0
+        for request_id in candidates:
+            try:
+                await self.reconcile_delivery(request_id)
+                repaired += 1
+            except Exception:
+                logger.info(
+                    "Telegram startup status reconciliation failed",
+                    extra={"request_id": request_id},
+                )
+        return repaired
+
 
 def _failure_code(value: str | None) -> DownloadFailureCode | None:
     try:

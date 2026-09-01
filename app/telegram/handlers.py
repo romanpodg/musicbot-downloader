@@ -87,6 +87,7 @@ class TelegramHandlerDependencies:
     batch_download: BatchDownloadService | None = None
     download_preferences: UserDownloadPreferencesService | None = None
     history: DownloadHistoryService | None = None
+    telegram_bot_id: int | None = None
 
 
 def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
@@ -508,6 +509,14 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
             await dependencies.batch_download.admit_pending(batch.id, target=target)
             await _remove_keyboard(callback)
             await _render_batch(callback, dependencies, batch.id, locale)
+            if isinstance(callback.message, Message) and dependencies.telegram_bot_id is not None:
+                await dependencies.batch_download.record_parent_message(
+                    batch_id=batch.id,
+                    user_id=user.id,
+                    bot_id=dependencies.telegram_bot_id,
+                    chat_id=callback.message.chat.id,
+                    message_id=callback.message.message_id,
+                )
             await callback.answer(dependencies.presentation.text("bot.album_preparing", locale))
             return
         result = await dependencies.albums.download_all(
@@ -811,7 +820,7 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
                     )
                     progress = await dependencies.batch_download.progress(batch.id)
                     if progress is not None:
-                        await message.answer(
+                        sent = await message.answer(
                             dependencies.presentation.batch_progress_text(
                                 batch.title, progress, locale, terminal=False
                             ),
@@ -819,6 +828,14 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
                                 locale, batch_id=batch.id
                             ),
                         )
+                        if dependencies.telegram_bot_id is not None:
+                            await dependencies.batch_download.record_parent_message(
+                                batch_id=batch.id,
+                                user_id=user.id,
+                                bot_id=dependencies.telegram_bot_id,
+                                chat_id=sent.chat.id,
+                                message_id=sent.message_id,
+                            )
                     return
                 if admission.track is None:
                     raise UnsupportedMediaType()

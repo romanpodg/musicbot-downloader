@@ -186,6 +186,7 @@ class Stage9Components:
     download_lifecycle: DownloadLifecycleService
     batch_download: BatchDownloadService
     artifact_cache: TelegramArtifactCacheService
+    status_presentation: TelegramStatusPresentationService
     history: DownloadHistoryService
     provider_candidates: ProviderCandidateResolver
     provider_candidate_ranker: ProviderCandidateRanker
@@ -197,6 +198,7 @@ class Stage9Components:
             lifecycle = getattr(self, "download_lifecycle", None)
             if lifecycle is not None:
                 await lifecycle.recover()
+            await self.status_presentation.reconcile_startup()
             batch_service = getattr(self, "batch_download", None)
             if batch_service is not None:
                 await batch_service.reconcile_all()
@@ -562,6 +564,7 @@ async def compose_stage9(
                 batch_download=batch_download,
                 download_preferences=download_preferences,
                 history=history,
+                telegram_bot_id=stage8.bot_identity.telegram_bot_id,
             )
         )
     )
@@ -630,6 +633,7 @@ async def compose_stage9(
         download_lifecycle=lifecycle,
         batch_download=batch_download,
         artifact_cache=artifact_cache,
+        status_presentation=TelegramStatusPresentationService(database, stage8.gateway),
         history=history,
         provider_candidates=provider_candidates,
         provider_candidate_ranker=provider_candidate_ranker,

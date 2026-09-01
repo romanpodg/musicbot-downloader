@@ -58,6 +58,24 @@ class BatchDownloadRepository:
             ),
         )
 
+    async def record_parent_message(
+        self, *, batch_id: int, user_id: int, bot_id: int, chat_id: int, message_id: int
+    ) -> bool:
+        result = await self._session.execute(
+            update(BatchDownloadRequest)
+            .where(
+                BatchDownloadRequest.id == batch_id,
+                BatchDownloadRequest.requester_user_id == user_id,
+                BatchDownloadRequest.parent_message_id.is_(None),
+            )
+            .values(
+                telegram_bot_id=bot_id,
+                telegram_chat_id=chat_id,
+                parent_message_id=message_id,
+            )
+        )
+        return bool(cast(CursorResult[Any], result).rowcount)
+
     async def active_count(self, user_id: int) -> int:
         return int(
             (

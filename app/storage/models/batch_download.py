@@ -89,6 +89,9 @@ class BatchDownloadRequest(TimestampMixin, Base):
     embed_cover: Mapped[bool | None] = mapped_column(Boolean)
     cancel_requested_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    telegram_bot_id: Mapped[int | None] = mapped_column(BigInteger)
+    telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger)
+    parent_message_id: Mapped[int | None] = mapped_column(BigInteger)
 
 
 class BatchDownloadItem(TimestampMixin, Base):

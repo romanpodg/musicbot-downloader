@@ -468,6 +468,18 @@ class BatchDownloadService:
                 skipped=counts["SKIPPED"],
             )
 
+    async def record_parent_message(
+        self, *, batch_id: int, user_id: int, bot_id: int, chat_id: int, message_id: int
+    ) -> bool:
+        async with self.database.transaction() as repositories:
+            return await repositories.batch_download.record_parent_message(
+                batch_id=batch_id,
+                user_id=user_id,
+                bot_id=bot_id,
+                chat_id=chat_id,
+                message_id=message_id,
+            )
+
     async def reconcile_all(self) -> int:
         """Reconcile every durable non-terminal batch after process restart."""
         async with self.database.transaction() as repositories:

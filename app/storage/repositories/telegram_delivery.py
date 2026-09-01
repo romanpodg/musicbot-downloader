@@ -237,6 +237,18 @@ class TelegramDeliveryRepository:
         )
         return _changed(result)
 
+    async def list_status_presentation_candidates(self, *, limit: int) -> list[int]:
+        """Bounded recent requests with a durable user-visible status message."""
+        if not 1 <= limit <= 100:
+            raise ValueError("invalid presentation candidate limit")
+        rows = await self._session.scalars(
+            select(TelegramDeliveryRequest.id)
+            .where(TelegramDeliveryRequest.card_message_id.is_not(None))
+            .order_by(TelegramDeliveryRequest.updated_at.desc(), TelegramDeliveryRequest.id.desc())
+            .limit(limit)
+        )
+        return list(rows)
+
     async def _transition(
         self,
         *,
