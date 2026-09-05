@@ -295,6 +295,7 @@
   "ux.menu.settings": "Настройки: /settings изменяет параметры загрузки, а /language — язык интерфейса.",
   "ux.search.prompt": "Введите название трека для поиска.",
   "ux.search.results": "Поиск завершён. Выбор трека появится в следующем обновлении.",
+  "ux.search.no_match": "Уверенного совпадения не найдено. Попробуйте другой поисковый запрос.",
   "ux.download.confirmation": "Найден трек:\n\n{artist} — {title}\n\nСкачать этот трек?",
   "ux.download.alternatives": "\n\nДругие возможные совпадения:\n{alternatives}",
   "ux.download.queued": "⏳ Подготовка загрузки",
@@ -313,6 +314,8 @@
   "ux.button.back": "Назад",
   "ux.button.confirm": "Подтвердить",
   "ux.button.download": "Скачать",
+  "ux.button.choose_another": "Выбрать другой",
+  "ux.button.none_of_these": "Ничего из этого",
   "ux.button.cancel": "Отмена",
   "bot.batch_cancel_remaining": "Отменить оставшиеся",
   "bot.batch_retry_failed": "Повторить неудачные"

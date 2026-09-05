@@ -32,6 +32,6 @@ class SearchTracksUseCase:
             TrackCandidate(track=track, source=track.provider.value)
             for track in search_result.tracks
         )
-        return self._recognition.recognize(
+        return await self._recognition.recognize_enriched(
             RecognitionRequest(query=search_result.query, candidates=candidates)
         )

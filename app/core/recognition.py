@@ -18,6 +18,17 @@ class RecognitionDecision(StrEnum):
     REJECT = "REJECT"
 
 
+class RecognitionReason(StrEnum):
+    """Sanitized, deterministic explanation of a Recognition 2.0 decision."""
+
+    NO_CANDIDATE = "NO_CANDIDATE"
+    BELOW_ASK_THRESHOLD = "BELOW_ASK_THRESHOLD"
+    BELOW_ACCEPT_THRESHOLD = "BELOW_ACCEPT_THRESHOLD"
+    CLOSE_DISTINCT_RUNNER_UP = "CLOSE_DISTINCT_RUNNER_UP"
+    RECORDING_VARIANT_AMBIGUITY = "RECORDING_VARIANT_AMBIGUITY"
+    ACCEPTED = "ACCEPTED"
+
+
 @dataclass(frozen=True, slots=True)
 class TrackCandidate:
     """A normalized catalog track plus opaque source and optional search metadata."""
@@ -49,6 +60,7 @@ class RecognitionRequest:
     requested_artists: tuple[str, ...] = ()
     expected_duration_ms: int | None = None
     expected_album: str | None = None
+    expected_explicit: bool | None = None
 
     def __post_init__(self) -> None:
         _require_text(self.query, "recognition query")
@@ -70,6 +82,8 @@ class RecognitionRequest:
         object.__setattr__(self, "requested_title", requested_title)
         object.__setattr__(self, "requested_artists", requested_artists)
         object.__setattr__(self, "expected_album", expected_album)
+        if self.expected_explicit is not None and not isinstance(self.expected_explicit, bool):
+            raise ValueError("expected explicit must be a boolean or None")
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +127,9 @@ class RecognitionResult:
     confidence: float
     decision: RecognitionDecision
     alternatives: tuple[RankedTrackCandidate, ...] = ()
+    reason: RecognitionReason | None = None
+    runner_up_score: float | None = None
+    confidence_margin: float | None = None
 
     def __post_init__(self) -> None:
         if self.candidate is not None and not isinstance(self.candidate, TrackCandidate):
@@ -122,6 +139,11 @@ class RecognitionResult:
         if any(not isinstance(item, RankedTrackCandidate) for item in alternatives):
             raise TypeError("recognition alternatives must be ranked candidates")
         object.__setattr__(self, "alternatives", alternatives)
+        if self.runner_up_score is not None:
+            _require_score(self.runner_up_score, "runner-up score")
+        if self.confidence_margin is not None:
+            if not -1.0 <= self.confidence_margin <= 1.0:
+                raise ValueError("confidence margin must be between -1.0 and 1.0")
 
     @property
     def track(self) -> Track | None:

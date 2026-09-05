@@ -386,7 +386,7 @@ async def compose_stage9(
     )
     search_use_case = SearchTracksUseCase(
         TrackSearchService(search_registry),
-        TrackRecognitionService(RuleBasedRecognitionEngine()),
+        TrackRecognitionService(RuleBasedRecognitionEngine(), provider),
     )
     track_resolution = ResolveTrackService(database, provider)
     deep_links = DeepLinkRegistryService(

@@ -70,6 +70,27 @@ class UxKeyboardFactory:
                 ),
             ]
         ]
+        if confirmation.alternatives and not confirmation.show_alternatives:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=self._i18n.translate("ux.button.choose_another", locale),
+                        callback_data=encode_download_callback(
+                            DownloadCallbackAction.EXPAND, confirmation.token
+                        ),
+                    )
+                ]
+            )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=self._i18n.translate("ux.button.none_of_these", locale),
+                    callback_data=encode_download_callback(
+                        DownloadCallbackAction.RETRY, confirmation.token
+                    ),
+                )
+            ]
+        )
         rows.extend(
             [
                 InlineKeyboardButton(

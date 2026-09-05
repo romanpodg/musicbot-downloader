@@ -157,6 +157,25 @@ class DownloadService:
         self._confirmations[token] = updated
         return updated
 
+    def expand_alternatives(
+        self, *, context: TelegramContext, token: str
+    ) -> DownloadConfirmation | None:
+        """Reveal retained alternatives without crossing the canonical boundary."""
+        confirmation = self._owned_confirmation(context, token)
+        if confirmation is None:
+            return None
+        updated = DownloadConfirmation(
+            confirmation.token,
+            confirmation.context,
+            confirmation.selected_track,
+            confirmation.alternatives,
+            confirmation.options,
+            confirmation.expires_at,
+            True,
+        )
+        self._confirmations[token] = updated
+        return updated
+
     async def confirm(
         self, *, context: TelegramContext, token: str, target: DownloadDeliveryTarget
     ) -> DownloadSubmission | None:

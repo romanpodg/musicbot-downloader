@@ -93,6 +93,12 @@ def normalize_title_artist(
     return base_title, normalized_artist, markers
 
 
+def extract_version_markers(value: str | None) -> frozenset[str]:
+    """Return the repository's canonical version vocabulary for free-form intent."""
+    normalized = normalize_text(value)
+    return frozenset(_markers_in(normalized or ""))
+
+
 def identity_from_metadata(metadata: NormalizedTrackMetadata) -> TrackIdentity:
     normalized_title, normalized_artist, markers = normalize_title_artist(
         metadata.title, metadata.artist

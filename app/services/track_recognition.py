@@ -6,17 +6,28 @@ import re
 import unicodedata
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
+from typing import Protocol
 
+from app.core.enums import MusicProviderName, TrackMatchDecision
+from app.core.models import NormalizedTrackMetadata, TrackIdentity
 from app.core.recognition import (
     RankedTrackCandidate,
     RecognitionDecision,
+    RecognitionReason,
     RecognitionRequest,
     RecognitionResult,
     SimilarityScores,
     TrackCandidate,
 )
+from app.core.search import Album, Artist
+from app.core.track_identity import (
+    extract_version_markers,
+    identity_from_values,
+    normalize_isrc,
+)
+from app.services.track_matching import match_track_identities
 
 _NON_ALPHANUMERIC = re.compile(r"[^\w]+", re.UNICODE)
 _DEFAULT_NEUTRAL_SCORE = 0.5
@@ -29,6 +40,14 @@ class RecognitionEngine(ABC):
     @abstractmethod
     def recognize(self, request: RecognitionRequest) -> RecognitionResult:
         """Rank request candidates and return a decision-ready result."""
+
+
+class RecognitionMetadataProvider(Protocol):
+    """The narrow provider-neutral metadata seam used by bounded enrichment."""
+
+    async def get_track_metadata(
+        self, provider: MusicProviderName, provider_track_id: str
+    ) -> NormalizedTrackMetadata: ...
 
 
 class TitleSimilarityScorer:
@@ -155,6 +174,44 @@ class ConfidenceResolver:
         return RecognitionDecision.REJECT
 
 
+@dataclass(frozen=True, slots=True)
+class AmbiguityAwareDecisionPolicy:
+    """Stage 29 decision boundary: thresholds plus distinct-recording ambiguity."""
+
+    thresholds: ConfidenceThresholds = ConfidenceThresholds()
+    minimum_accept_margin: float = 0.08
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.minimum_accept_margin <= 1.0:
+            raise ValueError("minimum accept margin must be between 0.0 and 1.0")
+
+    def resolve(
+        self,
+        confidence: float,
+        *,
+        runner_up_score: float | None,
+        variant_ambiguous: bool,
+    ) -> tuple[RecognitionDecision, RecognitionReason, float | None]:
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError("recognition confidence must be between 0.0 and 1.0")
+        if confidence < self.thresholds.ask_user:
+            return RecognitionDecision.REJECT, RecognitionReason.BELOW_ASK_THRESHOLD, None
+        if confidence < self.thresholds.accept:
+            return RecognitionDecision.ASK_USER, RecognitionReason.BELOW_ACCEPT_THRESHOLD, None
+        if variant_ambiguous:
+            return RecognitionDecision.ASK_USER, RecognitionReason.RECORDING_VARIANT_AMBIGUITY, None
+        if runner_up_score is not None:
+            margin = confidence - runner_up_score
+            if margin + 1e-9 < self.minimum_accept_margin:
+                return (
+                    RecognitionDecision.ASK_USER,
+                    RecognitionReason.CLOSE_DISTINCT_RUNNER_UP,
+                    margin,
+                )
+            return RecognitionDecision.ACCEPT, RecognitionReason.ACCEPTED, margin
+        return RecognitionDecision.ACCEPT, RecognitionReason.ACCEPTED, None
+
+
 class RuleBasedRecognitionEngine(RecognitionEngine):
     """Current deterministic engine assembled from independently replaceable components."""
 
@@ -168,6 +225,7 @@ class RuleBasedRecognitionEngine(RecognitionEngine):
         aggregator: SimilarityAggregator | None = None,
         ranker: RecognitionRanker | None = None,
         confidence_resolver: ConfidenceResolver | None = None,
+        decision_policy: AmbiguityAwareDecisionPolicy | None = None,
     ) -> None:
         self._title_scorer = title_scorer or TitleSimilarityScorer()
         self._artist_scorer = artist_scorer or ArtistSimilarityScorer()
@@ -175,20 +233,48 @@ class RuleBasedRecognitionEngine(RecognitionEngine):
         self._album_scorer = album_scorer or AlbumSimilarityScorer()
         self._aggregator = aggregator or SimilarityAggregator()
         self._ranker = ranker or RecognitionRanker()
-        self._confidence_resolver = confidence_resolver or ConfidenceResolver()
+        resolver = confidence_resolver or ConfidenceResolver()
+        self._decision_policy = decision_policy or AmbiguityAwareDecisionPolicy(
+            resolver._thresholds
+        )
 
     def recognize(self, request: RecognitionRequest) -> RecognitionResult:
-        ranked = self._ranker.rank(
-            self._score(request, candidate) for candidate in request.candidates
-        )
+        ranked = self.rank(request)
         if not ranked:
-            return RecognitionResult(None, 0.0, RecognitionDecision.REJECT)
-        leading = ranked[0]
+            return RecognitionResult(
+                None, 0.0, RecognitionDecision.REJECT, reason=RecognitionReason.NO_CANDIDATE
+            )
+        clusters = _distinct_recording_clusters(ranked)
+        leading = clusters[0]
+        runner_up = clusters[1] if len(clusters) > 1 else None
+        requested_markers = extract_version_markers(request.requested_title or request.query)
+        candidate_markers = _identity_for(leading.candidate).version_markers
+        variant_ambiguous = requested_markers != candidate_markers
+        if (
+            request.expected_explicit is not None
+            and leading.candidate.track.explicit is not None
+            and request.expected_explicit != leading.candidate.track.explicit
+        ):
+            variant_ambiguous = True
+        decision, reason, margin = self._decision_policy.resolve(
+            leading.confidence,
+            runner_up_score=runner_up.confidence if runner_up is not None else None,
+            variant_ambiguous=variant_ambiguous,
+        )
         return RecognitionResult(
             candidate=leading.candidate,
             confidence=leading.confidence,
-            decision=self._confidence_resolver.resolve(leading.confidence),
-            alternatives=ranked[1:],
+            decision=decision,
+            alternatives=tuple(clusters[1:]),
+            reason=reason,
+            runner_up_score=runner_up.confidence if runner_up is not None else None,
+            confidence_margin=margin,
+        )
+
+    def rank(self, request: RecognitionRequest) -> tuple[RankedTrackCandidate, ...]:
+        """Expose the preliminary/final deterministic ranking to bounded orchestration."""
+        return self._ranker.rank(
+            self._score(request, candidate) for candidate in request.candidates
         )
 
     def _score(
@@ -210,11 +296,122 @@ class RuleBasedRecognitionEngine(RecognitionEngine):
 class TrackRecognitionService:
     """Application service that delegates pure recognition to its injected engine."""
 
-    def __init__(self, engine: RecognitionEngine) -> None:
+    def __init__(
+        self,
+        engine: RecognitionEngine,
+        metadata_provider: RecognitionMetadataProvider | None = None,
+    ) -> None:
         self._engine = engine
+        self._metadata_provider = metadata_provider
 
     def recognize(self, request: RecognitionRequest) -> RecognitionResult:
         return self._engine.recognize(request)
+
+    async def recognize_enriched(self, request: RecognitionRequest) -> RecognitionResult:
+        """Run deterministic top-five metadata enrichment without any persistence side effect."""
+
+        preliminary = self.recognize(request)
+        if self._metadata_provider is None or preliminary.candidate is None:
+            return preliminary
+        if isinstance(self._engine, RuleBasedRecognitionEngine):
+            ranked = self._engine.rank(request)
+        else:
+            ranked = tuple(
+                item
+                for item in (
+                    RankedTrackCandidate(
+                        preliminary.candidate,
+                        SimilarityScores(0.0, 0.0, 0.5, 0.5),
+                        preliminary.confidence,
+                    ),
+                    *preliminary.alternatives,
+                )
+                if item.candidate is not None
+            )
+        finalists = tuple(item.candidate for item in ranked)[:5]
+        enriched: dict[tuple[MusicProviderName, str], TrackCandidate] = {}
+        for candidate in finalists:
+            track = candidate.track
+            try:
+                metadata = await self._metadata_provider.get_track_metadata(
+                    track.provider, track.provider_track_id
+                )
+                if (
+                    getattr(metadata, "provider", None) is not track.provider
+                    or getattr(metadata, "provider_track_id", None) != track.provider_track_id
+                ):
+                    continue
+                enriched[(track.provider, track.provider_track_id)] = _enriched_candidate(
+                    candidate, metadata
+                )
+            except Exception:
+                # Provider/runtime failures are intentionally isolated and never surface here.
+                continue
+        if not enriched:
+            return preliminary
+        candidates = tuple(
+            enriched.get((item.track.provider, item.track.provider_track_id), item)
+            for item in request.candidates
+        )
+        return self.recognize(replace(request, candidates=candidates))
+
+
+def _enriched_candidate(candidate: TrackCandidate, metadata: object) -> TrackCandidate:
+    track = candidate.track
+    title = getattr(metadata, "title", None) or track.title
+    artist = getattr(metadata, "artist", None)
+    artists = (Artist(artist),) if isinstance(artist, str) and artist.strip() else track.artists
+    album_title = getattr(metadata, "album", None)
+    album = (
+        Album(album_title) if isinstance(album_title, str) and album_title.strip() else track.album
+    )
+    isrc = normalize_isrc(getattr(metadata, "isrc", None)) or normalize_isrc(track.isrc)
+    duration_ms = getattr(metadata, "duration_ms", None)
+    duration = (
+        duration_ms if isinstance(duration_ms, int) and duration_ms >= 0 else track.duration_ms
+    )
+    explicit = getattr(metadata, "explicit", None)
+    return TrackCandidate(
+        replace(
+            track,
+            title=title,
+            artists=artists,
+            album=album,
+            isrc=isrc,
+            duration_ms=duration,
+            explicit=explicit if isinstance(explicit, bool) else track.explicit,
+        ),
+        candidate.source,
+        candidate.metadata,
+    )
+
+
+def _identity_for(candidate: TrackCandidate) -> TrackIdentity:
+    track = candidate.track
+    return identity_from_values(
+        title=track.title,
+        artist=", ".join(artist.name for artist in track.artists),
+        album=track.album.title if track.album is not None else None,
+        isrc=track.isrc,
+        duration_ms=track.duration_ms,
+        explicit=track.explicit,
+    )
+
+
+def _distinct_recording_clusters(
+    ranked: tuple[RankedTrackCandidate, ...],
+) -> tuple[RankedTrackCandidate, ...]:
+    representatives: list[RankedTrackCandidate] = []
+    for item in ranked:
+        identity = _identity_for(item.candidate)
+        if any(
+            match_track_identities(identity, _identity_for(representative.candidate)).decision
+            is TrackMatchDecision.MATCHED
+            for representative in representatives
+        ):
+            continue
+        representatives.append(item)
+    return tuple(representatives)
 
 
 def _text_similarity(requested: str, candidate: str) -> float:

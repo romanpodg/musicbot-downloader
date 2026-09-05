@@ -18,6 +18,7 @@ class UxMessage(StrEnum):
     MENU_SETTINGS = "menu.settings"
     SEARCH_PROMPT = "search.prompt"
     SEARCH_RESULTS = "search.results"
+    SEARCH_NO_MATCH = "search.no_match"
     DOWNLOAD_CONFIRMATION = "download.confirmation"
     DOWNLOAD_ALTERNATIVES = "download.alternatives"
     DOWNLOAD_QUEUED = "download.queued"

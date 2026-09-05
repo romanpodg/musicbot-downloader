@@ -295,6 +295,7 @@
   "ux.menu.settings": "Settings: use /settings to change download defaults and /language to change the interface language.",
   "ux.search.prompt": "Enter a track name to search.",
   "ux.search.results": "Search completed. Track selection will be available in a later update.",
+  "ux.search.no_match": "No confident match was found. Please try another search query.",
   "ux.download.confirmation": "Found track:\n\n{artist} — {title}\n\nDownload this track?",
   "ux.download.alternatives": "\n\nOther possible matches:\n{alternatives}",
   "ux.download.queued": "⏳ Preparing download",
@@ -313,6 +314,8 @@
   "ux.button.back": "Back",
   "ux.button.confirm": "Confirm",
   "ux.button.download": "Download",
+  "ux.button.choose_another": "Choose another",
+  "ux.button.none_of_these": "None of these",
   "ux.button.cancel": "Cancel",
   "bot.batch_cancel_remaining": "Cancel remaining",
   "bot.batch_retry_failed": "Retry failed"

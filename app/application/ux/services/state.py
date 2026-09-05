@@ -48,6 +48,7 @@ _TRANSITIONS: dict[UxState, frozenset[UxState]] = {
     UxState.ERROR: frozenset((UxState.IDLE, UxState.MENU)),
     UxState.SEARCHING: frozenset(
         (
+            UxState.SEARCH_INPUT,
             UxState.SEARCH_RESULTS,
             UxState.SELECTING_TRACK,
             UxState.DOWNLOAD_CONFIRMATION,
@@ -68,7 +69,13 @@ _TRANSITIONS: dict[UxState, frozenset[UxState]] = {
     UxState.DOWNLOADING: frozenset((UxState.UPLOADING, UxState.ERROR, UxState.IDLE)),
     UxState.UPLOADING: frozenset((UxState.IDLE, UxState.ERROR)),
     UxState.DOWNLOAD_CONFIRMATION: frozenset(
-        (UxState.DOWNLOAD_CONFIRMATION, UxState.DOWNLOAD_QUEUED, UxState.IDLE, UxState.ERROR)
+        (
+            UxState.DOWNLOAD_CONFIRMATION,
+            UxState.DOWNLOAD_QUEUED,
+            UxState.SEARCH_INPUT,
+            UxState.IDLE,
+            UxState.ERROR,
+        )
     ),
     UxState.DOWNLOAD_QUEUED: frozenset(
         (

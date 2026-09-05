@@ -13,6 +13,8 @@ class DownloadCallbackAction(StrEnum):
     CONFIRM = "confirm"
     CANCEL = "cancel"
     SELECT = "select"
+    EXPAND = "expand"
+    RETRY = "retry"
 
 
 @dataclass(frozen=True, slots=True)

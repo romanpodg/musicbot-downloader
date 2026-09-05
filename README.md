@@ -62,6 +62,8 @@ Current delivery roadmap:
 - Stage 28: Telegram UX and interaction consistency, including a shared lifecycle-status
   presentation boundary and an owner-scoped `/downloads` screen; see
   [Stage 28 contract](docs/stage28-telegram-ux.md).
+- Stage 29: Recognition 2.0 ambiguity-aware, variant-safe, bounded enrichment and
+  correction UX; see [Stage 29 contract](docs/stage29-recognition-2.md).
 
 Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
 deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage

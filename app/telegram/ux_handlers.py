@@ -248,6 +248,24 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
                     dependencies.messages.get(UxMessage.DOWNLOAD_CANCELLED, locale),
                 )
                 return
+            if parsed.action is DownloadCallbackAction.RETRY:
+                if not dependencies.downloads.cancel(context=context, token=parsed.token):
+                    await _invalid_callback(callback, dependencies)
+                    return
+                dependencies.flows.transition(context, UxState.SEARCH_INPUT)
+                await _edit_download_text(
+                    callback, dependencies.messages.get(UxMessage.SEARCH_PROMPT, locale)
+                )
+                return
+            if parsed.action is DownloadCallbackAction.EXPAND:
+                confirmation = dependencies.downloads.expand_alternatives(
+                    context=context, token=parsed.token
+                )
+                if confirmation is None:
+                    await _invalid_callback(callback, dependencies)
+                    return
+                await _edit_download_confirmation(callback, dependencies, locale, confirmation)
+                return
             if parsed.action is DownloadCallbackAction.SELECT:
                 assert parsed.alternative_index is not None
                 confirmation = dependencies.downloads.select_alternative(

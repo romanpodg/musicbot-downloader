@@ -8,6 +8,7 @@ from enum import StrEnum
 from app.application.download import DownloadConfirmation, DownloadService
 from app.application.search import SearchTracksUseCase
 from app.application.ux.services.state import UserUxStateService, UxState
+from app.core.recognition import RecognitionDecision
 from app.core.search import TrackSearchRequest
 from app.core.telegram_context import TelegramChatType, TelegramContext
 from app.services.telegram_users import TelegramUserProfile, TelegramUserService
@@ -115,6 +116,10 @@ class UxFlowService:
                 "ux.download.confirmation",
                 state=UxState.DOWNLOAD_CONFIRMATION,
                 download_confirmation=confirmation,
+            )
+        if recognition.decision is RecognitionDecision.REJECT:
+            return self._screen(
+                context, "ux.search.no_match", state=UxState.SEARCH_INPUT, menu=UxMenu.SEARCH
             )
         return self._screen(
             context,

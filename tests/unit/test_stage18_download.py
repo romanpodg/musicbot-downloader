@@ -254,6 +254,7 @@ def test_stage18_confirmation_callbacks_and_states_remain_opaque_and_validated()
     assert [button.callback_data for row in keyboard.inline_keyboard for button in row] == [
         f"dl18:confirm:{token}",
         f"dl18:cancel:{token}",
+        f"dl18:retry:{token}",
     ]
 
     states = UserUxStateService()
