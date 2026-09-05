@@ -7,7 +7,7 @@ of handlers while making the visible vocabulary consistent.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -114,17 +114,31 @@ class TelegramStatusUpdatePolicy:
     ) -> None:
         self._minimum_interval = minimum_interval
         self._clock = clock
-        self._last: dict[tuple[int, int], tuple[datetime, DownloadStatusView]] = {}
+        self._last: dict[Hashable, tuple[datetime, DownloadStatusView]] = {}
 
-    def should_emit(self, chat_id: int, message_id: int, view: DownloadStatusView) -> bool:
-        key = (chat_id, message_id)
+    def should_emit(
+        self,
+        chat_id: int,
+        message_id: int,
+        view: DownloadStatusView,
+        *,
+        key: Hashable | None = None,
+    ) -> bool:
+        """Return whether a durable status surface should be edited now.
+
+        Tracks retain their chat/message identity by default.  Parent surfaces
+        whose message reference can be replaced may supply their own durable
+        identity, so a replacement cannot evade coalescing for the same
+        logical action.
+        """
+        key = key if key is not None else (chat_id, message_id)
         now = self._clock()
         previous = self._last.get(key)
         if previous is None or view.terminal:
             self._last[key] = (now, view)
             return True
         last_at, prior_view = previous
-        if prior_view.state is not view.state and now - last_at >= self._minimum_interval:
+        if prior_view != view and now - last_at >= self._minimum_interval:
             self._last[key] = (now, view)
             return True
         return False

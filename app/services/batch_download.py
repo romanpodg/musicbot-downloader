@@ -7,7 +7,8 @@ admission port; it never downloads media or owns a second queue.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, cast
@@ -27,6 +28,8 @@ from app.core.telegram_context import TelegramChatType, TelegramContext
 from app.storage import Database
 from app.storage.models import BatchDownloadRequest
 from app.storage.models.base import utc_now
+
+logger = logging.getLogger(__name__)
 
 
 class CollectionResolver(Protocol):
@@ -102,6 +105,11 @@ class BatchDownloadService:
         self.max_active_batches_per_user = max_active_batches_per_user
         self.clock = clock
         self._admission_locks: dict[int, asyncio.Lock] = {}
+        self._presentation_observer: Callable[[int], Awaitable[None]] | None = None
+
+    def set_presentation_observer(self, observer: Callable[[int], Awaitable[None]]) -> None:
+        """Register a post-commit presentation side effect at composition time."""
+        self._presentation_observer = observer
 
     async def expand(
         self,
@@ -390,6 +398,7 @@ class BatchDownloadService:
             )
 
     async def reconcile(self, batch_id: int) -> BatchStatus | None:
+        status: BatchStatus | None
         async with self.database.transaction() as repositories:
             batch = await repositories.batch_download.get(batch_id)
             if batch is None:
@@ -436,18 +445,24 @@ class BatchDownloadService:
                 )
             )
             if unfinished:
-                return batch.status
-            succeeded = counts.get("SUCCEEDED", 0)
-            if batch.cancel_requested_at is not None:
-                status = BatchStatus.CANCELLED
-            elif succeeded == total and total:
-                status = BatchStatus.COMPLETED
-            elif succeeded:
-                status = BatchStatus.PARTIAL
+                status = batch.status
             else:
-                status = BatchStatus.FAILED
-            await repositories.batch_download.mark_status(batch_id, status, self.clock())
-            return status
+                succeeded = counts.get("SUCCEEDED", 0)
+                if batch.cancel_requested_at is not None:
+                    status = BatchStatus.CANCELLED
+                elif succeeded == total and total:
+                    status = BatchStatus.COMPLETED
+                elif succeeded:
+                    status = BatchStatus.PARTIAL
+                else:
+                    status = BatchStatus.FAILED
+                await repositories.batch_download.mark_status(batch_id, status, self.clock())
+        if self._presentation_observer is not None:
+            try:
+                await self._presentation_observer(batch_id)
+            except Exception:
+                logger.info("Batch presentation refresh failed", extra={"batch_id": batch_id})
+        return status
 
     async def progress(self, batch_id: int) -> BatchProgress | None:
         async with self.database.transaction() as repositories:
@@ -504,7 +519,7 @@ class BatchDownloadService:
                     user_id=owner.telegram_id,
                     context=context,
                     delivery_target=PrivateUserTarget(owner.telegram_id),
-                    source_message_id=0,
+                    source_message_id=batch.parent_message_id or 1,
                 )
                 await self.admit_pending(batch_id, target=target)
         return len(ids)

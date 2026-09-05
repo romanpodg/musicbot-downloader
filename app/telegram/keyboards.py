@@ -30,6 +30,7 @@ class UxKeyboardFactory:
         return InlineKeyboardMarkup(
             inline_keyboard=[
                 [self._button("ux.button.back", locale, "menu", "open")],
+                [InlineKeyboardButton(text="Home", callback_data="ux1:menu:open")],
             ]
         )
 

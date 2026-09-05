@@ -137,6 +137,8 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
             await _invalid_callback(callback, dependencies)
             return
         try:
+            # Clear Telegram's spinner before touching the durable preferences store.
+            await callback.answer()
             values: dict[str, object]
             if parsed.setting is PreferenceSetting.QUALITY:
                 values = {"quality": QualityPreference(parsed.value)}
@@ -159,7 +161,6 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
                         _settings_text(prefs, locale),
                         reply_markup=_settings_keyboard(prefs, locale),
                     )
-                await callback.answer()
                 return
             prefs = await dependencies.download_preferences.update_for_telegram_user(
                 callback.from_user.id, **values
@@ -170,7 +171,6 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
                 await callback.message.edit_text(
                     _settings_text(prefs, locale), reply_markup=_settings_keyboard(prefs, locale)
                 )
-            await callback.answer()
         except Exception as exc:
             await _operation_failed_callback(callback, dependencies, exc)
 
@@ -209,6 +209,7 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
             await _invalid_callback(callback, dependencies)
             return
         try:
+            await callback.answer()
             user = await dependencies.users.observe(_profile(callback.from_user))
             context, _ = await _callback_access(callback, user, dependencies)
             if context is None:
@@ -219,7 +220,6 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
             await _render_callback(
                 callback, screen, dependencies, dependencies.users.locale_for(user)
             )
-            await callback.answer()
         except Exception as exc:
             logger.error("Telegram UX navigation failed")
             await _operation_failed_callback(callback, dependencies, exc)
@@ -231,6 +231,8 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
             await _invalid_callback(callback, dependencies)
             return
         try:
+            # Admission and lifecycle reconciliation can involve SQLite and queue work.
+            await callback.answer()
             user = await dependencies.users.observe(_profile(callback.from_user))
             context, target = await _callback_access(callback, user, dependencies)
             if context is None or target is None:
@@ -245,7 +247,6 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
                     callback,
                     dependencies.messages.get(UxMessage.DOWNLOAD_CANCELLED, locale),
                 )
-                await callback.answer()
                 return
             if parsed.action is DownloadCallbackAction.SELECT:
                 assert parsed.alternative_index is not None
@@ -258,7 +259,6 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
                     await _invalid_callback(callback, dependencies)
                     return
                 await _edit_download_confirmation(callback, dependencies, locale, confirmation)
-                await callback.answer()
                 return
             if not isinstance(callback.message, Message):
                 await _invalid_callback(callback, dependencies)
@@ -290,7 +290,6 @@ def create_ux_router(dependencies: UxHandlerDependencies) -> Router:
                     callback,
                     dependencies.messages.get(UxMessage.DOWNLOAD_QUEUED, locale),
                 )
-            await callback.answer()
         except Exception as exc:
             logger.error("Telegram download confirmation failed")
             await _operation_failed_callback(callback, dependencies, exc, download=True)

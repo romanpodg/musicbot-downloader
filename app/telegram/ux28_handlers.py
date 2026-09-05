@@ -40,13 +40,13 @@ def create_stage28_router(dependencies: Stage28HandlerDependencies) -> Router:
         if request_id is None:
             await callback.answer("This action is no longer available.", show_alert=True)
             return
+        await callback.answer()
         activity = await dependencies.activity.detail_for_telegram_user(
             callback.from_user.id, request_id
         )
         if activity is None:
             await callback.answer("This download is no longer available.", show_alert=True)
             return
-        await callback.answer()
         await callback.message.edit_text(_detail_text(activity), reply_markup=_detail_keyboard())
 
     @router.callback_query(F.data == "u28:downloads")
@@ -54,8 +54,8 @@ def create_stage28_router(dependencies: Stage28HandlerDependencies) -> Router:
         if not isinstance(callback.message, Message):
             await callback.answer()
             return
-        activities = await dependencies.activity.list_for_telegram_user(callback.from_user.id)
         await callback.answer()
+        activities = await dependencies.activity.list_for_telegram_user(callback.from_user.id)
         await callback.message.edit_text(
             _downloads_text(activities), reply_markup=_downloads_keyboard(activities)
         )
@@ -86,7 +86,12 @@ def _downloads_keyboard(activities: list[DownloadActivity]) -> InlineKeyboardMar
         [InlineKeyboardButton(text=item.title[:48], callback_data=f"u28:d:{item.request_id}")]
         for item in activities
     ]
-    rows.append([InlineKeyboardButton(text="Search", callback_data="ux1:menu:section:search")])
+    rows.extend(
+        [
+            [InlineKeyboardButton(text="Search", callback_data="ux1:menu:section:search")],
+            [InlineKeyboardButton(text="Home", callback_data="ux1:menu:open")],
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -97,7 +102,10 @@ def _detail_text(item: DownloadActivity) -> str:
 
 def _detail_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Back", callback_data="u28:downloads")]]
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Back", callback_data="u28:downloads")],
+            [InlineKeyboardButton(text="Home", callback_data="ux1:menu:open")],
+        ]
     )
 
 

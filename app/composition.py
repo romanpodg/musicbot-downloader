@@ -203,8 +203,12 @@ class Stage9Components:
             batch_service = getattr(self, "batch_download", None)
             if batch_service is not None:
                 await batch_service.reconcile_all()
-            await self.status_presentation.reconcile_startup()
-            await self.collection_presentation.reconcile_startup()
+            status_presentation = getattr(self, "status_presentation", None)
+            if status_presentation is not None:
+                await status_presentation.reconcile_startup()
+            collection_presentation = getattr(self, "collection_presentation", None)
+            if collection_presentation is not None:
+                await collection_presentation.reconcile_startup()
             artifact_cache = getattr(self, "artifact_cache", None)
             if artifact_cache is not None:
                 await artifact_cache.prune(max_entries=1000)
@@ -420,6 +424,7 @@ async def compose_stage9(
     collection_presentation = CollectionStatusPresentationService(
         database, batch_download, stage8.gateway
     )
+    batch_download.set_presentation_observer(collection_presentation.refresh)
     download_activity = DownloadActivityService(database)
     chat_contexts = ChatContextAccessService(database, DeliveryTargetResolver(), stage8.gateway)
     ux_flows = UxFlowService(users, ux_states, search_use_case, download_service)

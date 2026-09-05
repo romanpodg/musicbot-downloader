@@ -185,6 +185,8 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
             await _invalid_callback(callback, dependencies.presentation, locale)
             return
         try:
+            # History reads/repeats may touch several durable lifecycle tables.
+            await callback.answer()
             if parsed.action == "list":
                 page = await dependencies.history.page(user.telegram_id, cursor=parsed.cursor)
                 await _edit_or_send(
@@ -245,7 +247,6 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
             else:
                 await _invalid_callback(callback, dependencies.presentation, locale)
                 return
-            await callback.answer()
         except (ValueError, TypeError):
             await _invalid_callback(callback, dependencies.presentation, locale)
 
@@ -287,6 +288,7 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
             )
             return
         locale = dependencies.users.locale_for(user)
+        await callback.answer()
         if not isinstance(callback.message, Message):
             await _invalid_callback(callback, dependencies.presentation, locale)
             return
@@ -323,7 +325,6 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
         )
         if isinstance(callback.message, Message):
             await callback.message.edit_text(text)
-        await callback.answer()
 
     @router.callback_query(F.data.startswith("td1:"))
     async def track_download(callback: CallbackQuery) -> None:
@@ -380,7 +381,6 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
             dependencies.presentation.track_card_text(card, locale, mode="track_quality"),
             dependencies.presentation.track_quality_keyboard(locale, request_id=request_id),
         )
-        await callback.answer()
 
     @router.callback_query(F.data.startswith("tq1:"))
     async def track_quality(callback: CallbackQuery) -> None:
@@ -419,6 +419,7 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
         if request_id is None:
             await _invalid_callback(callback, dependencies.presentation, locale)
             return
+        await callback.answer()
         result = await dependencies.requests.back_to_track_card(
             request_id=request_id, telegram_user_id=callback.from_user.id
         )
@@ -438,7 +439,6 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
                 locale, request_id=request_id, quality=card.quality_profile
             ),
         )
-        await callback.answer()
 
     @router.callback_query(F.data.startswith("af1:"))
     async def album_first_quality(callback: CallbackQuery) -> None:
@@ -448,6 +448,7 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
         if parsed is None or dependencies.albums is None:
             await _invalid_callback(callback, dependencies.presentation, locale)
             return
+        await callback.answer()
         result = await dependencies.albums.choose_first_quality(
             request_id=parsed.request_id,
             telegram_user_id=callback.from_user.id,
@@ -457,9 +458,6 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
             await _answer_album_failure(callback, dependencies.presentation, locale, result)
             return
         await _render_album_card(callback, dependencies, parsed.request_id, locale)
-        await callback.answer(
-            dependencies.presentation.text("bot.album_default_quality_saved", locale)
-        )
 
     @router.callback_query(F.data.startswith("ad1:"))
     async def album_download_all(callback: CallbackQuery) -> None:
@@ -469,6 +467,7 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
         if request_id is None or dependencies.albums is None:
             await _invalid_callback(callback, dependencies.presentation, locale)
             return
+        await callback.answer()
         # Stage 23 batch admission is the only path for album Download all.
         # The legacy album coordinator remains available for older callers but
         # is deliberately not woken by this Telegram action.
@@ -517,7 +516,6 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
                     chat_id=callback.message.chat.id,
                     message_id=callback.message.message_id,
                 )
-            await callback.answer(dependencies.presentation.text("bot.album_preparing", locale))
             return
         result = await dependencies.albums.download_all(
             request_id=request_id, telegram_user_id=callback.from_user.id
@@ -526,7 +524,6 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
             await _answer_album_failure(callback, dependencies.presentation, locale, result)
             return
         await _remove_keyboard(callback)
-        await callback.answer(dependencies.presentation.text("bot.album_preparing", locale))
 
     @router.callback_query(F.data.startswith("bc1:"))
     async def batch_cancel(callback: CallbackQuery) -> None:
@@ -536,13 +533,13 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
         if batch_id is None or dependencies.batch_download is None or user is None:
             await _invalid_callback(callback, dependencies.presentation, locale)
             return
+        await callback.answer()
         changed = await dependencies.batch_download.cancel(batch_id, user_id=user.id)
         if not changed:
-            await _invalid_callback(callback, dependencies.presentation, locale)
+            await _render_batch(callback, dependencies, batch_id, locale)
             return
         await dependencies.batch_download.reconcile(batch_id)
         await _render_batch(callback, dependencies, batch_id, locale)
-        await callback.answer()
 
     @router.callback_query(F.data.startswith("bd1:"))
     async def batch_status(callback: CallbackQuery) -> None:
@@ -552,10 +549,10 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
         if batch_id is None or dependencies.batch_download is None or user is None:
             await _invalid_callback(callback, dependencies.presentation, locale)
             return
+        await callback.answer()
         if not await _render_batch(callback, dependencies, batch_id, locale):
             await _invalid_callback(callback, dependencies.presentation, locale)
             return
-        await callback.answer()
 
     @router.callback_query(F.data.startswith("br1:"))
     async def batch_retry(callback: CallbackQuery) -> None:
@@ -565,15 +562,15 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
         if batch_id is None or dependencies.batch_download is None or user is None:
             await _invalid_callback(callback, dependencies.presentation, locale)
             return
+        await callback.answer()
         retry = await dependencies.batch_download.retry_failed(batch_id, user_id=user.id)
         if retry is None:
-            await _invalid_callback(callback, dependencies.presentation, locale)
+            await _render_batch(callback, dependencies, batch_id, locale)
             return
         await dependencies.batch_download.admit_pending(
             retry.id, target=_batch_target(callback, user.telegram_id)
         )
         await _render_batch(callback, dependencies, retry.id, locale)
-        await callback.answer()
 
     @router.callback_query(F.data.startswith("as1:"))
     async def album_select_tracks(callback: CallbackQuery) -> None:
@@ -583,6 +580,7 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
         if request_id is None or dependencies.albums is None:
             await _invalid_callback(callback, dependencies.presentation, locale)
             return
+        await callback.answer()
         result = await dependencies.albums.open_selection(
             request_id=request_id, telegram_user_id=callback.from_user.id
         )
@@ -600,6 +598,7 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
         if request_id is None or dependencies.albums is None:
             await _invalid_callback(callback, dependencies.presentation, locale)
             return
+        await callback.answer()
         result = await dependencies.albums.open_quality(
             request_id=request_id, telegram_user_id=callback.from_user.id
         )
@@ -617,7 +616,6 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
             dependencies.presentation.album_card_text(card, locale, mode="album_quality"),
             dependencies.presentation.album_quality_keyboard(locale, request_id=request_id),
         )
-        await callback.answer()
 
     @router.callback_query(F.data.startswith("aq1:"))
     async def album_quality(callback: CallbackQuery) -> None:
@@ -627,6 +625,7 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
         if parsed is None or dependencies.albums is None:
             await _invalid_callback(callback, dependencies.presentation, locale)
             return
+        await callback.answer()
         result = await dependencies.albums.choose_quality(
             request_id=parsed.request_id,
             telegram_user_id=callback.from_user.id,
@@ -636,7 +635,6 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
             await _answer_album_failure(callback, dependencies.presentation, locale, result)
             return
         await _render_album_card(callback, dependencies, parsed.request_id, locale)
-        await callback.answer()
 
     @router.callback_query(F.data.startswith("ak1:"))
     async def album_quality_back(callback: CallbackQuery) -> None:
@@ -646,6 +644,7 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
         if request_id is None or dependencies.albums is None:
             await _invalid_callback(callback, dependencies.presentation, locale)
             return
+        await callback.answer()
         result = await dependencies.albums.back_from_quality(
             request_id=request_id, telegram_user_id=callback.from_user.id
         )
@@ -653,7 +652,6 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
             await _answer_album_failure(callback, dependencies.presentation, locale, result)
             return
         await _render_album_card(callback, dependencies, request_id, locale)
-        await callback.answer()
 
     @router.callback_query(F.data.startswith("at1:"))
     async def album_toggle(callback: CallbackQuery) -> None:
@@ -663,6 +661,7 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
         if parsed is None or dependencies.albums is None:
             await _invalid_callback(callback, dependencies.presentation, locale)
             return
+        await callback.answer()
         result = await dependencies.albums.toggle(
             request_id=parsed.request_id,
             item_id=parsed.item_id,
@@ -672,7 +671,6 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
             await _answer_album_failure(callback, dependencies.presentation, locale, result)
             return
         await _render_album_page(callback, dependencies, parsed.request_id, parsed.page, locale)
-        await callback.answer()
 
     @router.callback_query(F.data.startswith("ap1:"))
     async def album_page(callback: CallbackQuery) -> None:
@@ -682,12 +680,12 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
         if parsed is None or dependencies.albums is None:
             await _invalid_callback(callback, dependencies.presentation, locale)
             return
+        await callback.answer()
         if not await _render_album_page(
             callback, dependencies, parsed.request_id, parsed.page, locale
         ):
             await _invalid_callback(callback, dependencies.presentation, locale)
             return
-        await callback.answer()
 
     @router.callback_query(F.data.startswith("ax1:"))
     async def album_select_all(callback: CallbackQuery) -> None:
@@ -718,7 +716,6 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
             await _answer_album_failure(callback, dependencies.presentation, locale, result)
             return
         await _remove_keyboard(callback)
-        await callback.answer(dependencies.presentation.text("bot.album_preparing", locale))
 
     @router.callback_query(F.data.startswith("ab1:"))
     async def album_selection_back(callback: CallbackQuery) -> None:
@@ -735,7 +732,6 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
             await _answer_album_failure(callback, dependencies.presentation, locale, result)
             return
         await _render_album_card(callback, dependencies, request_id, locale)
-        await callback.answer()
 
     @router.callback_query(F.data.startswith("sq1:"))
     async def setting_quality(callback: CallbackQuery) -> None:
@@ -751,6 +747,7 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
                 dependencies.presentation.text("bot.invalid_selection", locale), show_alert=True
             )
             return
+        await callback.answer()
         updated = await dependencies.users.set_quality(callback.from_user.id, quality)
         locale = dependencies.users.locale_for(updated)
         text = dependencies.presentation.text(
@@ -760,7 +757,6 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
         )
         if isinstance(callback.message, Message):
             await callback.message.edit_text(text)
-        await callback.answer()
 
     @router.callback_query(F.data.startswith("l1:"))
     async def setting_language(callback: CallbackQuery) -> None:
@@ -776,12 +772,12 @@ def create_stage9_router(dependencies: TelegramHandlerDependencies) -> Router:
                 dependencies.presentation.text("bot.invalid_selection", selected), show_alert=True
             )
             return
+        await callback.answer()
         updated = await dependencies.users.set_locale(callback.from_user.id, locale)
         selected = dependencies.users.locale_for(updated)
         text = dependencies.presentation.text("bot.language_saved", selected)
         if isinstance(callback.message, Message):
             await callback.message.edit_text(text)
-        await callback.answer()
 
     @router.message(F.text & ~F.text.startswith("/"))
     async def track_text(message: Message) -> None:
@@ -1095,6 +1091,7 @@ async def _album_bulk_selection(
     if request_id is None or dependencies.albums is None:
         await _invalid_callback(callback, dependencies.presentation, locale)
         return
+    await callback.answer()
     result = await dependencies.albums.select_all(
         request_id=request_id,
         telegram_user_id=callback.from_user.id,
@@ -1104,7 +1101,6 @@ async def _album_bulk_selection(
         await _answer_album_failure(callback, dependencies.presentation, locale, result)
         return
     await _render_album_page(callback, dependencies, request_id, 0, locale)
-    await callback.answer()
 
 
 async def _answer_album_failure(
@@ -1112,12 +1108,22 @@ async def _answer_album_failure(
     presentation: TelegramPresentation,
     locale: str,
     result: AlbumActionResult,
+    *,
+    acknowledged: bool = False,
 ) -> None:
     key = (
         "bot.invalid_selection"
         if result.outcome in {AlbumActionOutcome.FORBIDDEN, AlbumActionOutcome.NOT_FOUND}
         else "bot.album_request_stale"
     )
+    if acknowledged:
+        if isinstance(callback.message, Message):
+            await _edit_or_send(
+                callback,
+                presentation.text(key, locale),
+                InlineKeyboardMarkup(inline_keyboard=[]),
+            )
+        return
     await callback.answer(presentation.text(key, locale), show_alert=True)
 
 
