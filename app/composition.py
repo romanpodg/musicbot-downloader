@@ -32,6 +32,7 @@ from app.providers.deezer_authorization import (
     DeezerArlAuthorizationDriver,
 )
 from app.providers.onthespot.capabilities import ONTHESPOT_CAPABILITIES
+from app.providers.qobuz_authorization import QobuzAuthorizationBoundary, QobuzAuthorizationDriver
 from app.providers.search_adapters import RuntimeTrackSearchAdapter
 from app.providers.spotify_authorization import (
     SpotifyAuthorizationBoundary,
@@ -485,6 +486,9 @@ async def compose_stage9(
     deezer_authorization = DeezerArlAuthorizationDriver(
         cast(DeezerArlAuthorizationBoundary, provider), account_backend
     )
+    qobuz_authorization = QobuzAuthorizationDriver(
+        cast(QobuzAuthorizationBoundary, provider), account_backend
+    )
     spotify_boundary = cast(SpotifyAuthorizationBoundary, provider)
     spotify_playback_authorization = SpotifyPlaybackAuthorizationDriver(
         spotify_boundary, account_backend
@@ -515,6 +519,10 @@ async def compose_stage9(
             MusicProviderName.SPOTIFY,
             integration_registry.authorization_methods_for(MusicProviderName.SPOTIFY)[1],
         ): spotify_webapi_authorization,
+        (
+            MusicProviderName.QOBUZ,
+            integration_registry.authorization_methods_for(MusicProviderName.QOBUZ)[0],
+        ): qobuz_authorization,
     }
     validate_authorization_driver_keys(integration_registry, authorization_drivers)
     provider_authorization = ProviderAuthorizationCoordinator(authorization_drivers)

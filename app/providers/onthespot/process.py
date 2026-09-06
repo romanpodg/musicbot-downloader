@@ -44,6 +44,7 @@ from app.providers.onthespot.ipc import (
     MATCH_URL_METHOD,
     MAX_MESSAGE_BYTES,
     PREPARE_SOURCE_METHOD,
+    QOBUZ_CREDENTIALS_AUTHORIZE_METHOD,
     RECONCILE_PROVIDER_LIFECYCLE_METHOD,
     REFRESH_PROVIDER_HEALTH_METHOD,
     RESET_PROVIDER_AUTHENTICATION_METHOD,
@@ -62,6 +63,7 @@ from app.providers.onthespot.ipc import (
     TIDAL_DEVICE_AUTHORIZATION_POLL_METHOD,
     TIDAL_DEVICE_AUTHORIZATION_START_METHOD,
 )
+from app.providers.qobuz_authorization import QobuzAuthorizationResult
 from app.providers.spotify_authorization import (
     SpotifyPlaybackPairingPoll,
     SpotifyPlaybackPairingStart,
@@ -265,7 +267,7 @@ class OnTheSpotProcessClient:
             raise ProviderUnavailable()
 
     async def reset_provider_authentication(self, provider: str) -> bool:
-        if provider not in {"tidal", "deezer", "spotify"}:
+        if provider not in {"tidal", "deezer", "spotify", "qobuz"}:
             return False
         result = await self._request(RESET_PROVIDER_AUTHENTICATION_METHOD, {"provider": provider})
         if not isinstance(result, dict) or not set(result).issubset({"status", "error_code"}):
@@ -278,6 +280,28 @@ class OnTheSpotProcessClient:
         }:
             raise ProviderUnavailable()
         return False
+
+    async def authorize_qobuz_credentials(
+        self, email: SensitiveValue, password: SensitiveValue
+    ) -> QobuzAuthorizationResult:
+        result = await self._request(
+            QOBUZ_CREDENTIALS_AUTHORIZE_METHOD,
+            {
+                "email": email.reveal_to_provider_backend(),
+                "password": password.reveal_to_provider_backend(),
+            },
+        )
+        if not isinstance(result, dict):
+            raise ProviderUnavailable()
+        if result == {"status": "persisted"}:
+            return QobuzAuthorizationResult(True)
+        if set(result) != {"status", "error_code"} or result.get("status") != "failed":
+            raise ProviderUnavailable()
+        try:
+            code = ProviderAccountErrorCode(str(result["error_code"]))
+        except (KeyError, ValueError):
+            code = ProviderAccountErrorCode.QOBUZ_AUTH_INVALID_CREDENTIALS
+        return QobuzAuthorizationResult(False, code)
 
     async def authorize_deezer_arl(
         self, credential: SensitiveValue

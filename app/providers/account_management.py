@@ -195,6 +195,7 @@ def _normalize_health(
             ProviderHealthErrorCode.AUTH_NOT_CONFIGURED: ProviderAccountState.NOT_CONFIGURED,
             ProviderHealthErrorCode.SESSION_UNAVAILABLE: ProviderAccountState.DEGRADED,
             ProviderHealthErrorCode.SESSION_UNVERIFIED: ProviderAccountState.INVALID,
+            ProviderHealthErrorCode.SESSION_INVALID: ProviderAccountState.INVALID,
             ProviderHealthErrorCode.SUBSCRIPTION_REQUIRED: ProviderAccountState.INVALID,
             ProviderHealthErrorCode.RUNTIME_UNAVAILABLE: ProviderAccountState.RECOVERING,
             ProviderHealthErrorCode.CREDENTIAL_EXPIRED: ProviderAccountState.EXPIRED,
@@ -235,6 +236,9 @@ def _normalize_error(code: ProviderHealthErrorCode | None) -> ProviderAccountErr
         ProviderHealthErrorCode.AUTH_NOT_CONFIGURED: ProviderAccountErrorCode.AUTH_NOT_CONFIGURED,
         ProviderHealthErrorCode.SESSION_UNAVAILABLE: ProviderAccountErrorCode.SESSION_UNAVAILABLE,
         ProviderHealthErrorCode.SESSION_UNVERIFIED: ProviderAccountErrorCode.SESSION_UNVERIFIED,
+        ProviderHealthErrorCode.SESSION_INVALID: (
+            ProviderAccountErrorCode.QOBUZ_AUTH_SESSION_INVALID
+        ),
         ProviderHealthErrorCode.SUBSCRIPTION_REQUIRED: (
             ProviderAccountErrorCode.SUBSCRIPTION_REQUIRED
         ),

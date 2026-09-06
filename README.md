@@ -68,6 +68,8 @@ Current delivery roadmap:
   [Stage 30.1 contract](docs/stage30.1-provider-integration-architecture.md)).
 - Stage 30.2: YouTube Music vertical integration with exact AAC 128 support (complete; see
   [Stage 30.2 contract](docs/stage30.2-youtube-music.md)).
+- Stage 30.3: Qobuz managed premium lossless vertical integration (complete; see
+  [Stage 30.3 contract](docs/stage30.3-qobuz.md)).
 
 Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
 deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage

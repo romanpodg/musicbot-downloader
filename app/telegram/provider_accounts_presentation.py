@@ -204,6 +204,16 @@ class ProviderAccountsPresentation:
                         )
                     )
                 )
+            if challenge.authorization_method is ProviderAuthorizationMethod.QOBUZ_CREDENTIALS:
+                return _bounded(
+                    "\n\n".join(
+                        (
+                            self.text("admin.qobuz_auth_title", locale),
+                            self.text("admin.qobuz_auth_instructions", locale),
+                            self.text("admin.qobuz_auth_ownership", locale),
+                        )
+                    )
+                )
             return _bounded(
                 "\n\n".join(
                     (
@@ -270,6 +280,8 @@ class ProviderAccountsPresentation:
                 suffix = self.text(
                     "admin.deezer_auth_ready"
                     if status.provider is MusicProviderName.DEEZER
+                    else "admin.qobuz_auth_ready"
+                    if status.provider is MusicProviderName.QOBUZ
                     else "admin.tidal_auth_ready",
                     locale,
                 )
@@ -280,6 +292,8 @@ class ProviderAccountsPresentation:
                 suffix = self.text(
                     "admin.deezer_auth_cancelled"
                     if status.provider is MusicProviderName.DEEZER
+                    else "admin.qobuz_auth_cancelled"
+                    if status.provider is MusicProviderName.QOBUZ
                     else "admin.tidal_auth_cancelled",
                     locale,
                 )
@@ -377,6 +391,7 @@ class ProviderAccountsPresentation:
             and (
                 ProviderAuthorizationMethod.BROWSER_DEVICE_LINK in status.authorization_methods
                 or ProviderAuthorizationMethod.SENSITIVE_SECRET in status.authorization_methods
+                or ProviderAuthorizationMethod.QOBUZ_CREDENTIALS in status.authorization_methods
             )
         ):
             rows.append(
@@ -385,6 +400,8 @@ class ProviderAccountsPresentation:
                         text=self.text(
                             "admin.deezer_connect"
                             if status.provider is MusicProviderName.DEEZER
+                            else "admin.qobuz_connect"
+                            if status.provider is MusicProviderName.QOBUZ
                             else "admin.tidal_connect",
                             locale,
                         ),
@@ -521,6 +538,8 @@ class ProviderAccountsPresentation:
             return "admin.provider_accounts_runtime_ready"
         if status.provider is MusicProviderName.SPOTIFY:
             return "admin.provider_accounts_spotify_auth_hint"
+        if status.provider is MusicProviderName.QOBUZ:
+            return "admin.provider_accounts_qobuz_auth_hint"
         if ProviderAuthorizationMethod.BROWSER_DEVICE_LINK in status.authorization_methods:
             return "admin.provider_accounts_tidal_auth_hint"
         if ProviderAuthorizationMethod.SENSITIVE_SECRET in status.authorization_methods:

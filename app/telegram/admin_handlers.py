@@ -136,6 +136,11 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
                             MusicProviderName.SPOTIFY,
                             ProviderAuthorizationMethod.COMPOUND_CREDENTIALS,
                         ),
+                        await service.pending_sensitive_challenge(
+                            user.id,
+                            MusicProviderName.QOBUZ,
+                            ProviderAuthorizationMethod.QOBUZ_CREDENTIALS,
+                        ),
                     )
                     if candidate is not None
                 )
@@ -175,6 +180,8 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
                     challenge.flow_id,
                     ProviderAccountErrorCode.SPOTIFY_WEBAPI_MESSAGE_DELETE_FAILED
                     if provider is MusicProviderName.SPOTIFY
+                    else ProviderAccountErrorCode.QOBUZ_AUTH_MESSAGE_DELETE_FAILED
+                    if provider is MusicProviderName.QOBUZ
                     else ProviderAccountErrorCode.DEEZER_AUTH_MESSAGE_DELETE_FAILED,
                 )
             except Exception:
@@ -199,6 +206,8 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
                 presentation.text(
                     "admin.spotify_webapi_auth_progress"
                     if provider is MusicProviderName.SPOTIFY
+                    else "admin.qobuz_auth_progress"
+                    if provider is MusicProviderName.QOBUZ
                     else "admin.deezer_auth_progress",
                     locale,
                 )
@@ -226,6 +235,22 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
                         client_secret,
                     )
                     del client_id, client_secret
+            elif provider is MusicProviderName.QOBUZ:
+                parsed_credentials = _parse_qobuz_submission(message.text or "")
+                if parsed_credentials is None:
+                    outcome = await service.fail_sensitive_input(
+                        user.id,
+                        provider,
+                        challenge.flow_id,
+                        ProviderAccountErrorCode.QOBUZ_AUTH_INVALID_FORMAT,
+                    )
+                else:
+                    email = SensitiveValue(parsed_credentials[0])
+                    password = SensitiveValue(parsed_credentials[1])
+                    outcome = await service.submit_qobuz_credentials(
+                        user.id, provider, challenge.flow_id, email, password
+                    )
+                    del email, password
             else:
                 credential = SensitiveValue(message.text or " ")
                 outcome = await service.submit_sensitive_secret(
@@ -981,6 +1006,21 @@ def _parse_spotify_webapi_submission(value: str) -> tuple[str, str] | None:
     ):
         return None
     return client_id, client_secret
+
+
+def _parse_qobuz_submission(value: str) -> tuple[str, str] | None:
+    normalized = value.replace("\r\n", "\n")
+    if "\r" in normalized or len(normalized) > 320 + 1024 + 2:
+        return None
+    parts = normalized.split("\n")
+    if len(parts) != 2:
+        return None
+    email, password = (part.strip(" ") for part in parts)
+    if not email or not password or len(email) > 320 or len(password) > 1024:
+        return None
+    if any(ord(character) < 32 or ord(character) == 127 for character in normalized):
+        return None
+    return email, password
 
 
 async def _adjust_worker(

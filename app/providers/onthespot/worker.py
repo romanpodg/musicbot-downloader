@@ -47,6 +47,7 @@ from app.providers.onthespot.ipc import (
     MAX_MESSAGE_BYTES,
     PREPARE_SOURCE_METHOD,
     PROTOCOL_VERSION,
+    QOBUZ_CREDENTIALS_AUTHORIZE_METHOD,
     RECONCILE_PROVIDER_LIFECYCLE_METHOD,
     REFRESH_PROVIDER_HEALTH_METHOD,
     RESET_PROVIDER_AUTHENTICATION_METHOD,
@@ -643,9 +644,67 @@ class OnTheSpotWorker:
             if account_type != "premium":
                 return _health_result("ERROR", True, True, "SESSION_UNVERIFIED")
         if provider == "qobuz":
-            # v1.8.1 login only pings qobuz.com and trusts the saved token.
-            return _health_result("UNKNOWN", True, True, "SESSION_UNVERIFIED")
+            if selected.get("account_type") not in {None, "premium"}:
+                return _health_result("AUTH_REQUIRED", True, True, "SUBSCRIPTION_REQUIRED")
+            verified = self._verify_qobuz_session(selected)
+            if verified is None:
+                return _health_result("UNKNOWN", True, True, "SESSION_UNVERIFIED")
+            if verified:
+                return _health_result("READY", True, True)
+            return _health_result("AUTH_REQUIRED", True, True, "SESSION_INVALID")
         return _health_result("READY", requires_auth, True)
+
+    def _verify_qobuz_session(self, account: Mapping[str, Any]) -> bool | None:
+        """Perform one authenticated, read-only catalog operation in the child."""
+        del account
+        if self._registry is None:
+            return None
+        try:
+            search = self._registry.SERVICE_SEARCH_FUNCTIONS.get("qobuz")
+            token = self._accounts.get_account_token("qobuz")
+            if not callable(search) or token is None:
+                return False
+            with _silence_upstream():
+                result = search(token, "test", ["track"])
+            return isinstance(result, list)
+        except Exception:
+            return False
+
+    def qobuz_credentials_authorize(self, email: str, password: str) -> dict[str, str]:
+        """Authenticate and persist Qobuz credentials entirely inside the child."""
+        if not self._initialized:
+            self.initialize()
+        normalized_email = _normalize_qobuz_email(email)
+        normalized_password = _normalize_qobuz_password(password)
+        if normalized_email is None or normalized_password is None:
+            return _qobuz_failure("QOBUZ_AUTH_INVALID_FORMAT")
+        try:
+            qobuz = importlib.import_module("onthespot.api.qobuz")
+            with _silence_upstream():
+                qobuz.qobuz_add_account(normalized_email, normalized_password)
+            accounts = self._config.get("accounts", [])
+            if not isinstance(accounts, list) or not any(
+                isinstance(account, Mapping)
+                and account.get("service") == "qobuz"
+                and account.get("active") is True
+                and isinstance(account.get("login"), Mapping)
+                and account["login"].get("email") == normalized_email
+                for account in accounts
+            ):
+                return _qobuz_failure("QOBUZ_AUTH_INVALID_CREDENTIALS")
+            self._rebuild_runtime_pool()
+            active = [
+                account
+                for account in self._runtime.account_pool
+                if isinstance(account, Mapping)
+                and account.get("service") == "qobuz"
+                and account.get("status") == "active"
+            ]
+            if not active or not self._verify_qobuz_session(active[0]):
+                return _qobuz_failure("QOBUZ_AUTH_SESSION_INVALID")
+        except Exception:
+            return _qobuz_failure("QOBUZ_AUTH_NETWORK_ERROR")
+        return {"status": "persisted"}
 
     def refresh_provider_health(self) -> dict[str, bool]:
         """Reload deployment-owned config and rebuild the one serialized runtime pool."""
@@ -689,7 +748,7 @@ class OnTheSpotWorker:
     def reset_provider_authentication(self, provider: str) -> dict[str, str]:
         """Atomically remove one managed provider's OnTheSpot-owned authentication state."""
 
-        if provider not in {"tidal", "deezer", "spotify"}:
+        if provider not in {"tidal", "deezer", "spotify", "qobuz"}:
             return {"status": "failed", "error_code": "DISCONNECT_UNSUPPORTED"}
         if not self._initialized:
             self.initialize()
@@ -2349,6 +2408,29 @@ def _deezer_failure(error_code: str) -> dict[str, str]:
     return {"status": "failed", "error_code": error_code}
 
 
+def _qobuz_failure(error_code: str) -> dict[str, str]:
+    return {"status": "failed", "error_code": error_code}
+
+
+def _normalize_qobuz_email(value: str) -> str | None:
+    if not isinstance(value, str) or not 3 <= len(value) <= 320:
+        return None
+    normalized = value.strip()
+    if normalized != value or any(ord(char) < 0x20 for char in normalized):
+        return None
+    if "@" not in normalized or normalized.startswith("@") or normalized.endswith("@"):
+        return None
+    return normalized
+
+
+def _normalize_qobuz_password(value: str) -> str | None:
+    if not isinstance(value, str) or not 1 <= len(value) <= 1024:
+        return None
+    if any(ord(char) < 0x20 for char in value):
+        return None
+    return value
+
+
 def _tidal_account_from_token_payload(payload: Mapping[str, Any]) -> dict[str, Any] | None:
     access_token = payload.get("access_token")
     refresh_token = payload.get("refresh_token")
@@ -2538,6 +2620,16 @@ def main() -> int:
                 if set(params) != {"arl"} or not isinstance(arl, str):
                     raise WorkerError("provider_unavailable")
                 result = worker.deezer_arl_authorize(arl)
+            elif method == QOBUZ_CREDENTIALS_AUTHORIZE_METHOD:
+                email = params.get("email")
+                password = params.get("password")
+                if (
+                    set(params) != {"email", "password"}
+                    or not isinstance(email, str)
+                    or not isinstance(password, str)
+                ):
+                    raise WorkerError("provider_unavailable")
+                result = worker.qobuz_credentials_authorize(email, password)
             elif method == SPOTIFY_COMPONENT_STATUS_METHOD:
                 if params:
                     raise WorkerError("provider_unavailable")

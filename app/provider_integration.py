@@ -257,8 +257,11 @@ DEFAULT_PROVIDER_INTEGRATIONS = ProviderIntegrationRegistry(
         ),
         ProviderIntegrationSpec(
             MusicProviderName.QOBUZ,
-            ProviderSearchIntegrationState.DEFERRED,
-            ProviderAccountIntegrationMode.DEFERRED,
+            ProviderSearchIntegrationState.ENABLED,
+            ProviderAccountIntegrationMode.MANAGED,
+            search_order=4,
+            account_order=3,
+            authorization_methods=(ProviderAuthorizationMethod.QOBUZ_CREDENTIALS,),
         ),
     )
 )

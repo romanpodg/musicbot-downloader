@@ -60,6 +60,7 @@ from app.providers.base import (
 from app.providers.deezer_authorization import DeezerArlAuthorizationResult
 from app.providers.onthespot.capabilities import ONTHESPOT_CAPABILITIES
 from app.providers.onthespot.process import OnTheSpotProcessClient, get_shared_process_client
+from app.providers.qobuz_authorization import QobuzAuthorizationResult
 from app.providers.spotify_authorization import (
     SpotifyPlaybackPairingPoll,
     SpotifyPlaybackPairingStart,
@@ -249,6 +250,11 @@ class OnTheSpotProvider(MusicProvider):
         self, credential: SensitiveValue
     ) -> DeezerArlAuthorizationResult:
         return await self._process_client.authorize_deezer_arl(credential)
+
+    async def authorize_qobuz_credentials(
+        self, email: SensitiveValue, password: SensitiveValue
+    ) -> QobuzAuthorizationResult:
+        return await self._process_client.authorize_qobuz_credentials(email, password)
 
     async def get_spotify_account_components(
         self,

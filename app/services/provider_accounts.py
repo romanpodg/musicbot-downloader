@@ -21,6 +21,7 @@ from app.core.provider_accounts import (
     ProviderCompoundCredentialInput,
     ProviderDisconnectOutcome,
     ProviderDisconnectOutcomeStatus,
+    ProviderQobuzCredentialInput,
     ProviderSecretInput,
     ProviderSensitiveInputChallenge,
     SensitiveValue,
@@ -197,6 +198,21 @@ class ProviderAccountManagementService:
             provider,
             flow_id,
             ProviderCompoundCredentialInput(provider, client_id, client_secret),
+        )
+
+    async def submit_qobuz_credentials(
+        self,
+        actor_user_id: int,
+        provider: MusicProviderName,
+        flow_id: str,
+        email: SensitiveValue,
+        password: SensitiveValue,
+    ) -> ProviderAuthorizationOutcome:
+        await self.authorize(actor_user_id)
+        return await self._coordinator.submit_qobuz_credentials(
+            provider,
+            flow_id,
+            ProviderQobuzCredentialInput(provider, email, password),
         )
 
     async def fail_sensitive_input(

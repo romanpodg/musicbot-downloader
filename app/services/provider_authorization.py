@@ -19,6 +19,7 @@ from app.core.provider_accounts import (
     ProviderAuthorizationStartStatus,
     ProviderCompoundCredentialInput,
     ProviderLocalPairingChallenge,
+    ProviderQobuzCredentialInput,
     ProviderSecretInput,
     ProviderSensitiveInputChallenge,
 )
@@ -56,6 +57,12 @@ class CompoundCredentialAuthorizationDriver(Protocol):
     ) -> ProviderAuthorizationOutcome: ...
 
 
+class QobuzCredentialAuthorizationDriver(Protocol):
+    async def authorize_qobuz_credentials(
+        self, credentials: ProviderQobuzCredentialInput
+    ) -> ProviderAuthorizationOutcome: ...
+
+
 @dataclass(slots=True)
 class _ActiveAuthorization:
     flow_id: str
@@ -69,7 +76,11 @@ class _ActiveAuthorization:
 class _ActiveSensitiveAuthorization:
     flow_id: str
     completion: asyncio.Future[ProviderAuthorizationOutcome]
-    driver: SensitiveSecretAuthorizationDriver | CompoundCredentialAuthorizationDriver
+    driver: (
+        SensitiveSecretAuthorizationDriver
+        | CompoundCredentialAuthorizationDriver
+        | QobuzCredentialAuthorizationDriver
+    )
     challenge: ProviderSensitiveInputChallenge
     submission_task: asyncio.Task[ProviderAuthorizationOutcome] | None = None
 
@@ -84,7 +95,8 @@ class ProviderAuthorizationCoordinator:
             ProviderAuthorizationDriver
             | BrowserDeviceAuthorizationDriver
             | SensitiveSecretAuthorizationDriver
-            | CompoundCredentialAuthorizationDriver,
+            | CompoundCredentialAuthorizationDriver
+            | QobuzCredentialAuthorizationDriver,
         ]
         | None = None,
     ) -> None:
@@ -141,6 +153,16 @@ class ProviderAuthorizationCoordinator:
         ):
             return await self._start_sensitive(
                 request, cast(CompoundCredentialAuthorizationDriver, driver)
+            )
+        authorize_qobuz = getattr(driver, "authorize_qobuz_credentials", None)
+        if (
+            request.provider is MusicProviderName.QOBUZ
+            and request.method is ProviderAuthorizationMethod.QOBUZ_CREDENTIALS
+            and driver is not None
+            and callable(authorize_qobuz)
+        ):
+            return await self._start_sensitive(
+                request, cast(QobuzCredentialAuthorizationDriver, driver)
             )
         start_method = getattr(driver, "start", None)
         wait_method = getattr(driver, "wait", None)
@@ -311,7 +333,7 @@ class ProviderAuthorizationCoordinator:
                 or active.flow_id != flow_id
                 or active.completion.done()
                 or active.challenge.authorization_method
-                is not ProviderAuthorizationMethod.COMPOUND_CREDENTIALS
+                is not ProviderAuthorizationMethod.QOBUZ_CREDENTIALS
             ):
                 return self._stale(provider)
             if active.submission_task is not None:
@@ -321,6 +343,32 @@ class ProviderAuthorizationCoordinator:
             task = asyncio.create_task(
                 self._complete_sensitive_submission(active, credentials),
                 name=f"provider-compound-authorization-{provider.value}-{flow_id}",
+            )
+            active.submission_task = task
+        return await asyncio.shield(task)
+
+    async def submit_qobuz_credentials(
+        self,
+        provider: MusicProviderName,
+        flow_id: str,
+        credentials: ProviderQobuzCredentialInput,
+    ) -> ProviderAuthorizationOutcome:
+        if credentials.provider is not provider:
+            return self._stale(provider)
+        async with self._lock:
+            active = self._sensitive_active.get(provider)
+            if (
+                active is None
+                or active.flow_id != flow_id
+                or active.completion.done()
+                or active.challenge.authorization_method
+                is not ProviderAuthorizationMethod.COMPOUND_CREDENTIALS
+                or active.submission_task is not None
+            ):
+                return self._stale(provider)
+            task = asyncio.create_task(
+                self._complete_sensitive_submission(active, credentials),
+                name=f"provider-qobuz-authorization-{provider.value}-{flow_id}",
             )
             active.submission_task = task
         return await asyncio.shield(task)
@@ -494,7 +542,11 @@ class ProviderAuthorizationCoordinator:
     async def _start_sensitive(
         self,
         request: ProviderAuthorizationRequest,
-        driver: SensitiveSecretAuthorizationDriver | CompoundCredentialAuthorizationDriver,
+        driver: (
+            SensitiveSecretAuthorizationDriver
+            | CompoundCredentialAuthorizationDriver
+            | QobuzCredentialAuthorizationDriver
+        ),
     ) -> ProviderAuthorizationStartOutcome:
         async with self._lock:
             existing = self._active.get(request.provider)
@@ -523,18 +575,26 @@ class ProviderAuthorizationCoordinator:
 
     async def _run_sensitive_driver(
         self,
-        driver: SensitiveSecretAuthorizationDriver | CompoundCredentialAuthorizationDriver,
-        credential: ProviderSecretInput | ProviderCompoundCredentialInput,
+        driver: SensitiveSecretAuthorizationDriver
+        | CompoundCredentialAuthorizationDriver
+        | QobuzCredentialAuthorizationDriver,
+        credential: ProviderSecretInput
+        | ProviderCompoundCredentialInput
+        | ProviderQobuzCredentialInput,
     ) -> ProviderAuthorizationOutcome:
         try:
             if isinstance(credential, ProviderSecretInput):
                 outcome = await cast(SensitiveSecretAuthorizationDriver, driver).authorize_secret(
                     credential
                 )
-            else:
+            elif isinstance(credential, ProviderCompoundCredentialInput):
                 outcome = await cast(
                     CompoundCredentialAuthorizationDriver, driver
                 ).authorize_credentials(credential)
+            else:
+                outcome = await cast(
+                    QobuzCredentialAuthorizationDriver, driver
+                ).authorize_qobuz_credentials(credential)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -554,7 +614,9 @@ class ProviderAuthorizationCoordinator:
     async def _complete_sensitive_submission(
         self,
         active: _ActiveSensitiveAuthorization,
-        credential: ProviderSecretInput | ProviderCompoundCredentialInput,
+        credential: ProviderSecretInput
+        | ProviderCompoundCredentialInput
+        | ProviderQobuzCredentialInput,
     ) -> ProviderAuthorizationOutcome:
         outcome = await self._run_sensitive_driver(active.driver, credential)
         async with self._lock:
