@@ -50,11 +50,13 @@ def test_stage301_default_manifest_is_complete_and_preserves_the_production_matr
         MusicProviderName.DEEZER,
         MusicProviderName.TIDAL,
         MusicProviderName.YOUTUBE_MUSIC,
+        MusicProviderName.QOBUZ,
     )
     assert registry.managed_account_providers() == (
         MusicProviderName.TIDAL,
         MusicProviderName.DEEZER,
         MusicProviderName.SPOTIFY,
+        MusicProviderName.QOBUZ,
     )
     assert registry.authorization_methods_for(MusicProviderName.TIDAL) == (
         ProviderAuthorizationMethod.BROWSER_DEVICE_LINK,
@@ -71,9 +73,21 @@ def test_stage301_default_manifest_is_complete_and_preserves_the_production_matr
         assert (
             registry.for_provider(provider).account is ProviderAccountIntegrationMode.NOT_REQUIRED
         )
-    for provider in (MusicProviderName.APPLE_MUSIC, MusicProviderName.QOBUZ):
-        assert registry.for_provider(provider).search is ProviderSearchIntegrationState.DEFERRED
-        assert registry.for_provider(provider).account is ProviderAccountIntegrationMode.DEFERRED
+    assert registry.for_provider(MusicProviderName.APPLE_MUSIC).search is (
+        ProviderSearchIntegrationState.DEFERRED
+    )
+    assert registry.for_provider(MusicProviderName.APPLE_MUSIC).account is (
+        ProviderAccountIntegrationMode.DEFERRED
+    )
+    assert registry.for_provider(MusicProviderName.QOBUZ).search is (
+        ProviderSearchIntegrationState.ENABLED
+    )
+    assert registry.for_provider(MusicProviderName.QOBUZ).account is (
+        ProviderAccountIntegrationMode.MANAGED
+    )
+    assert registry.authorization_methods_for(MusicProviderName.QOBUZ) == (
+        ProviderAuthorizationMethod.QOBUZ_CREDENTIALS,
+    )
 
 
 def test_stage301_manifest_rejects_missing_duplicate_and_duplicate_orders() -> None:
@@ -160,6 +174,7 @@ def test_stage302_application_search_registry_includes_enabled_ytm_in_stable_ord
         MusicProviderName.DEEZER,
         MusicProviderName.TIDAL,
         MusicProviderName.YOUTUBE_MUSIC,
+        MusicProviderName.QOBUZ,
     )
     assert registry.get(MusicProviderName.YOUTUBE_MUSIC) is not None
     runtime.list_searchable_providers.assert_not_awaited()

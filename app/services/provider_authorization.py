@@ -333,7 +333,7 @@ class ProviderAuthorizationCoordinator:
                 or active.flow_id != flow_id
                 or active.completion.done()
                 or active.challenge.authorization_method
-                is not ProviderAuthorizationMethod.QOBUZ_CREDENTIALS
+                is not ProviderAuthorizationMethod.COMPOUND_CREDENTIALS
             ):
                 return self._stale(provider)
             if active.submission_task is not None:
@@ -362,7 +362,7 @@ class ProviderAuthorizationCoordinator:
                 or active.flow_id != flow_id
                 or active.completion.done()
                 or active.challenge.authorization_method
-                is not ProviderAuthorizationMethod.COMPOUND_CREDENTIALS
+                is not ProviderAuthorizationMethod.QOBUZ_CREDENTIALS
                 or active.submission_task is not None
             ):
                 return self._stale(provider)

@@ -69,6 +69,7 @@ from app.services.provider_authorization import (
     CompoundCredentialAuthorizationDriver,
     ProviderAuthorizationCoordinator,
     ProviderAuthorizationDriver,
+    QobuzCredentialAuthorizationDriver,
     SensitiveSecretAuthorizationDriver,
 )
 from app.services.provider_candidates import ProviderCandidateResolver
@@ -501,7 +502,8 @@ async def compose_stage9(
         ProviderAuthorizationDriver
         | BrowserDeviceAuthorizationDriver
         | SensitiveSecretAuthorizationDriver
-        | CompoundCredentialAuthorizationDriver,
+        | CompoundCredentialAuthorizationDriver
+        | QobuzCredentialAuthorizationDriver,
     ] = {
         (
             MusicProviderName.TIDAL,

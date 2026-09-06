@@ -197,7 +197,7 @@ async def test_denied_service_calls_never_reach_backend(database: Database) -> N
     assert not backend.status_calls
     assert not backend.disconnect_calls
     assert backend.reload_calls == 0
-    assert len((await service.get_overview(owner)).accounts) == 3
+    assert len((await service.get_overview(owner)).accounts) == 4
 
 
 async def test_runtime_status_normalization_and_no_authorization_advertisement() -> None:
@@ -235,8 +235,8 @@ async def test_runtime_status_normalization_and_no_authorization_advertisement()
         for provider in MANAGED_PROVIDER_ORDER
     ]
     assert not any(advertised)
-    unsupported = await backend.get_account_status(MusicProviderName.QOBUZ)
-    assert unsupported.state is ProviderAccountState.UNSUPPORTED
+    qobuz = await backend.get_account_status(MusicProviderName.QOBUZ)
+    assert qobuz.state is ProviderAccountState.READY
 
 
 async def test_owner_reset_returns_only_the_sanitized_backend_outcome(

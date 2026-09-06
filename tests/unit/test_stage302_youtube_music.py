@@ -51,11 +51,13 @@ def test_stage302_manifest_and_readiness_promote_tokenless_ytm() -> None:
         MusicProviderName.DEEZER,
         MusicProviderName.TIDAL,
         provider,
+        MusicProviderName.QOBUZ,
     )
     assert DEFAULT_PROVIDER_INTEGRATIONS.managed_account_providers() == (
         MusicProviderName.TIDAL,
         MusicProviderName.DEEZER,
         MusicProviderName.SPOTIFY,
+        MusicProviderName.QOBUZ,
     )
     integration = DEFAULT_PROVIDER_INTEGRATIONS.for_provider(provider)
     assert integration.authorization_methods == ()

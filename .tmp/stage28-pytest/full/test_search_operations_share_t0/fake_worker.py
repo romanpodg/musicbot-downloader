@@ -1,4 +1,3 @@
-
 import json
 import os
 import sys
@@ -50,11 +49,13 @@ for line in sys.stdin.buffer:
         response = {
             "id": request_id,
             "ok": True,
-            "result": [{
-                "provider": request["params"]["provider"],
-                "provider_track_id": "candidate",
-                "url": "https://artist.bandcamp.com/track/candidate",
-            }],
+            "result": [
+                {
+                    "provider": request["params"]["provider"],
+                    "provider_track_id": "candidate",
+                    "url": "https://artist.bandcamp.com/track/candidate",
+                }
+            ],
         }
     elif method == "check_source":
         result = {
