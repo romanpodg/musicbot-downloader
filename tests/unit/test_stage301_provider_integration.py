@@ -49,6 +49,7 @@ def test_stage301_default_manifest_is_complete_and_preserves_the_production_matr
         MusicProviderName.SPOTIFY,
         MusicProviderName.DEEZER,
         MusicProviderName.TIDAL,
+        MusicProviderName.YOUTUBE_MUSIC,
     )
     assert registry.managed_account_providers() == (
         MusicProviderName.TIDAL,
@@ -65,11 +66,7 @@ def test_stage301_default_manifest_is_complete_and_preserves_the_production_matr
         ProviderAuthorizationMethod.BROWSER_DEVICE_LINK,
         ProviderAuthorizationMethod.COMPOUND_CREDENTIALS,
     )
-    for provider in (
-        MusicProviderName.YOUTUBE_MUSIC,
-        MusicProviderName.BANDCAMP,
-        MusicProviderName.SOUNDCLOUD,
-    ):
+    for provider in (MusicProviderName.BANDCAMP, MusicProviderName.SOUNDCLOUD):
         assert registry.for_provider(provider).search is ProviderSearchIntegrationState.DEFERRED
         assert (
             registry.for_provider(provider).account is ProviderAccountIntegrationMode.NOT_REQUIRED
@@ -148,7 +145,7 @@ async def test_stage301_generic_adapter_rejects_invalid_runtime_candidates() -> 
     assert runtime.search_tracks.await_args.args[0].limit == 10
 
 
-def test_stage301_application_search_registry_excludes_deferred_runtime_provider() -> None:
+def test_stage302_application_search_registry_includes_enabled_ytm_in_stable_order() -> None:
     runtime = Mock(spec=MusicProvider)
     runtime.list_searchable_providers = AsyncMock(
         return_value=(MusicProviderName.SPOTIFY, MusicProviderName.YOUTUBE_MUSIC)
@@ -162,8 +159,9 @@ def test_stage301_application_search_registry_excludes_deferred_runtime_provider
         MusicProviderName.SPOTIFY,
         MusicProviderName.DEEZER,
         MusicProviderName.TIDAL,
+        MusicProviderName.YOUTUBE_MUSIC,
     )
-    assert registry.get(MusicProviderName.YOUTUBE_MUSIC) is None
+    assert registry.get(MusicProviderName.YOUTUBE_MUSIC) is not None
     runtime.list_searchable_providers.assert_not_awaited()
 
 
@@ -209,7 +207,7 @@ def test_stage301_search_readiness_precedence_is_conservative() -> None:
             runtime_searchable=True,
             health=None,
         ).status
-        is ProviderSearchReadinessStatus.NOT_INTEGRATED
+        is ProviderSearchReadinessStatus.READY
     )
     assert (
         evaluate_provider_search_readiness(

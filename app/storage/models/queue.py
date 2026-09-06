@@ -57,7 +57,7 @@ class DownloadJob(TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint("attempt_count >= 0", name="ck_download_jobs_attempt_count"),
         CheckConstraint(
-            "quality_profile IN ('MP3_128', 'MP3_320', 'AAC_256', 'LOSSLESS')",
+            "quality_profile IN ('MP3_128', 'MP3_320', 'AAC_128', 'AAC_256', 'LOSSLESS')",
             name="ck_download_jobs_quality_profile",
         ),
         CheckConstraint(
@@ -115,7 +115,7 @@ class UploadJob(TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint("attempt_count >= 0", name="ck_upload_jobs_attempt_count"),
         CheckConstraint(
-            "quality_profile IN ('MP3_128', 'MP3_320', 'AAC_256', 'LOSSLESS')",
+            "quality_profile IN ('MP3_128', 'MP3_320', 'AAC_128', 'AAC_256', 'LOSSLESS')",
             name="ck_upload_jobs_quality_profile",
         ),
         CheckConstraint(
@@ -200,7 +200,7 @@ class DownloadFlight(TimestampMixin, Base):
     __tablename__ = "download_flights"
     __table_args__ = (
         CheckConstraint(
-            "quality_profile IN ('MP3_128', 'MP3_320', 'AAC_256', 'LOSSLESS')",
+            "quality_profile IN ('MP3_128', 'MP3_320', 'AAC_128', 'AAC_256', 'LOSSLESS')",
             name="ck_download_flights_quality_profile",
         ),
         UniqueConstraint(

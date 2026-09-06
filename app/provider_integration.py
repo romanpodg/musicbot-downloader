@@ -236,8 +236,9 @@ DEFAULT_PROVIDER_INTEGRATIONS = ProviderIntegrationRegistry(
         ),
         ProviderIntegrationSpec(
             MusicProviderName.YOUTUBE_MUSIC,
-            ProviderSearchIntegrationState.DEFERRED,
+            ProviderSearchIntegrationState.ENABLED,
             ProviderAccountIntegrationMode.NOT_REQUIRED,
+            search_order=3,
         ),
         ProviderIntegrationSpec(
             MusicProviderName.BANDCAMP,

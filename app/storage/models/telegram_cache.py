@@ -45,7 +45,7 @@ class TelegramFileCache(TimestampMixin, Base):
     __tablename__ = "telegram_file_cache"
     __table_args__ = (
         CheckConstraint(
-            "quality_profile IN ('MP3_128', 'MP3_320', 'AAC_256', 'LOSSLESS')",
+            "quality_profile IN ('MP3_128', 'MP3_320', 'AAC_128', 'AAC_256', 'LOSSLESS')",
             name="ck_telegram_file_cache_quality_profile",
         ),
         CheckConstraint(

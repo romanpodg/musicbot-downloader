@@ -5,6 +5,11 @@ This matrix describes only the implementation pinned at commit
 commercial service in general. `Unknown` means the value cannot be established reliably before
 OnTheSpot enters its stream/download path.
 
+Stage 30.2 application integration status: YouTube Music is enabled for
+track search and strict `music.youtube.com` track URLs with account mode
+`NOT_REQUIRED`; its native application output is AAC/M4A nominal 128 kbps.
+This application status does not alter the pinned runtime facts below.
+
 ## Stage 10.4 provider-level health audit
 
 Provider Health is distinct from Stage 4 `TrackSource` validation. It never chooses an arbitrary

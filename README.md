@@ -64,8 +64,10 @@ Current delivery roadmap:
   [Stage 28 contract](docs/stage28-telegram-ux.md).
 - Stage 29: Recognition 2.0 ambiguity-aware, variant-safe, bounded enrichment and
   correction UX; see [Stage 29 contract](docs/stage29-recognition-2.md).
-- Stage 30.1: Provider Integration Architecture / Readiness Contract; no new provider is
-  enabled by this stage (see [Stage 30.1 contract](docs/stage30.1-provider-integration-architecture.md)).
+- Stage 30.1: Provider Integration Architecture / Readiness Contract (complete; see
+  [Stage 30.1 contract](docs/stage30.1-provider-integration-architecture.md)).
+- Stage 30.2: YouTube Music vertical integration with exact AAC 128 support (complete; see
+  [Stage 30.2 contract](docs/stage30.2-youtube-music.md)).
 
 Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
 deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage
@@ -139,7 +141,8 @@ A 3001–5000 ms difference is plausible but ambiguous, and more than 5000 ms is
 Missing duration never counts as a match. Multiple compatible candidates return `AMBIGUOUS`; an
 uncertain input source receives its own Track instead of being attached to an existing candidate.
 
-The four user delivery profiles are exactly `MP3_128`, `MP3_320`, `AAC_256`, and `LOSSLESS`.
+The five user delivery profiles are exactly `MP3_128`, `MP3_320`, `AAC_128`, `AAC_256`, and
+`LOSSLESS`.
 Provider-native codec/container/bitrate data is a separate nullable model.
 
 Application services consume the local `MusicProvider` abstraction. The main process never
@@ -483,7 +486,7 @@ delivery semantics.
 
 On the first real track request, the resolved canonical Track and request identity are persisted
 as `AWAITING_QUALITY` before any download job is created. The four choices are exactly MP3 128,
-MP3 320, AAC 256, and Lossless. The selection becomes `users.preferred_quality_profile`, and the
+MP3 320, AAC 128, AAC 256, and Lossless. The selection becomes `users.preferred_quality_profile`, and the
 same persisted request continues automatically. `/quality` changes only future requests;
 already-active requests retain their selected profile. `/language` sets `preferred_locale`, while
 the Telegram language code continues to synchronize on interactions without overriding that
@@ -848,7 +851,7 @@ uv run python -m app.tools.providers <TRACK_ID>
 ```
 
 The command reports usable candidates and normalized failures. It does not select a provider for
-`MP3_128`, `MP3_320`, `AAC_256`, or `LOSSLESS`, and it does not download audio.
+`MP3_128`, `MP3_320`, `AAC_128`, `AAC_256`, or `LOSSLESS`, and it does not download audio.
 
 ## Quality planning tool
 
@@ -857,6 +860,7 @@ Obtain a fresh Stage 4 snapshot and inspect Stage 5 primary and fallback plans w
 ```bash
 uv run python -m app.tools.quality <TRACK_ID> MP3_128
 uv run python -m app.tools.quality <TRACK_ID> MP3_320
+uv run python -m app.tools.quality <TRACK_ID> AAC_128
 uv run python -m app.tools.quality <TRACK_ID> AAC_256
 uv run python -m app.tools.quality <TRACK_ID> LOSSLESS
 ```
@@ -871,6 +875,7 @@ Execute fresh Stage 5 planning and the Stage 6 pipeline for any supported profil
 ```bash
 uv run python -m app.tools.download <TRACK_ID> MP3_128
 uv run python -m app.tools.download <TRACK_ID> MP3_320
+uv run python -m app.tools.download <TRACK_ID> AAC_128
 uv run python -m app.tools.download <TRACK_ID> AAC_256
 uv run python -m app.tools.download <TRACK_ID> LOSSLESS
 ```

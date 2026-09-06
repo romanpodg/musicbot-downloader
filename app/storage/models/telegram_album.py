@@ -43,7 +43,7 @@ class TelegramAlbumRequest(TimestampMixin, Base):
         CheckConstraint("track_count BETWEEN 1 AND 500", name="ck_telegram_album_track_count"),
         CheckConstraint(
             "quality_profile IS NULL OR quality_profile IN "
-            "('MP3_128', 'MP3_320', 'AAC_256', 'LOSSLESS')",
+            "('MP3_128', 'MP3_320', 'AAC_128', 'AAC_256', 'LOSSLESS')",
             name="ck_telegram_album_quality_profile",
         ),
         CheckConstraint(

@@ -34,6 +34,12 @@ QUALITY_OUTPUTS: Final[dict[QualityProfile, OutputSpecification]] = {
         bitrate_kbps=320,
         lossless=False,
     ),
+    QualityProfile.AAC_128: OutputSpecification(
+        codec=NativeCodec.AAC,
+        container=NativeContainer.M4A,
+        bitrate_kbps=128,
+        lossless=False,
+    ),
     QualityProfile.AAC_256: OutputSpecification(
         codec=NativeCodec.AAC,
         container=NativeContainer.M4A,

@@ -837,7 +837,7 @@ async def test_aiogram_commands_text_and_callbacks_without_network(database: Dat
                         from_user=telegram_user,
                         chat_instance="chat",
                         message=callback_message,
-                        data="sq1:4",
+                        data="sq1:5",
                     ),
                 ),
             )

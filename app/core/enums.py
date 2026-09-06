@@ -12,6 +12,7 @@ class UserRole(StrEnum):
 class QualityProfile(StrEnum):
     MP3_128 = "MP3_128"
     MP3_320 = "MP3_320"
+    AAC_128 = "AAC_128"
     AAC_256 = "AAC_256"
     LOSSLESS = "LOSSLESS"
 

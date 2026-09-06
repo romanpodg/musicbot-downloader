@@ -23,6 +23,7 @@ from app.core.enums import (
     DownloadSourceType,
     MusicProviderName,
     QualityPreference,
+    QualityProfile,
 )
 from app.core.models import ProviderCapabilities
 from app.providers.onthespot.capabilities import ONTHESPOT_CAPABILITIES
@@ -92,13 +93,19 @@ class DownloadLifecycleService:
             profile = request.effective_profile
             if profile is None:
                 preferences = await repositories.download_preferences.get_effective(user.id)
-                if request.options.quality_profile is not None:
+                # Exact AAC_128 is carried by the durable Telegram delivery/
+                # queue request. Stage 22's semantic tiers intentionally do
+                # not reinterpret this provider-native profile as MP3.
+                exact_quality = request.options.quality_profile
+                if exact_quality is QualityProfile.AAC_128:
+                    profile = None
+                elif exact_quality is not None:
                     requested = {
                         "LOSSLESS": QualityPreference.LOSSLESS,
                         "MP3_320": QualityPreference.HIGH,
                         "MP3_128": QualityPreference.STANDARD,
                         "AAC_256": QualityPreference.HIGH,
-                    }[request.options.quality_profile.value]
+                    }[exact_quality.value]
                     preferences = UserDownloadPreferences(
                         user_id=user.id,
                         quality=requested,

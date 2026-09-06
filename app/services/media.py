@@ -180,12 +180,12 @@ class Transcoder:
                 "-f",
                 "mp3",
             ]
-        elif output.codec is NativeCodec.AAC and output.bitrate_kbps == 256:
+        elif output.codec is NativeCodec.AAC and output.bitrate_kbps in {128, 256}:
             encoding = [
                 "-c:a",
                 "aac",
                 "-b:a",
-                "256k",
+                f"{output.bitrate_kbps}k",
                 "-movflags",
                 "+faststart",
                 "-f",

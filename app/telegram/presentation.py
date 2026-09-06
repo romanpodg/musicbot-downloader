@@ -15,8 +15,9 @@ from app.services.telegram_requests import TrackCard
 QUALITY_CODES = {
     QualityProfile.MP3_128: "1",
     QualityProfile.MP3_320: "2",
-    QualityProfile.AAC_256: "3",
-    QualityProfile.LOSSLESS: "4",
+    QualityProfile.AAC_128: "3",
+    QualityProfile.AAC_256: "4",
+    QualityProfile.LOSSLESS: "5",
 }
 CODE_QUALITIES = {value: key for key, value in QUALITY_CODES.items()}
 

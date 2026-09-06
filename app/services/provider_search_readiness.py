@@ -7,7 +7,11 @@ from enum import StrEnum
 
 from app.core.enums import ProviderHealthStatus
 from app.core.models import ProviderCapabilities, ProviderHealthEntry
-from app.provider_integration import ProviderIntegrationSpec, ProviderSearchIntegrationState
+from app.provider_integration import (
+    ProviderAccountIntegrationMode,
+    ProviderIntegrationSpec,
+    ProviderSearchIntegrationState,
+)
 
 
 class ProviderSearchReadinessStatus(StrEnum):
@@ -49,7 +53,11 @@ def evaluate_provider_search_readiness(
         )
     return ProviderSearchReadiness(
         {
-            ProviderHealthStatus.AUTH_REQUIRED: ProviderSearchReadinessStatus.AUTH_REQUIRED,
+            ProviderHealthStatus.AUTH_REQUIRED: (
+                ProviderSearchReadinessStatus.UNAVAILABLE
+                if integration.account is ProviderAccountIntegrationMode.NOT_REQUIRED
+                else ProviderSearchReadinessStatus.AUTH_REQUIRED
+            ),
             ProviderHealthStatus.UNAVAILABLE: ProviderSearchReadinessStatus.UNAVAILABLE,
             ProviderHealthStatus.UNKNOWN: ProviderSearchReadinessStatus.UNKNOWN,
             ProviderHealthStatus.ERROR: ProviderSearchReadinessStatus.ERROR,

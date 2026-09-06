@@ -35,7 +35,7 @@ def test_compact_quality_callbacks_round_trip(quality: QualityProfile) -> None:
     assert parse_setting_quality(encode_setting_quality(quality)) is quality
 
 
-@pytest.mark.parametrize("value", [None, "", "q1", "q1:x:1", "q1:0:1", "q1:1:5", "{}"])
+@pytest.mark.parametrize("value", [None, "", "q1", "q1:x:1", "q1:0:1", "q1:1:6", "{}"])
 def test_malformed_quality_callbacks_are_rejected(value: str | None) -> None:
     assert parse_first_quality(value) is None
 
@@ -96,13 +96,14 @@ def test_track_card_plain_text_metadata_duration_buttons_and_bounding() -> None:
     assert keyboard.inline_keyboard[1][0].text == "Other quality"
 
 
-def test_track_quality_picker_has_exactly_four_profiles_and_back() -> None:
+def test_track_quality_picker_has_exactly_five_profiles_and_back() -> None:
     presentation = TelegramPresentation(LocalizationService(("en", "ru"), "en"))
     keyboard = presentation.track_quality_keyboard("en", request_id=12)
     quality_buttons = [button for row in keyboard.inline_keyboard[:2] for button in row]
     assert [button.text for button in quality_buttons] == [
         "MP3 128",
         "MP3 320",
+        "AAC 128",
         "AAC 256",
         "Lossless",
     ]

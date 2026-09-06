@@ -46,7 +46,7 @@ class TelegramDeliveryRequest(TimestampMixin, Base):
         CheckConstraint("repair_count BETWEEN 0 AND 1", name="ck_telegram_delivery_repair_count"),
         CheckConstraint(
             "quality_profile IS NULL OR quality_profile IN "
-            "('MP3_128', 'MP3_320', 'AAC_256', 'LOSSLESS')",
+            "('MP3_128', 'MP3_320', 'AAC_128', 'AAC_256', 'LOSSLESS')",
             name="ck_telegram_delivery_quality_profile",
         ),
         CheckConstraint(
