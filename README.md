@@ -64,6 +64,8 @@ Current delivery roadmap:
   [Stage 28 contract](docs/stage28-telegram-ux.md).
 - Stage 29: Recognition 2.0 ambiguity-aware, variant-safe, bounded enrichment and
   correction UX; see [Stage 29 contract](docs/stage29-recognition-2.md).
+- Stage 30.1: Provider Integration Architecture / Readiness Contract; no new provider is
+  enabled by this stage (see [Stage 30.1 contract](docs/stage30.1-provider-integration-architecture.md)).
 
 Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
 deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import Final, Protocol
 
@@ -71,11 +72,22 @@ class ProviderRuntimeAccountBackend:
         self,
         probe: ProviderAccountRuntimeProbe,
         *,
-        integration_registry: ProviderIntegrationRegistry = DEFAULT_PROVIDER_INTEGRATIONS,
+        integration_registry: ProviderIntegrationRegistry | None = None,
+        authorization_methods: Mapping[MusicProviderName, tuple[ProviderAuthorizationMethod, ...]]
+        | None = None,
     ) -> None:
         self._probe = probe
-        self._managed_providers = integration_registry.managed_account_providers()
-        self._authorization_methods = dict(integration_registry.authorization_methods_by_provider())
+        registry = integration_registry or DEFAULT_PROVIDER_INTEGRATIONS
+        self._managed_providers = registry.managed_account_providers()
+        # The explicit legacy override keeps Stage 13 test/integration callers
+        # source-compatible; production composition supplies the manifest.
+        self._authorization_methods = dict(
+            authorization_methods
+            if authorization_methods is not None
+            else registry.authorization_methods_by_provider()
+            if integration_registry is not None
+            else {}
+        )
 
     async def get_account_status(self, provider: MusicProviderName) -> ProviderAccountStatus:
         if provider not in self._managed_providers:

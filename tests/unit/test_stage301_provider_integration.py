@@ -72,8 +72,7 @@ def test_stage301_default_manifest_is_complete_and_preserves_the_production_matr
     ):
         assert registry.for_provider(provider).search is ProviderSearchIntegrationState.DEFERRED
         assert (
-            registry.for_provider(provider).account
-            is ProviderAccountIntegrationMode.NOT_REQUIRED
+            registry.for_provider(provider).account is ProviderAccountIntegrationMode.NOT_REQUIRED
         )
     for provider in (MusicProviderName.APPLE_MUSIC, MusicProviderName.QOBUZ):
         assert registry.for_provider(provider).search is ProviderSearchIntegrationState.DEFERRED
