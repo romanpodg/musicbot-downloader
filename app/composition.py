@@ -18,6 +18,10 @@ from app.core.models import TelegramBotIdentity
 from app.core.provider_accounts import ProviderAuthorizationMethod
 from app.core.provider_resolution import ProviderCandidateRanker
 from app.i18n import LocalizationService
+from app.provider_integration import (
+    DEFAULT_PROVIDER_INTEGRATIONS,
+    validate_authorization_driver_keys,
+)
 from app.providers.account_management import (
     ProviderAccountRuntimeProbe,
     ProviderRuntimeAccountBackend,
@@ -27,11 +31,8 @@ from app.providers.deezer_authorization import (
     DeezerArlAuthorizationBoundary,
     DeezerArlAuthorizationDriver,
 )
-from app.providers.search_adapters import (
-    DeezerSearchAdapter,
-    SpotifySearchAdapter,
-    TidalSearchAdapter,
-)
+from app.providers.onthespot.capabilities import ONTHESPOT_CAPABILITIES
+from app.providers.search_adapters import RuntimeTrackSearchAdapter
 from app.providers.spotify_authorization import (
     SpotifyAuthorizationBoundary,
     SpotifyPlaybackAuthorizationDriver,
@@ -62,7 +63,13 @@ from app.services.download_preferences import UserDownloadPreferencesService
 from app.services.download_requests import ExistingDeliverySubmissionService
 from app.services.media import MediaProbe, Transcoder
 from app.services.provider_accounts import ProviderAccountManagementService
-from app.services.provider_authorization import ProviderAuthorizationCoordinator
+from app.services.provider_authorization import (
+    BrowserDeviceAuthorizationDriver,
+    CompoundCredentialAuthorizationDriver,
+    ProviderAuthorizationCoordinator,
+    ProviderAuthorizationDriver,
+    SensitiveSecretAuthorizationDriver,
+)
 from app.services.provider_candidates import ProviderCandidateResolver
 from app.services.provider_health import ProviderHealthProbe, ProviderHealthService
 from app.services.provider_limits import ProviderRateLimiter
@@ -377,12 +384,11 @@ async def compose_stage9(
     download_preferences = UserDownloadPreferencesService(database)
     ux_states = UserUxStateService()
     ux_progress = UxProgressService(ux_states)
+    integration_registry = DEFAULT_PROVIDER_INTEGRATIONS
+    integration_registry.validate_capabilities(ONTHESPOT_CAPABILITIES)
     search_registry = TrackSearchProviderRegistry(
-        (
-            SpotifySearchAdapter(provider),
-            DeezerSearchAdapter(provider),
-            TidalSearchAdapter(provider),
-        )
+        RuntimeTrackSearchAdapter(provider, provider_name)
+        for provider_name in integration_registry.enabled_search_providers()
     )
     search_use_case = SearchTracksUseCase(
         TrackSearchService(search_registry),
@@ -471,14 +477,7 @@ async def compose_stage9(
     )
     account_backend = ProviderRuntimeAccountBackend(
         cast(ProviderAccountRuntimeProbe, provider),
-        authorization_methods={
-            MusicProviderName.TIDAL: (ProviderAuthorizationMethod.BROWSER_DEVICE_LINK,),
-            MusicProviderName.DEEZER: (ProviderAuthorizationMethod.SENSITIVE_SECRET,),
-            MusicProviderName.SPOTIFY: (
-                ProviderAuthorizationMethod.BROWSER_DEVICE_LINK,
-                ProviderAuthorizationMethod.COMPOUND_CREDENTIALS,
-            ),
-        },
+        integration_registry=integration_registry,
     )
     tidal_authorization = TidalDeviceAuthorizationDriver(
         cast(TidalDeviceAuthorizationBoundary, provider), account_backend
@@ -493,30 +492,37 @@ async def compose_stage9(
     spotify_webapi_authorization = SpotifyWebApiAuthorizationDriver(
         spotify_boundary, account_backend
     )
-    provider_authorization = ProviderAuthorizationCoordinator(
-        {
-            (
-                MusicProviderName.TIDAL,
-                ProviderAuthorizationMethod.BROWSER_DEVICE_LINK,
-            ): tidal_authorization,
-            (
-                MusicProviderName.DEEZER,
-                ProviderAuthorizationMethod.SENSITIVE_SECRET,
-            ): deezer_authorization,
-            (
-                MusicProviderName.SPOTIFY,
-                ProviderAuthorizationMethod.BROWSER_DEVICE_LINK,
-            ): spotify_playback_authorization,
-            (
-                MusicProviderName.SPOTIFY,
-                ProviderAuthorizationMethod.COMPOUND_CREDENTIALS,
-            ): spotify_webapi_authorization,
-        }
-    )
+    authorization_drivers: dict[
+        tuple[MusicProviderName, ProviderAuthorizationMethod],
+        ProviderAuthorizationDriver
+        | BrowserDeviceAuthorizationDriver
+        | SensitiveSecretAuthorizationDriver
+        | CompoundCredentialAuthorizationDriver,
+    ] = {
+        (
+            MusicProviderName.TIDAL,
+            integration_registry.authorization_methods_for(MusicProviderName.TIDAL)[0],
+        ): tidal_authorization,
+        (
+            MusicProviderName.DEEZER,
+            integration_registry.authorization_methods_for(MusicProviderName.DEEZER)[0],
+        ): deezer_authorization,
+        (
+            MusicProviderName.SPOTIFY,
+            integration_registry.authorization_methods_for(MusicProviderName.SPOTIFY)[0],
+        ): spotify_playback_authorization,
+        (
+            MusicProviderName.SPOTIFY,
+            integration_registry.authorization_methods_for(MusicProviderName.SPOTIFY)[1],
+        ): spotify_webapi_authorization,
+    }
+    validate_authorization_driver_keys(integration_registry, authorization_drivers)
+    provider_authorization = ProviderAuthorizationCoordinator(authorization_drivers)
     provider_accounts = ProviderAccountManagementService(
         account_backend,
         authorization,
         provider_authorization,
+        integration_registry=integration_registry,
     )
     provider_accounts_presentation = ProviderAccountsPresentation(i18n)
     provider_authorization_ui = ProviderAuthorizationUiManager(

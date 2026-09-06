@@ -7,7 +7,6 @@ provider-scoped candidates into the provider-neutral Stage 15 search model.
 
 from __future__ import annotations
 
-from abc import ABC
 from collections.abc import Iterable
 
 from app.core.enums import MusicProviderName
@@ -15,10 +14,14 @@ from app.core.models import TrackSearchCandidate
 from app.core.search import Artist, Track
 
 
-class ProviderTrackMapper(ABC):
+class ProviderTrackMapper:
     """Map candidates from exactly one provider without exposing runtime DTOs."""
 
     provider: MusicProviderName
+
+    def __init__(self, provider: MusicProviderName | None = None) -> None:
+        if provider is not None:
+            self.provider = provider
 
     def map_all(self, candidates: Iterable[TrackSearchCandidate]) -> tuple[Track, ...]:
         tracks: list[Track] = []

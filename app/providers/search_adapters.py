@@ -17,17 +17,24 @@ from app.providers.search_mappers import (
 _RUNTIME_SEARCH_LIMIT = 10
 
 
-class _RuntimeSearchAdapter(TrackSearchProvider):
+class RuntimeTrackSearchAdapter(TrackSearchProvider):
     """Delegate a bounded query to one provider and map only safe candidates."""
 
-    mapper: ProviderTrackMapper
-
-    def __init__(self, runtime: MusicProvider) -> None:
+    def __init__(
+        self,
+        runtime: MusicProvider,
+        provider: MusicProviderName,
+        mapper: ProviderTrackMapper | None = None,
+    ) -> None:
         self._runtime = runtime
+        self._provider = provider
+        self._mapper = mapper or ProviderTrackMapper(provider)
+        if self._mapper.provider is not provider:
+            raise ValueError("search adapter mapper provider mismatch")
 
     @property
     def provider(self) -> MusicProviderName:
-        return self.mapper.provider
+        return self._provider
 
     async def search(self, request: TrackSearchRequest) -> tuple[Track, ...]:
         candidates = await self._runtime.search_tracks(
@@ -37,16 +44,25 @@ class _RuntimeSearchAdapter(TrackSearchProvider):
                 limit=min(request.limit, _RUNTIME_SEARCH_LIMIT),
             )
         )
-        return self.mapper.map_all(candidates)
+        return self._mapper.map_all(candidates)
 
 
-class SpotifySearchAdapter(_RuntimeSearchAdapter):
-    mapper = SpotifyTrackMapper()
+class SpotifySearchAdapter(RuntimeTrackSearchAdapter):
+    """Stage 16 compatibility wrapper; production uses RuntimeTrackSearchAdapter."""
+
+    def __init__(self, runtime: MusicProvider) -> None:
+        super().__init__(runtime, MusicProviderName.SPOTIFY, SpotifyTrackMapper())
 
 
-class DeezerSearchAdapter(_RuntimeSearchAdapter):
-    mapper = DeezerTrackMapper()
+class DeezerSearchAdapter(RuntimeTrackSearchAdapter):
+    """Stage 16 compatibility wrapper; production uses RuntimeTrackSearchAdapter."""
+
+    def __init__(self, runtime: MusicProvider) -> None:
+        super().__init__(runtime, MusicProviderName.DEEZER, DeezerTrackMapper())
 
 
-class TidalSearchAdapter(_RuntimeSearchAdapter):
-    mapper = TidalTrackMapper()
+class TidalSearchAdapter(RuntimeTrackSearchAdapter):
+    """Stage 16 compatibility wrapper; production uses RuntimeTrackSearchAdapter."""
+
+    def __init__(self, runtime: MusicProvider) -> None:
+        super().__init__(runtime, MusicProviderName.TIDAL, TidalTrackMapper())

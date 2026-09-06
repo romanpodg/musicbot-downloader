@@ -25,8 +25,8 @@ from app.core.provider_accounts import (
     ProviderSensitiveInputChallenge,
     SensitiveValue,
 )
+from app.provider_integration import DEFAULT_PROVIDER_INTEGRATIONS, ProviderIntegrationRegistry
 from app.providers.account_management import (
-    MANAGED_PROVIDER_ORDER,
     ProviderAccountBackend,
     ProviderAccountBackendError,
 )
@@ -45,10 +45,13 @@ class ProviderAccountManagementService:
         backend: ProviderAccountBackend,
         authorization: TelegramAuthorizationService,
         coordinator: ProviderAuthorizationCoordinator,
+        *,
+        integration_registry: ProviderIntegrationRegistry = DEFAULT_PROVIDER_INTEGRATIONS,
     ) -> None:
         self._backend = backend
         self._authorization = authorization
         self._coordinator = coordinator
+        self._managed_providers = integration_registry.managed_account_providers()
 
     async def authorize(self, actor_user_id: int) -> AdminAccessContext:
         return await self._authorization.require_permission(
@@ -81,14 +84,14 @@ class ProviderAccountManagementService:
         except ProviderAccountBackendError as exc:
             return ProviderAccountOverview(
                 utc_now(),
-                tuple(_error_status(provider, exc.code) for provider in MANAGED_PROVIDER_ORDER),
+                tuple(_error_status(provider, exc.code) for provider in self._managed_providers),
             )
         except Exception:
             return ProviderAccountOverview(
                 utc_now(),
                 tuple(
                     _error_status(provider, ProviderAccountErrorCode.REFRESH_FAILED)
-                    for provider in MANAGED_PROVIDER_ORDER
+                    for provider in self._managed_providers
                 ),
             )
         return await self._overview()
@@ -220,7 +223,7 @@ class ProviderAccountManagementService:
 
     async def _overview(self) -> ProviderAccountOverview:
         accounts = await asyncio.gather(
-            *(self._status(provider) for provider in MANAGED_PROVIDER_ORDER)
+            *(self._status(provider) for provider in self._managed_providers)
         )
         return ProviderAccountOverview(utc_now(), tuple(accounts))
 

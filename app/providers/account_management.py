@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
 from dataclasses import replace
 from typing import Final, Protocol
 
@@ -20,13 +19,11 @@ from app.core.provider_accounts import (
     ProviderDisconnectOutcomeStatus,
     ProviderOperationalState,
 )
+from app.provider_integration import DEFAULT_PROVIDER_INTEGRATIONS, ProviderIntegrationRegistry
 from app.storage.models.base import utc_now
 
-MANAGED_PROVIDER_ORDER: Final = (
-    MusicProviderName.TIDAL,
-    MusicProviderName.DEEZER,
-    MusicProviderName.SPOTIFY,
-)
+# Compatibility export. Its authority is the application integration manifest.
+MANAGED_PROVIDER_ORDER: Final = DEFAULT_PROVIDER_INTEGRATIONS.managed_account_providers()
 PROVIDER_ACCOUNT_STATUS_TIMEOUT_SECONDS = 15.0
 PROVIDER_ACCOUNT_REFRESH_TIMEOUT_SECONDS = 60.0
 
@@ -74,14 +71,14 @@ class ProviderRuntimeAccountBackend:
         self,
         probe: ProviderAccountRuntimeProbe,
         *,
-        authorization_methods: Mapping[MusicProviderName, tuple[ProviderAuthorizationMethod, ...]]
-        | None = None,
+        integration_registry: ProviderIntegrationRegistry = DEFAULT_PROVIDER_INTEGRATIONS,
     ) -> None:
         self._probe = probe
-        self._authorization_methods = dict(authorization_methods or {})
+        self._managed_providers = integration_registry.managed_account_providers()
+        self._authorization_methods = dict(integration_registry.authorization_methods_by_provider())
 
     async def get_account_status(self, provider: MusicProviderName) -> ProviderAccountStatus:
-        if provider not in MANAGED_PROVIDER_ORDER:
+        if provider not in self._managed_providers:
             return ProviderAccountStatus(
                 provider,
                 ProviderAccountState.UNSUPPORTED,
@@ -134,7 +131,7 @@ class ProviderRuntimeAccountBackend:
             ) from None
 
     async def disconnect_account(self, provider: MusicProviderName) -> ProviderDisconnectOutcome:
-        if provider not in MANAGED_PROVIDER_ORDER:
+        if provider not in self._managed_providers:
             return ProviderDisconnectOutcome(
                 provider,
                 ProviderDisconnectOutcomeStatus.UNSUPPORTED,
