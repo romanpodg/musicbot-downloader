@@ -7,6 +7,7 @@ from typing import Protocol
 
 from app.core.enums import MusicProviderName
 from app.core.provider_accounts import (
+    AuthorizationCapabilities,
     ProviderAccountErrorCode,
     ProviderAccountState,
     ProviderAuthorizationOutcome,
@@ -33,6 +34,14 @@ class DeezerArlAuthorizationBoundary(Protocol):
 
 class DeezerArlAuthorizationDriver:
     """Persist only child-validated credentials, then reload and verify runtime truth."""
+
+    capabilities = AuthorizationCapabilities(
+        supports_configure=True,
+        supports_validate=True,
+        supports_authenticate=True,
+        supports_session_validation=True,
+        supports_readiness_projection=True,
+    )
 
     def __init__(
         self,

@@ -9,6 +9,7 @@ from typing import Protocol
 
 from app.core.enums import MusicProviderName
 from app.core.provider_accounts import (
+    AuthorizationCapabilities,
     ProviderAccountComponent,
     ProviderAccountErrorCode,
     ProviderAccountState,
@@ -75,6 +76,13 @@ class SpotifyAuthorizationDriverError(Exception):
 
 class SpotifyPlaybackAuthorizationDriver:
     """Poll a child-owned Zeroconf generation without retaining the child RPC lock."""
+
+    capabilities = AuthorizationCapabilities(
+        supports_authenticate=True,
+        supports_validate=True,
+        supports_session_validation=True,
+        supports_readiness_projection=True,
+    )
 
     def __init__(
         self,
@@ -182,6 +190,14 @@ class SpotifyPlaybackAuthorizationDriver:
 
 class SpotifyWebApiAuthorizationDriver:
     """Validate and atomically persist a child-isolated Spotify Developer pair."""
+
+    capabilities = AuthorizationCapabilities(
+        supports_configure=True,
+        supports_validate=True,
+        supports_authenticate=True,
+        supports_session_validation=True,
+        supports_readiness_projection=True,
+    )
 
     def __init__(
         self,

@@ -7,6 +7,7 @@ from typing import Protocol
 
 from app.core.enums import MusicProviderName
 from app.core.provider_accounts import (
+    AuthorizationCapabilities,
     ProviderAccountErrorCode,
     ProviderAccountState,
     ProviderAuthorizationOutcome,
@@ -32,6 +33,14 @@ class QobuzAuthorizationBoundary(Protocol):
 
 class QobuzAuthorizationDriver:
     """Child validates and owns credentials; readiness is reloaded and verified."""
+
+    capabilities = AuthorizationCapabilities(
+        supports_configure=True,
+        supports_validate=True,
+        supports_authenticate=True,
+        supports_session_validation=True,
+        supports_readiness_projection=True,
+    )
 
     def __init__(
         self, boundary: QobuzAuthorizationBoundary, account_backend: ProviderAccountBackend

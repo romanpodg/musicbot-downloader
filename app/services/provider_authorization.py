@@ -9,8 +9,10 @@ from typing import Protocol, cast
 
 from app.core.enums import MusicProviderName
 from app.core.provider_accounts import (
+    AuthorizationCapabilities,
     ProviderAccountErrorCode,
     ProviderAuthorizationChallenge,
+    ProviderAuthorizationLifecycleOperation,
     ProviderAuthorizationMethod,
     ProviderAuthorizationOutcome,
     ProviderAuthorizationOutcomeStatus,
@@ -30,6 +32,59 @@ class ProviderAuthorizationDriver(Protocol):
 
     async def authorize(
         self, request: ProviderAuthorizationRequest
+    ) -> ProviderAuthorizationOutcome: ...
+
+
+class ProviderAuthorizationLifecycleDriver(Protocol):
+    """Small optional capability surface for lifecycle-aware drivers.
+
+    Concrete operations remain optional protocols below; existing drivers and
+    test doubles need not implement a large mandatory interface.
+    """
+
+    @property
+    def capabilities(self) -> AuthorizationCapabilities: ...
+
+
+# Short alias for callers designing future provider drivers.
+AuthorizationLifecycleDriver = ProviderAuthorizationLifecycleDriver
+
+
+class AuthorizationConfigureDriver(Protocol):
+    async def configure(
+        self, request: ProviderAuthorizationRequest
+    ) -> ProviderAuthorizationOutcome: ...
+
+
+class AuthorizationValidateDriver(Protocol):
+    async def validate(
+        self, request: ProviderAuthorizationRequest
+    ) -> ProviderAuthorizationOutcome: ...
+
+
+class AuthorizationRefreshDriver(Protocol):
+    async def refresh(self, provider: MusicProviderName) -> ProviderAuthorizationOutcome: ...
+
+
+class AuthorizationRevokeDriver(Protocol):
+    async def revoke(self, provider: MusicProviderName) -> ProviderAuthorizationOutcome: ...
+
+
+class AuthorizationEntitlementDriver(Protocol):
+    async def verify_entitlement(
+        self, provider: MusicProviderName
+    ) -> ProviderAuthorizationOutcome: ...
+
+
+class AuthorizationSessionValidationDriver(Protocol):
+    async def validate_session(
+        self, provider: MusicProviderName
+    ) -> ProviderAuthorizationOutcome: ...
+
+
+class AuthorizationReadinessDriver(Protocol):
+    async def project_readiness(
+        self, provider: MusicProviderName
     ) -> ProviderAuthorizationOutcome: ...
 
 
@@ -111,6 +166,82 @@ class ProviderAuthorizationCoordinator:
         self, provider: MusicProviderName
     ) -> tuple[ProviderAuthorizationMethod, ...]:
         return tuple(method for candidate, method in self._drivers if candidate is provider)
+
+    def capabilities(
+        self, provider: MusicProviderName, method: ProviderAuthorizationMethod
+    ) -> AuthorizationCapabilities:
+        """Return explicit lifecycle support without changing dispatch semantics."""
+
+        driver = self._drivers.get((provider, method))
+        value = getattr(driver, "capabilities", None)
+        return (
+            value if isinstance(value, AuthorizationCapabilities) else AuthorizationCapabilities()
+        )
+
+    def supports(
+        self,
+        provider: MusicProviderName,
+        method: ProviderAuthorizationMethod,
+        operation: ProviderAuthorizationLifecycleOperation,
+    ) -> bool:
+        return operation in self.capabilities(provider, method).operations
+
+    async def invoke_lifecycle(
+        self,
+        provider: MusicProviderName,
+        method: ProviderAuthorizationMethod,
+        operation: ProviderAuthorizationLifecycleOperation,
+    ) -> ProviderAuthorizationOutcome:
+        """Invoke an explicitly advertised optional lifecycle operation.
+
+        This is an extension seam for refresh/revoke/entitlement/session
+        checks. Existing authorization dispatch remains unchanged; unsupported
+        operations fail closed without attempting provider-specific fallbacks.
+        """
+
+        driver = self._drivers.get((provider, method))
+        if driver is None or not self.supports(provider, method, operation):
+            return ProviderAuthorizationOutcome(
+                provider,
+                ProviderAuthorizationOutcomeStatus.UNSUPPORTED,
+                ProviderAccountErrorCode.AUTHORIZATION_UNSUPPORTED,
+            )
+        method_name = {
+            ProviderAuthorizationLifecycleOperation.REFRESH: "refresh",
+            ProviderAuthorizationLifecycleOperation.REVOKE: "revoke",
+            ProviderAuthorizationLifecycleOperation.RESET: "reset",
+            ProviderAuthorizationLifecycleOperation.ENTITLEMENT_CHECK: "verify_entitlement",
+            ProviderAuthorizationLifecycleOperation.SESSION_VALIDATION: "validate_session",
+            ProviderAuthorizationLifecycleOperation.READINESS_PROJECTION: "project_readiness",
+        }.get(operation)
+        if method_name is None:
+            return ProviderAuthorizationOutcome(
+                provider,
+                ProviderAuthorizationOutcomeStatus.UNSUPPORTED,
+                ProviderAccountErrorCode.AUTHORIZATION_UNSUPPORTED,
+            )
+        callback = getattr(driver, method_name, None)
+        if not callable(callback):
+            return ProviderAuthorizationOutcome(
+                provider,
+                ProviderAuthorizationOutcomeStatus.UNSUPPORTED,
+                ProviderAccountErrorCode.AUTHORIZATION_UNSUPPORTED,
+            )
+        try:
+            outcome = cast(ProviderAuthorizationOutcome, await callback(provider))
+        except Exception:
+            return ProviderAuthorizationOutcome(
+                provider,
+                ProviderAuthorizationOutcomeStatus.FAILED,
+                ProviderAccountErrorCode.AUTHORIZATION_FAILED,
+            )
+        if outcome.provider is not provider:
+            return ProviderAuthorizationOutcome(
+                provider,
+                ProviderAuthorizationOutcomeStatus.FAILED,
+                ProviderAccountErrorCode.AUTHORIZATION_FAILED,
+            )
+        return outcome
 
     async def is_active(self, provider: MusicProviderName) -> bool:
         async with self._lock:

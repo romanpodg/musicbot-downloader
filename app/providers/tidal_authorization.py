@@ -10,6 +10,7 @@ from typing import Protocol
 
 from app.core.enums import MusicProviderName
 from app.core.provider_accounts import (
+    AuthorizationCapabilities,
     ProviderAccountErrorCode,
     ProviderAccountState,
     ProviderAuthorizationChallenge,
@@ -68,6 +69,13 @@ class TidalAuthorizationDriverError(Exception):
 
 class TidalDeviceAuthorizationDriver:
     """Poll one bounded child operation at a time and verify runtime truth on success."""
+
+    capabilities = AuthorizationCapabilities(
+        supports_authenticate=True,
+        supports_validate=True,
+        supports_session_validation=True,
+        supports_readiness_projection=True,
+    )
 
     def __init__(
         self,

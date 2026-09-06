@@ -1,8 +1,12 @@
 .env
 .env.*
 !.env.example
+
+# Local provider/runtime state and credentials
 otsconfig.json
 .logs/
+
+# Python tooling and test artifacts
 .venv/
 __pycache__/
 *.py[cod]
@@ -11,13 +15,28 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .uv-cache/
+.python-version
 .coverage
+coverage.xml
 htmlcov/
 dist/
 build/
 *.egg-info/
+
+# Local databases and generated media
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
 data/*
 !data/.gitkeep
 temp/*
 !temp/.gitkeep
+
+# Graphify is local-only for this single-device workflow
+graphify-out/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
 AGENTS.md

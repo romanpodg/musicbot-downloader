@@ -1,5 +1,8 @@
 .git
 .gitignore
+.codex
+graphify-out
+AGENTS.md
 .venv
 .uv-cache
 .uv-python
@@ -22,13 +25,15 @@ build
 *.db-*
 *.sqlite
 *.sqlite3
-data
-temp
-.logs
+data/
+temp/
+.logs/
 otsconfig.json
 .idea
 .vscode
-docs
+
+# Keep release-validation inputs available only in the validation target.
+docs/
 compose.yaml
 Dockerfile*
 

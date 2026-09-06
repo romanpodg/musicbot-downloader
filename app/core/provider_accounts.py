@@ -112,6 +112,67 @@ class ProviderAuthorizationMethod(StrEnum):
     QOBUZ_CREDENTIALS = "QOBUZ_CREDENTIALS"
 
 
+class ProviderAuthorizationLifecycleOperation(StrEnum):
+    """Provider-neutral authorization lifecycle operations.
+
+    A method describes how input is collected; lifecycle operations describe
+    what a driver can do with the resulting provider session.  Operations are
+    intentionally independent so providers may implement only the subset
+    their upstream account model supports.
+    """
+
+    CONFIGURE = "CONFIGURE"
+    VALIDATE = "VALIDATE"
+    AUTHENTICATE = "AUTHENTICATE"
+    REFRESH = "REFRESH"
+    REVOKE = "REVOKE"
+    RESET = "RESET"
+    ENTITLEMENT_CHECK = "ENTITLEMENT_CHECK"
+    SESSION_VALIDATION = "SESSION_VALIDATION"
+    READINESS_PROJECTION = "READINESS_PROJECTION"
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizationCapabilities:
+    """Explicit optional lifecycle support advertised by one auth driver."""
+
+    supports_configure: bool = False
+    supports_validate: bool = False
+    supports_authenticate: bool = False
+    supports_refresh: bool = False
+    supports_revoke: bool = False
+    supports_reset: bool = False
+    supports_entitlement_check: bool = False
+    supports_session_validation: bool = False
+    supports_readiness_projection: bool = False
+
+    @property
+    def operations(self) -> frozenset[ProviderAuthorizationLifecycleOperation]:
+        flags = {
+            ProviderAuthorizationLifecycleOperation.CONFIGURE: self.supports_configure,
+            ProviderAuthorizationLifecycleOperation.VALIDATE: self.supports_validate,
+            ProviderAuthorizationLifecycleOperation.AUTHENTICATE: self.supports_authenticate,
+            ProviderAuthorizationLifecycleOperation.REFRESH: self.supports_refresh,
+            ProviderAuthorizationLifecycleOperation.REVOKE: self.supports_revoke,
+            ProviderAuthorizationLifecycleOperation.RESET: self.supports_reset,
+            ProviderAuthorizationLifecycleOperation.ENTITLEMENT_CHECK: (
+                self.supports_entitlement_check
+            ),
+            ProviderAuthorizationLifecycleOperation.SESSION_VALIDATION: (
+                self.supports_session_validation
+            ),
+            ProviderAuthorizationLifecycleOperation.READINESS_PROJECTION: (
+                self.supports_readiness_projection
+            ),
+        }
+        return frozenset(operation for operation, supported in flags.items() if supported)
+
+
+# Provider-prefixed spelling is convenient at application boundaries while
+# keeping the shorter name available to future provider integrations.
+ProviderAuthorizationCapabilities = AuthorizationCapabilities
+
+
 class ProviderAuthorizationOutcomeStatus(StrEnum):
     UNSUPPORTED = "UNSUPPORTED"
     ALREADY_ACTIVE = "ALREADY_ACTIVE"
