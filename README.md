@@ -76,6 +76,8 @@ Current delivery roadmap:
   [Stage 30.4.1 contract](docs/stage30.4.1-apple-music.md)).
 - Stage 30.5.1: Provider Resolution & Quality Orchestration (complete; see
   [Stage 30.5.1 contract](docs/stage30.5.1-provider-resolution-quality-orchestration.md)).
+- Stage 30.5.2: Six-Provider Quality Matrix Regression (complete; see
+  [Stage 30.5.2 contract](docs/stage30.5.2-six-provider-quality-matrix.md)).
 
 Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
 deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage
