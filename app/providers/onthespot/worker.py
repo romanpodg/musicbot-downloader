@@ -34,6 +34,7 @@ from urllib.parse import urlsplit
 from app.core.enums import MusicProviderName
 from app.providers.onthespot.capabilities import ONTHESPOT_CAPABILITIES
 from app.providers.onthespot.ipc import (
+    APPLE_MUSIC_SESSION_AUTHORIZE_METHOD,
     CHECK_PROVIDER_HEALTH_METHOD,
     CHECK_SOURCE_METHOD,
     DEEZER_ARL_AUTHORIZE_METHOD,
@@ -134,6 +135,7 @@ _SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 _SPOTIFY_SEARCH_URL = "https://api.spotify.com/v1/search"
 _SPOTIFY_HTTP_TIMEOUT = (5.0, 10.0)
 _SPOTIFY_CREDENTIAL_MAX_LENGTH = 1024
+_APPLE_MUSIC_TOKEN_MAX_LENGTH = 4096
 
 
 @dataclass(slots=True)
@@ -614,6 +616,8 @@ class OnTheSpotWorker:
                     )
                     if isinstance(runtime_error, str):
                         code = runtime_error
+                    elif provider == "apple_music":
+                        code = "CREDENTIAL_INVALID"
                     else:
                         code = "SESSION_UNAVAILABLE"
                 return _health_result("AUTH_REQUIRED", True, True, code)
@@ -706,6 +710,47 @@ class OnTheSpotWorker:
             return _qobuz_failure("QOBUZ_AUTH_NETWORK_ERROR")
         return {"status": "persisted"}
 
+    def apple_music_session_authorize(self, media_user_token: str) -> dict[str, str]:
+        """Persist and verify the one Apple user-owned secret inside the child."""
+
+        if not self._initialized:
+            self.initialize()
+        token = _normalize_apple_music_session_token(media_user_token)
+        if token is None:
+            return _apple_music_failure("APPLE_MUSIC_AUTH_INVALID_FORMAT")
+        try:
+            current = self._config.get("accounts", [])
+            if not isinstance(current, list):
+                return _apple_music_failure("APPLE_MUSIC_AUTH_PERSIST_FAILED")
+            self._persist_config_updates(
+                {
+                    "accounts": [
+                        account
+                        for account in current
+                        if not isinstance(account, Mapping)
+                        or account.get("service") != "apple_music"
+                    ]
+                }
+            )
+            apple_music = importlib.import_module("onthespot.api.apple_music")
+            with _silence_upstream():
+                apple_music.apple_music_add_account(token)
+                self._rebuild_runtime_pool()
+            active = [
+                account
+                for account in self._runtime.account_pool
+                if isinstance(account, Mapping)
+                and account.get("service") == "apple_music"
+                and account.get("status") == "active"
+            ]
+            if not active:
+                return _apple_music_failure("APPLE_MUSIC_AUTH_SESSION_INVALID")
+            if active[0].get("account_type") != "premium":
+                return _apple_music_failure("APPLE_MUSIC_AUTH_SUBSCRIPTION_REQUIRED")
+        except Exception:
+            return _apple_music_failure("APPLE_MUSIC_AUTH_RUNTIME_UNAVAILABLE")
+        return {"status": "persisted"}
+
     def refresh_provider_health(self) -> dict[str, bool]:
         """Reload deployment-owned config and rebuild the one serialized runtime pool."""
 
@@ -748,7 +793,7 @@ class OnTheSpotWorker:
     def reset_provider_authentication(self, provider: str) -> dict[str, str]:
         """Atomically remove one managed provider's OnTheSpot-owned authentication state."""
 
-        if provider not in {"tidal", "deezer", "spotify", "qobuz"}:
+        if provider not in {"tidal", "deezer", "spotify", "qobuz", "apple_music"}:
             return {"status": "failed", "error_code": "DISCONNECT_UNSUPPORTED"}
         if not self._initialized:
             self.initialize()
@@ -2412,6 +2457,10 @@ def _qobuz_failure(error_code: str) -> dict[str, str]:
     return {"status": "failed", "error_code": error_code}
 
 
+def _apple_music_failure(error_code: str) -> dict[str, str]:
+    return {"status": "failed", "error_code": error_code}
+
+
 def _normalize_qobuz_email(value: str) -> str | None:
     if not isinstance(value, str) or not 3 <= len(value) <= 320:
         return None
@@ -2427,6 +2476,16 @@ def _normalize_qobuz_password(value: str) -> str | None:
     if not isinstance(value, str) or not 1 <= len(value) <= 1024:
         return None
     if any(ord(char) < 0x20 for char in value):
+        return None
+    return value
+
+
+def _normalize_apple_music_session_token(value: str) -> str | None:
+    """Structural validation only; token semantics remain child/upstream-owned."""
+
+    if not isinstance(value, str) or not 1 <= len(value) <= _APPLE_MUSIC_TOKEN_MAX_LENGTH:
+        return None
+    if value != value.strip() or any(ord(char) < 0x21 or ord(char) == 0x7F for char in value):
         return None
     return value
 
@@ -2630,6 +2689,11 @@ def main() -> int:
                 ):
                     raise WorkerError("provider_unavailable")
                 result = worker.qobuz_credentials_authorize(email, password)
+            elif method == APPLE_MUSIC_SESSION_AUTHORIZE_METHOD:
+                media_user_token = params.get("media_user_token")
+                if set(params) != {"media_user_token"} or not isinstance(media_user_token, str):
+                    raise WorkerError("provider_unavailable")
+                result = worker.apple_music_session_authorize(media_user_token)
             elif method == SPOTIFY_COMPONENT_STATUS_METHOD:
                 if params:
                     raise WorkerError("provider_unavailable")

@@ -141,6 +141,11 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
                             MusicProviderName.QOBUZ,
                             ProviderAuthorizationMethod.QOBUZ_CREDENTIALS,
                         ),
+                        await service.pending_sensitive_challenge(
+                            user.id,
+                            MusicProviderName.APPLE_MUSIC,
+                            ProviderAuthorizationMethod.APPLE_MUSIC_SESSION_TOKEN,
+                        ),
                     )
                     if candidate is not None
                 )
@@ -182,6 +187,8 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
                     if provider is MusicProviderName.SPOTIFY
                     else ProviderAccountErrorCode.QOBUZ_AUTH_MESSAGE_DELETE_FAILED
                     if provider is MusicProviderName.QOBUZ
+                    else ProviderAccountErrorCode.APPLE_MUSIC_AUTH_MESSAGE_DELETE_FAILED
+                    if provider is MusicProviderName.APPLE_MUSIC
                     else ProviderAccountErrorCode.DEEZER_AUTH_MESSAGE_DELETE_FAILED,
                 )
             except Exception:
@@ -191,6 +198,8 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
                     presentation.text(
                         "admin.spotify_webapi_auth_delete_failed"
                         if provider is MusicProviderName.SPOTIFY
+                        else "admin.apple_music_auth_delete_failed"
+                        if provider is MusicProviderName.APPLE_MUSIC
                         else "admin.deezer_auth_delete_failed",
                         locale,
                     )
@@ -208,6 +217,8 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
                     if provider is MusicProviderName.SPOTIFY
                     else "admin.qobuz_auth_progress"
                     if provider is MusicProviderName.QOBUZ
+                    else "admin.apple_music_auth_progress"
+                    if provider is MusicProviderName.APPLE_MUSIC
                     else "admin.deezer_auth_progress",
                     locale,
                 )
@@ -251,6 +262,12 @@ def create_admin_router(dependencies: AdminHandlerDependencies) -> Router:
                         user.id, provider, challenge.flow_id, email, password
                     )
                     del email, password
+            elif provider is MusicProviderName.APPLE_MUSIC:
+                token = SensitiveValue(message.text or " ")
+                outcome = await service.submit_session_token(
+                    user.id, provider, challenge.flow_id, token
+                )
+                del token
             else:
                 credential = SensitiveValue(message.text or " ")
                 outcome = await service.submit_sensitive_secret(

@@ -252,8 +252,11 @@ DEFAULT_PROVIDER_INTEGRATIONS = ProviderIntegrationRegistry(
         ),
         ProviderIntegrationSpec(
             MusicProviderName.APPLE_MUSIC,
-            ProviderSearchIntegrationState.DEFERRED,
-            ProviderAccountIntegrationMode.DEFERRED,
+            ProviderSearchIntegrationState.ENABLED,
+            ProviderAccountIntegrationMode.MANAGED,
+            search_order=5,
+            account_order=4,
+            authorization_methods=(ProviderAuthorizationMethod.APPLE_MUSIC_SESSION_TOKEN,),
         ),
         ProviderIntegrationSpec(
             MusicProviderName.QOBUZ,

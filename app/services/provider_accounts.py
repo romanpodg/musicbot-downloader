@@ -24,6 +24,7 @@ from app.core.provider_accounts import (
     ProviderQobuzCredentialInput,
     ProviderSecretInput,
     ProviderSensitiveInputChallenge,
+    ProviderSessionTokenInput,
     SensitiveValue,
 )
 from app.provider_integration import DEFAULT_PROVIDER_INTEGRATIONS, ProviderIntegrationRegistry
@@ -213,6 +214,18 @@ class ProviderAccountManagementService:
             provider,
             flow_id,
             ProviderQobuzCredentialInput(provider, email, password),
+        )
+
+    async def submit_session_token(
+        self,
+        actor_user_id: int,
+        provider: MusicProviderName,
+        flow_id: str,
+        token: SensitiveValue,
+    ) -> ProviderAuthorizationOutcome:
+        await self.authorize(actor_user_id)
+        return await self._coordinator.submit_session_token(
+            provider, flow_id, ProviderSessionTokenInput(provider, token)
         )
 
     async def fail_sensitive_input(

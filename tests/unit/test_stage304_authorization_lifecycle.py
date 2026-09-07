@@ -43,12 +43,9 @@ def test_capabilities_are_explicit_and_lifecycle_oriented() -> None:
 
 
 def test_existing_manifest_remains_unchanged_and_explicit() -> None:
-    assert (
-        DEFAULT_PROVIDER_INTEGRATIONS.for_provider(
-            MusicProviderName.APPLE_MUSIC
-        ).authorization_methods
-        == ()
-    )
+    assert DEFAULT_PROVIDER_INTEGRATIONS.authorization_methods_for(
+        MusicProviderName.APPLE_MUSIC
+    ) == (ProviderAuthorizationMethod.APPLE_MUSIC_SESSION_TOKEN,)
     assert (
         DEFAULT_PROVIDER_INTEGRATIONS.for_provider(
             MusicProviderName.YOUTUBE_MUSIC

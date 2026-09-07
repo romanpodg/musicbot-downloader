@@ -51,12 +51,14 @@ def test_stage301_default_manifest_is_complete_and_preserves_the_production_matr
         MusicProviderName.TIDAL,
         MusicProviderName.YOUTUBE_MUSIC,
         MusicProviderName.QOBUZ,
+        MusicProviderName.APPLE_MUSIC,
     )
     assert registry.managed_account_providers() == (
         MusicProviderName.TIDAL,
         MusicProviderName.DEEZER,
         MusicProviderName.SPOTIFY,
         MusicProviderName.QOBUZ,
+        MusicProviderName.APPLE_MUSIC,
     )
     assert registry.authorization_methods_for(MusicProviderName.TIDAL) == (
         ProviderAuthorizationMethod.BROWSER_DEVICE_LINK,
@@ -74,10 +76,10 @@ def test_stage301_default_manifest_is_complete_and_preserves_the_production_matr
             registry.for_provider(provider).account is ProviderAccountIntegrationMode.NOT_REQUIRED
         )
     assert registry.for_provider(MusicProviderName.APPLE_MUSIC).search is (
-        ProviderSearchIntegrationState.DEFERRED
+        ProviderSearchIntegrationState.ENABLED
     )
     assert registry.for_provider(MusicProviderName.APPLE_MUSIC).account is (
-        ProviderAccountIntegrationMode.DEFERRED
+        ProviderAccountIntegrationMode.MANAGED
     )
     assert registry.for_provider(MusicProviderName.QOBUZ).search is (
         ProviderSearchIntegrationState.ENABLED
@@ -87,6 +89,9 @@ def test_stage301_default_manifest_is_complete_and_preserves_the_production_matr
     )
     assert registry.authorization_methods_for(MusicProviderName.QOBUZ) == (
         ProviderAuthorizationMethod.QOBUZ_CREDENTIALS,
+    )
+    assert registry.authorization_methods_for(MusicProviderName.APPLE_MUSIC) == (
+        ProviderAuthorizationMethod.APPLE_MUSIC_SESSION_TOKEN,
     )
 
 
@@ -175,6 +180,7 @@ def test_stage302_application_search_registry_includes_enabled_ytm_in_stable_ord
         MusicProviderName.TIDAL,
         MusicProviderName.YOUTUBE_MUSIC,
         MusicProviderName.QOBUZ,
+        MusicProviderName.APPLE_MUSIC,
     )
     assert registry.get(MusicProviderName.YOUTUBE_MUSIC) is not None
     runtime.list_searchable_providers.assert_not_awaited()

@@ -31,7 +31,7 @@ def test_qobuz_is_promoted_without_provider_priority() -> None:
     assert spec.authorization_methods[0].value == "QOBUZ_CREDENTIALS"
     assert spec.search_order == 4
     assert spec.account_order == 3
-    assert DEFAULT_PROVIDER_INTEGRATIONS.enabled_search_providers()[-1] is MusicProviderName.QOBUZ
+    assert DEFAULT_PROVIDER_INTEGRATIONS.enabled_search_providers()[-2] is MusicProviderName.QOBUZ
 
 
 @pytest.mark.asyncio

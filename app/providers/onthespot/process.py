@@ -28,9 +28,11 @@ from app.core.provider_accounts import (
     ProviderOperationalState,
     SensitiveValue,
 )
+from app.providers.apple_music_authorization import AppleMusicAuthorizationResult
 from app.providers.base import ProviderAvailability
 from app.providers.deezer_authorization import DeezerArlAuthorizationResult
 from app.providers.onthespot.ipc import (
+    APPLE_MUSIC_SESSION_AUTHORIZE_METHOD,
     CHECK_PROVIDER_HEALTH_METHOD,
     CHECK_SOURCE_METHOD,
     DEEZER_ARL_AUTHORIZE_METHOD,
@@ -302,6 +304,34 @@ class OnTheSpotProcessClient:
         except (KeyError, ValueError):
             code = ProviderAccountErrorCode.QOBUZ_AUTH_INVALID_CREDENTIALS
         return QobuzAuthorizationResult(False, code)
+
+    async def authorize_apple_music_session(
+        self, token: SensitiveValue
+    ) -> AppleMusicAuthorizationResult:
+        raw_token = token.reveal_to_provider_backend()
+        if (
+            not 1 <= len(raw_token) <= 4096
+            or raw_token != raw_token.strip()
+            or any(ord(char) < 0x21 or ord(char) == 0x7F for char in raw_token)
+        ):
+            return AppleMusicAuthorizationResult(
+                False, ProviderAccountErrorCode.APPLE_MUSIC_AUTH_INVALID_FORMAT
+            )
+        result = await self._request(
+            APPLE_MUSIC_SESSION_AUTHORIZE_METHOD,
+            {"media_user_token": raw_token},
+        )
+        if not isinstance(result, dict):
+            raise ProviderUnavailable()
+        if result == {"status": "persisted"}:
+            return AppleMusicAuthorizationResult(True)
+        if set(result) != {"status", "error_code"} or result.get("status") != "failed":
+            raise ProviderUnavailable()
+        try:
+            code = ProviderAccountErrorCode(str(result["error_code"]))
+        except (KeyError, ValueError):
+            code = ProviderAccountErrorCode.APPLE_MUSIC_AUTH_SESSION_INVALID
+        return AppleMusicAuthorizationResult(False, code)
 
     async def authorize_deezer_arl(
         self, credential: SensitiveValue

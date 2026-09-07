@@ -49,6 +49,7 @@ from app.core.provider_accounts import (
     ProviderOperationalState,
     SensitiveValue,
 )
+from app.providers.apple_music_authorization import AppleMusicAuthorizationResult
 from app.providers.base import (
     AlbumReference,
     MediaReference,
@@ -255,6 +256,11 @@ class OnTheSpotProvider(MusicProvider):
         self, email: SensitiveValue, password: SensitiveValue
     ) -> QobuzAuthorizationResult:
         return await self._process_client.authorize_qobuz_credentials(email, password)
+
+    async def authorize_apple_music_session(
+        self, token: SensitiveValue
+    ) -> AppleMusicAuthorizationResult:
+        return await self._process_client.authorize_apple_music_session(token)
 
     async def get_spotify_account_components(
         self,

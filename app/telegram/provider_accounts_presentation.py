@@ -214,6 +214,19 @@ class ProviderAccountsPresentation:
                         )
                     )
                 )
+            if (
+                challenge.authorization_method
+                is ProviderAuthorizationMethod.APPLE_MUSIC_SESSION_TOKEN
+            ):
+                return _bounded(
+                    "\n\n".join(
+                        (
+                            self.text("admin.apple_music_auth_title", locale),
+                            self.text("admin.apple_music_auth_instructions", locale),
+                            self.text("admin.apple_music_auth_ownership", locale),
+                        )
+                    )
+                )
             return _bounded(
                 "\n\n".join(
                     (
@@ -392,6 +405,8 @@ class ProviderAccountsPresentation:
                 ProviderAuthorizationMethod.BROWSER_DEVICE_LINK in status.authorization_methods
                 or ProviderAuthorizationMethod.SENSITIVE_SECRET in status.authorization_methods
                 or ProviderAuthorizationMethod.QOBUZ_CREDENTIALS in status.authorization_methods
+                or ProviderAuthorizationMethod.APPLE_MUSIC_SESSION_TOKEN
+                in status.authorization_methods
             )
         ):
             rows.append(
@@ -402,6 +417,8 @@ class ProviderAccountsPresentation:
                             if status.provider is MusicProviderName.DEEZER
                             else "admin.qobuz_connect"
                             if status.provider is MusicProviderName.QOBUZ
+                            else "admin.apple_music_connect"
+                            if status.provider is MusicProviderName.APPLE_MUSIC
                             else "admin.tidal_connect",
                             locale,
                         ),
@@ -540,6 +557,8 @@ class ProviderAccountsPresentation:
             return "admin.provider_accounts_spotify_auth_hint"
         if status.provider is MusicProviderName.QOBUZ:
             return "admin.provider_accounts_qobuz_auth_hint"
+        if status.provider is MusicProviderName.APPLE_MUSIC:
+            return "admin.provider_accounts_apple_music_auth_hint"
         if ProviderAuthorizationMethod.BROWSER_DEVICE_LINK in status.authorization_methods:
             return "admin.provider_accounts_tidal_auth_hint"
         if ProviderAuthorizationMethod.SENSITIVE_SECRET in status.authorization_methods:

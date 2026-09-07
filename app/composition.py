@@ -26,6 +26,10 @@ from app.providers.account_management import (
     ProviderAccountRuntimeProbe,
     ProviderRuntimeAccountBackend,
 )
+from app.providers.apple_music_authorization import (
+    AppleMusicAuthorizationBoundary,
+    AppleMusicAuthorizationDriver,
+)
 from app.providers.base import MusicProvider
 from app.providers.deezer_authorization import (
     DeezerArlAuthorizationBoundary,
@@ -71,6 +75,7 @@ from app.services.provider_authorization import (
     ProviderAuthorizationDriver,
     QobuzCredentialAuthorizationDriver,
     SensitiveSecretAuthorizationDriver,
+    SessionTokenAuthorizationDriver,
 )
 from app.services.provider_candidates import ProviderCandidateResolver
 from app.services.provider_health import ProviderHealthProbe, ProviderHealthService
@@ -490,6 +495,9 @@ async def compose_stage9(
     qobuz_authorization = QobuzAuthorizationDriver(
         cast(QobuzAuthorizationBoundary, provider), account_backend
     )
+    apple_music_authorization = AppleMusicAuthorizationDriver(
+        cast(AppleMusicAuthorizationBoundary, provider), account_backend
+    )
     spotify_boundary = cast(SpotifyAuthorizationBoundary, provider)
     spotify_playback_authorization = SpotifyPlaybackAuthorizationDriver(
         spotify_boundary, account_backend
@@ -503,7 +511,8 @@ async def compose_stage9(
         | BrowserDeviceAuthorizationDriver
         | SensitiveSecretAuthorizationDriver
         | CompoundCredentialAuthorizationDriver
-        | QobuzCredentialAuthorizationDriver,
+        | QobuzCredentialAuthorizationDriver
+        | SessionTokenAuthorizationDriver,
     ] = {
         (
             MusicProviderName.TIDAL,
@@ -525,6 +534,10 @@ async def compose_stage9(
             MusicProviderName.QOBUZ,
             integration_registry.authorization_methods_for(MusicProviderName.QOBUZ)[0],
         ): qobuz_authorization,
+        (
+            MusicProviderName.APPLE_MUSIC,
+            integration_registry.authorization_methods_for(MusicProviderName.APPLE_MUSIC)[0],
+        ): apple_music_authorization,
     }
     validate_authorization_driver_keys(integration_registry, authorization_drivers)
     provider_authorization = ProviderAuthorizationCoordinator(authorization_drivers)
