@@ -74,6 +74,8 @@ Current delivery roadmap:
   [Stage 30.4.0 contract](docs/stage30.4.0-provider-authorization-lifecycle.md)).
 - Stage 30.4.1: Apple Music managed vertical integration (complete; see
   [Stage 30.4.1 contract](docs/stage30.4.1-apple-music.md)).
+- Stage 30.5.1: Provider Resolution & Quality Orchestration (complete; see
+  [Stage 30.5.1 contract](docs/stage30.5.1-provider-resolution-quality-orchestration.md)).
 
 Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
 deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage

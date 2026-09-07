@@ -14,15 +14,17 @@ from app.core.enums import (
     QualityProfile,
 )
 from app.core.exceptions import DownloadPipelineError
-from app.core.models import DownloadResult
+from app.core.models import DownloadPlan, DownloadResult
 from app.core.provider_resolution import (
     CanonicalMediaIdentity,
     ProviderCandidate,
     ProviderCandidateRanker,
 )
+from app.core.quality import plan_sort_key
 from app.services.provider_account_selection import ProviderAccountHealth, ProviderAccountSelector
 from app.services.provider_candidates import ProviderCandidateResolver
 from app.services.provider_fallback import FallbackDecision, fallback_decision
+from app.services.quality_resolution import QualityResolver
 from app.storage import Database
 from app.storage.models import DownloadJob
 from app.storage.models.download_lifecycle import DownloadRequestRecord
@@ -58,6 +60,7 @@ class Stage25DownloadExecutor:
         *,
         selector: ProviderAccountSelector | None = None,
         clock: Callable[[], datetime] | None = None,
+        quality_resolver: QualityResolver | None = None,
     ) -> None:
         self._database = database
         self._pipeline = pipeline
@@ -66,6 +69,7 @@ class Stage25DownloadExecutor:
         self._ranker = ranker
         self._selector = selector or ProviderAccountSelector()
         self._clock = clock
+        self._quality_resolver = quality_resolver
 
     async def download(self, job: DownloadJob) -> DownloadResult:
         request, identity = await self._request_identity(job)
@@ -75,11 +79,23 @@ class Stage25DownloadExecutor:
             source_media_id=request.provider_media_id if request else None,
             request_id=request.id if request else None,
         )
+        quality_plans: dict[tuple[MusicProviderName, str], DownloadPlan] | None = None
+        if self._quality_resolver is not None:
+            quality_resolution = await self._quality_resolver.resolve(
+                job.track_id, job.quality_profile
+            )
+            quality_plans = {}
+            for plan in quality_resolution.plans:
+                key = (plan.provider, plan.provider_track_id)
+                existing = quality_plans.get(key)
+                if existing is None or plan_sort_key(plan) < plan_sort_key(existing):
+                    quality_plans[key] = plan
         ranked = self._ranker.rank(
             candidates,
             source_provider=request.provider if request else None,
             profile=request.effective_profile if request else None,
             exact_replay=bool(request and request.replay_of_request_id),
+            quality_plans=quality_plans,
         )
         if not ranked:
             raise DownloadPipelineError(DownloadFailureCode.NO_AVAILABLE_PROVIDER)

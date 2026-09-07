@@ -6,13 +6,14 @@ selection separate from the existing Stage 21 download lifecycle.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 
 from app.core.download_preferences import EffectiveDownloadProfile
 from app.core.enums import MusicProviderName, QualityPreference
-from app.core.models import MediaCapabilities
+from app.core.models import DownloadPlan, MediaCapabilities
+from app.core.quality import plan_sort_key
 from app.core.search import Track
 from app.core.track_identity import normalize_isrc, normalize_text, normalize_title_artist
 
@@ -199,6 +200,7 @@ class ProviderCandidateRanker:
         profile: EffectiveDownloadProfile | None = None,
         exact_replay: bool = False,
         healthy_providers: set[MusicProviderName] | None = None,
+        quality_plans: Mapping[tuple[MusicProviderName, str], DownloadPlan] | None = None,
     ) -> tuple[ProviderCandidate, ...]:
         healthy = healthy_providers
         eligible = [
@@ -209,11 +211,15 @@ class ProviderCandidateRanker:
                 profile is None or candidate_supports_profile(c, profile, exact_replay=exact_replay)
             )
             and (healthy is None or c.provider in healthy)
+            and (quality_plans is None or (c.provider, c.provider_media_id) in quality_plans)
         ]
         return tuple(
             sorted(
                 eligible,
                 key=lambda c: (
+                    plan_sort_key(quality_plans[(c.provider, c.provider_media_id)])[0]
+                    if quality_plans is not None
+                    else 0,
                     -c.match.score,
                     0 if source_provider is not None and c.provider is source_provider else 1,
                     0 if healthy is None or c.provider in healthy else 1,

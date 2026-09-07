@@ -329,9 +329,10 @@ async def compose_stage9(
         interval_seconds=settings.provider_rate_limit_interval_seconds,
         max_concurrent=settings.provider_max_concurrent_operations,
     )
+    quality_resolver = QualityResolver(ProviderResolver(database, provider))
     pipeline = DownloadPipeline(
         database,
-        QualityResolver(ProviderResolver(database, provider)),
+        quality_resolver,
         cast(NativeDownloadBoundary, provider),
         artifacts,
         MediaProbe(
@@ -362,6 +363,7 @@ async def compose_stage9(
             provider,
             provider_candidates,
             provider_candidate_ranker,
+            quality_resolver=quality_resolver,
         ),
         per_user_active_limit=settings.per_user_active_download_limit,
         disk_guard=disk_guard,
