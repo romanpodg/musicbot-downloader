@@ -305,7 +305,22 @@ async def test_lifecycle_reconciliation_and_reset_use_sanitized_strict_ipc(tmp_p
     try:
         await client.reconcile_provider_lifecycle()
         assert await client.reset_provider_authentication("spotify") is True
+        # Apple is a managed provider and must cross the same strict IPC boundary.
+        assert await client.reset_provider_authentication("apple_music") is True
         assert await client.reset_provider_authentication("unsupported") is False
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_reset_provider_authentication_managed_boundary_includes_apple(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    try:
+        assert await client.reset_provider_authentication("apple_music") is True
+        for provider in ("youtube_music", "bandcamp", "soundcloud"):
+            assert await client.reset_provider_authentication(provider) is False
     finally:
         await client.close()
 

@@ -269,7 +269,7 @@ class OnTheSpotProcessClient:
             raise ProviderUnavailable()
 
     async def reset_provider_authentication(self, provider: str) -> bool:
-        if provider not in {"tidal", "deezer", "spotify", "qobuz"}:
+        if provider not in {"tidal", "deezer", "spotify", "qobuz", "apple_music"}:
             return False
         result = await self._request(RESET_PROVIDER_AUTHENTICATION_METHOD, {"provider": provider})
         if not isinstance(result, dict) or not set(result).issubset({"status", "error_code"}):
