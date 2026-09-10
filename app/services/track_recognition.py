@@ -328,7 +328,7 @@ class TrackRecognitionService:
                 )
                 if item.candidate is not None
             )
-        finalists = tuple(item.candidate for item in ranked)[:5]
+        finalists = _select_enrichment_finalists(ranked, limit=5)
         enriched: dict[tuple[MusicProviderName, str], TrackCandidate] = {}
         for candidate in finalists:
             track = candidate.track
@@ -412,6 +412,41 @@ def _distinct_recording_clusters(
             continue
         representatives.append(item)
     return tuple(representatives)
+
+
+def _select_enrichment_finalists(
+    ranked: tuple[RankedTrackCandidate, ...], *, limit: int
+) -> tuple[TrackCandidate, ...]:
+    """Bound metadata work while giving distinct provisional recordings first access.
+
+    These ephemeral groups only allocate the enrichment budget.  The existing
+    post-enrichment ``_distinct_recording_clusters`` remains the authoritative
+    recording clustering step and may merge or split these candidates after
+    richer evidence arrives.
+    """
+    if limit <= 0:
+        return ()
+
+    provisional_representatives: list[RankedTrackCandidate] = []
+    for item in ranked:
+        identity = _identity_for(item.candidate)
+        if any(
+            match_track_identities(identity, _identity_for(representative.candidate)).decision
+            is TrackMatchDecision.MATCHED
+            for representative in provisional_representatives
+        ):
+            continue
+        provisional_representatives.append(item)
+
+    selected = provisional_representatives[:limit]
+    if len(selected) < limit:
+        for item in ranked:
+            if any(item is finalist for finalist in selected):
+                continue
+            selected.append(item)
+            if len(selected) == limit:
+                break
+    return tuple(item.candidate for item in selected)
 
 
 def _text_similarity(requested: str, candidate: str) -> float:

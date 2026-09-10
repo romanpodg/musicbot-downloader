@@ -82,6 +82,8 @@ Current delivery roadmap:
   [Stage 30.5.3 contract](docs/stage30.5.3-managed-provider-account-lifecycle-parity.md)).
 - Stage 30.5.4: Cache / SingleFlight Provenance Contract Hardening (complete; see
   [Stage 30.5.4 contract](docs/stage30.5.4-cache-singleflight-provenance-contract.md)).
+- Stage 30.5.5: Recognition Fairness Hardening (complete; see
+  [Stage 30.5.5 contract](docs/stage30.5.5-recognition-fairness.md)).
 
 Stage 12.1 delivers the production packaging and runtime-hardening foundation. Stage 12.2 adds
 deterministic startup crash recovery and conservative cleanup of stale Stage 6 artifacts. Stage
