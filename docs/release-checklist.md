@@ -4,6 +4,34 @@ This checklist is the Stage 12.4 acceptance gate for the downloader application.
 output in the release review; a checked box without executed evidence is not a pass. Do not add
 Telegram or provider credentials to CI logs, artifacts, images, or this document.
 
+## Current Stage 30.5.6 provider-platform release gate
+
+The checked Stage 12.4 entries and dated records below are historical evidence,
+not a pass for a later provider-platform candidate. For every current candidate,
+record current-HEAD output for all of the following before declaring Stage 30
+complete:
+
+- [ ] `uv lock --check`, `uv run ruff format --check .`, `uv run ruff check .`,
+  `uv run mypy app`, and `git diff --check`.
+- [ ] `uv run pytest -m "not external" -p no:cacheprovider --basetemp=.pytest-tmp/stage30.5.6-host-<run-id> -ra`, with zero
+  failures and every skip classified.
+- [ ] Packaging regression checks and a fresh runtime and validation image build
+  from the current working tree.
+- [ ] `bash scripts/validate-production.sh`, including current Linux
+  credential-free tests, FFmpeg, ffprobe, and all five deterministic media
+  profiles. Record `STAGE30_PROVIDER_PLATFORM_CONTAINER_VALIDATION=PASS`.
+- [ ] Current provider contract verified: six enabled search providers, managed
+  Tidal/Deezer/Spotify/Qobuz/Apple Music ordering, public YouTube Music, and
+  deferred Bandcamp/SoundCloud.
+- [ ] External smoke status recorded for Spotify, Deezer, Tidal, YouTube Music,
+  Qobuz, and Apple Music as `PASS`, `FAIL`, or `NOT_RUN`; missing credentials or
+  network are `NOT_RUN`, never `PASS`.
+- [ ] Docker context has no local credentials, provider state, databases,
+  temporary media, Graphify output, caches, or virtual environments.
+
+Use [`stage30-provider-platform.md`](stage30-provider-platform.md) for the
+current provider matrix and exact opt-in smoke commands.
+
 Release verdicts are:
 
 - **READY**: every mandatory deterministic gate passed in an actual Linux/container environment,
@@ -90,9 +118,6 @@ Release verdicts are:
 The repository automation for these gates is:
 
 ```bash
-docker build -t musicbot-downloader:stage12.4 .
-docker build --target validation -t musicbot-downloader:stage12.4-validation .
-cp .env.example .env  # CI/local fake fixture only; configure real secrets only for deployment
 bash scripts/validate-production.sh
 ```
 

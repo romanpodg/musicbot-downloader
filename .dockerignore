@@ -4,12 +4,17 @@
 graphify-out
 AGENTS.md
 .venv
+.venv*
+.codex-venv
+.validation-venv
+.tmp
 .uv-cache
 .uv-python
 __pycache__
 **/__pycache__
 *.py[cod]
 .pytest_cache
+.pytest-tmp
 .mypy_cache
 .ruff_cache
 .coverage

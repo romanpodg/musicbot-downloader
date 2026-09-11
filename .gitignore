@@ -8,6 +8,10 @@ otsconfig.json
 
 # Python tooling and test artifacts
 .venv/
+.venv*/
+.codex-venv/
+.validation-venv/
+.tmp/
 __pycache__/
 *.py[cod]
 .pytest_cache/

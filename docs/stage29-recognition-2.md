@@ -1,5 +1,10 @@
 # Stage 29 — Recognition 2.0
 
+> Historical Stage 29 design and recognition contract. For current provider
+> platform activation and Stage 30.5.5 fairness context, see
+> [`stage30-provider-platform.md`](stage30-provider-platform.md) and
+> [`stage30.5.5-recognition-fairness.md`](stage30.5.5-recognition-fairness.md).
+
 Stage 29 hardens the deterministic Stage 17/18 recognition and confirmation
 flow; it does not replace it. Search remains lightweight and provider-neutral.
 

@@ -1,5 +1,25 @@
 # Musicbot Downloader
 
+## Current provider platform (Stage 30)
+
+The current enabled search order is Spotify, Deezer, Tidal, YouTube Music,
+Qobuz, and Apple Music. Tidal, Deezer, Spotify, Qobuz, and Apple Music have
+managed accounts; YouTube Music is public/application-unmanaged. Bandcamp and
+SoundCloud remain deferred. The supported output profiles are `AAC_128`,
+`AAC_256`, `MP3_128`, `MP3_320`, and `LOSSLESS`.
+
+Run the current release path, including the Linux FFmpeg/ffprobe acceptance
+gate, from the repository root:
+
+```bash
+bash scripts/validate-production.sh
+```
+
+The authoritative provider, quality, lifecycle, provenance, and opt-in external
+smoke contract is [`docs/stage30-provider-platform.md`](docs/stage30-provider-platform.md).
+External smoke remains credential/network opt-in and is not part of the default
+test suite.
+
 Production-oriented foundation for a future Telegram music downloader service. This repository
 implements Stage 0 through the Stage 12.4 deterministic production-validation baseline plus
 Stages 13.1–13.5 provider account management and authorization: canonical recording identity, ambiguity-safe matching,

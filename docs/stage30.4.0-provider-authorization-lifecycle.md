@@ -1,5 +1,9 @@
 # Stage 30.4.0 — Provider Authorization Lifecycle
 
+> Historical Stage 30.4.0 snapshot. For the current managed-provider set,
+> including Qobuz and Apple Music, see
+> [`stage30-provider-platform.md`](stage30-provider-platform.md).
+
 Status: **COMPLETE**
 
 ## Why this boundary changed
@@ -42,4 +46,3 @@ models, callbacks, logs, or audit records.
 The explicit composition driver manifest and `ProviderIntegrationRegistry` are
 unchanged. Spotify, Tidal, Deezer, Qobuz, and YouTube Music behavior remain on
 their existing paths. Apple Music remains deferred and is not activated.
-

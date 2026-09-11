@@ -1,5 +1,10 @@
 # Production deployment and release validation (Stage 12.4)
 
+> The Stage 12.4 material below is the production-runtime foundation. Current
+> six-provider platform behavior, external smokes, and Stage 30.5.6 release
+> gates are defined in
+> [`stage30-provider-platform.md`](stage30-provider-platform.md).
+
 > **Enforced single-instance constraint:** An OS advisory lock at
 > `<SQLite database>.instance.lock` permits at most one downloader runtime against a database on
 > this host. A second runtime exits before database recovery, workers, listeners, providers, or
@@ -29,7 +34,7 @@ Build a versioned local image:
 ```bash
 docker compose build
 # or
-docker build -t musicbot-downloader:stage12.4 .
+docker build --target runtime -t musicbot-downloader:stage30.5.6 .
 ```
 
 Stage 12.4 adds an opt-in `validation` target derived from the production runtime. It installs the
@@ -38,13 +43,11 @@ final/default `runtime` target does not inherit that layer. Build and execute bo
 fake, non-secret `.env`:
 
 ```bash
-docker build -t musicbot-downloader:stage12.4 .
-docker build --target validation -t musicbot-downloader:stage12.4-validation .
-cp .env.example .env
 bash scripts/validate-production.sh
 ```
 
-The smoke script fails fast, uses fresh uniquely named Docker volumes, removes only its own
+The validation script first performs the current-tree static and credential-free host gates, builds
+fresh `runtime` and `validation` images, then fails fast, uses fresh uniquely named Docker volumes, removes only its own
 containers/volumes, and performs no Telegram/provider request or commercial media download. It
 exercises image identity/tools, fresh and upgrade/downgrade migrations, read-only-root preflight,
 persistent durable rows, online WAL backup, manual restore, POSIX process locks, and the complete

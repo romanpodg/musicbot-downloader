@@ -4,14 +4,31 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-IMAGE="${MUSICBOT_IMAGE:-musicbot-downloader:stage12.4}"
-VALIDATION_IMAGE="${MUSICBOT_VALIDATION_IMAGE:-musicbot-downloader:stage12.4-validation}"
+IMAGE="${MUSICBOT_IMAGE:-musicbot-downloader:stage30.5.6}"
+VALIDATION_IMAGE="${MUSICBOT_VALIDATION_IMAGE:-musicbot-downloader:stage30.5.6-validation}"
 RUN_ID="${GITHUB_RUN_ID:-local}-$$"
+HOST_BASETEMP=".pytest-tmp/stage30.5.6-host-${RUN_ID}"
 DATA_VOLUME="musicbot-stage124-data-${RUN_ID}"
 UPGRADE_VOLUME="musicbot-stage124-upgrade-${RUN_ID}"
 LOCK_CONTAINER="musicbot-stage124-lock-${RUN_ID}"
 WRITER_CONTAINER="musicbot-stage124-writer-${RUN_ID}"
 FIXTURE_PATH="$ROOT_DIR/scripts/container_fixture.py"
+SOURCE_REVISION="$(git rev-parse HEAD)"
+VALIDATION_VENV="${MUSICBOT_VALIDATION_VENV:-$ROOT_DIR/.validation-venv}"
+CREATED_VALIDATION_ENV=0
+export UV_PROJECT_ENVIRONMENT="$VALIDATION_VENV"
+
+echo "== current-tree host validation =="
+echo "source_revision=$SOURCE_REVISION"
+git diff --check
+git diff --cached --check
+uv lock --check
+uv sync --locked --extra dev --extra onthespot
+uv run ruff format --check .
+uv run ruff check .
+uv run mypy app
+uv run pytest -m "not external" -p no:cacheprovider \
+  --basetemp="$HOST_BASETEMP" -ra
 
 # The working tree and production image must agree on exactly one Alembic
 # head.  Deriving this through Alembic keeps future migrations covered and
@@ -30,13 +47,21 @@ FIXTURE_MOUNT="$FIXTURE_PATH:/validation/container_fixture.py:ro"
 cleanup() {
   docker rm --force "$LOCK_CONTAINER" "$WRITER_CONTAINER" >/dev/null 2>&1 || true
   docker volume rm "$DATA_VOLUME" "$UPGRADE_VOLUME" >/dev/null 2>&1 || true
+  if [[ "$CREATED_VALIDATION_ENV" == 1 ]]; then
+    rm -- .env
+  fi
 }
 trap cleanup EXIT
 
 if [[ ! -f .env ]]; then
-  echo "release smoke requires a local .env (a fake CI fixture is sufficient)" >&2
-  exit 2
+  cp .env.example .env
+  CREATED_VALIDATION_ENV=1
 fi
+
+echo '== current-tree image builds =='
+docker build --target runtime --build-arg "OCI_REVISION=$SOURCE_REVISION" -t "$IMAGE" .
+docker build --target validation --build-arg "OCI_REVISION=$SOURCE_REVISION" \
+  -t "$VALIDATION_IMAGE" .
 
 docker image inspect "$IMAGE" --format 'image={{.Id}} platform={{.Os}}/{{.Architecture}} size_bytes={{.Size}}'
 docker image inspect "$VALIDATION_IMAGE" >/dev/null
@@ -187,3 +212,4 @@ docker run --rm --entrypoint pytest "$VALIDATION_IMAGE" \
   -m 'not external' -p no:cacheprovider --basetemp=/tmp/musicbot/stage124-pytest -ra
 
 echo 'STAGE12_4_CONTAINER_VALIDATION=PASS'
+echo 'STAGE30_PROVIDER_PLATFORM_CONTAINER_VALIDATION=PASS'

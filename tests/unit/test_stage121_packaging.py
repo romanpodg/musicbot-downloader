@@ -44,8 +44,9 @@ def test_dockerignore_excludes_secrets_databases_and_build_noise() -> None:
         ".pytest_cache",
         ".mypy_cache",
         ".ruff_cache",
+        ".tmp",
     ):
-        assert required in ignored
+        assert any(line.rstrip("/") == required for line in ignored)
 
 
 def test_compose_is_single_instance_private_and_unprivileged() -> None:

@@ -1,5 +1,9 @@
 # Stage 30.1 — Provider Integration Architecture and Readiness Contract
 
+> Historical Stage 30.1 snapshot. For the current six-provider platform and
+> current search/account orders, see
+> [`stage30-provider-platform.md`](stage30-provider-platform.md).
+
 Stage 30.1 establishes the application contract for future provider promotion.
 It does not activate a new music provider, add credentials, or change download
 selection.

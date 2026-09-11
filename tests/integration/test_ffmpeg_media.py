@@ -49,6 +49,7 @@ async def test_synthetic_flac_transcodes_to_valid_mp3_and_aac(tmp_path: Path) ->
     probe = MediaProbe(tmp_path, str(_FFPROBE))
 
     for profile, extension in (
+        (QualityProfile.AAC_128, "m4a"),
         (QualityProfile.MP3_128, "mp3"),
         (QualityProfile.MP3_320, "mp3"),
         (QualityProfile.AAC_256, "m4a"),

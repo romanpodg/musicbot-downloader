@@ -1,5 +1,10 @@
 # OnTheSpot v1.8.1 provider capability matrix
 
+For current application activation, account lifecycle, quality behavior, and
+external-smoke procedures, see
+[`stage30-provider-platform.md`](stage30-provider-platform.md). This document
+remains the pinned-runtime capability evidence, not the application manifest.
+
 This matrix describes only the implementation pinned at commit
 `8ed6cf33ef772e6569d5014237e0fb4ce8b9e45d`. It is not a statement about each
 commercial service in general. `Unknown` means the value cannot be established reliably before
