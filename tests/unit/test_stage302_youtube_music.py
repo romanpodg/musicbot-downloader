@@ -54,6 +54,7 @@ def test_stage302_manifest_and_readiness_promote_tokenless_ytm() -> None:
         MusicProviderName.QOBUZ,
         MusicProviderName.APPLE_MUSIC,
         MusicProviderName.BANDCAMP,
+        MusicProviderName.SOUNDCLOUD,
     )
     assert DEFAULT_PROVIDER_INTEGRATIONS.managed_account_providers() == (
         MusicProviderName.TIDAL,

@@ -44,14 +44,34 @@ def test_bandcamp_is_enabled_without_reordering_existing_search_providers() -> N
         MusicProviderName.QOBUZ,
         MusicProviderName.APPLE_MUSIC,
         MusicProviderName.BANDCAMP,
+        MusicProviderName.SOUNDCLOUD,
     )
     assert (
         DEFAULT_PROVIDER_INTEGRATIONS.for_provider(MusicProviderName.BANDCAMP).search
         is ProviderSearchIntegrationState.ENABLED
     )
     assert DEFAULT_PROVIDER_INTEGRATIONS.for_provider(MusicProviderName.SOUNDCLOUD).search is (
-        ProviderSearchIntegrationState.DEFERRED
+        ProviderSearchIntegrationState.ENABLED
     )
+
+
+def test_soundcloud_advertises_only_the_public_exact_mp3_128_contract() -> None:
+    media = ONTHESPOT_CAPABILITIES[MusicProviderName.SOUNDCLOUD].media
+
+    assert media.native_codecs == frozenset({NativeCodec.MP3})
+    assert media.native_containers == frozenset({NativeContainer.MP3})
+    assert media.bitrate_options_kbps == frozenset({128})
+    assert media.potential_media == (NativeMediaInfo(NativeCodec.MP3, NativeContainer.MP3, 128),)
+
+    candidate = _candidate(MusicProviderName.SOUNDCLOUD, None)
+    assert len(plans_for_candidate(candidate, QualityProfile.MP3_128)) == 1
+    for profile in (
+        QualityProfile.AAC_128,
+        QualityProfile.AAC_256,
+        QualityProfile.MP3_320,
+        QualityProfile.LOSSLESS,
+    ):
+        assert plans_for_candidate(candidate, profile) == ()
 
 
 def _candidate(

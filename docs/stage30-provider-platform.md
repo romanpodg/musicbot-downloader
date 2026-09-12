@@ -119,6 +119,19 @@ select another feasible Stage 25 source (for example Qobuz for `LOSSLESS`).
 Purchased/private releases, accounts, libraries, lossless formats, playlists,
 and SoundCloud remain outside this stage.
 
+## Stage 30.6.5 SoundCloud media-safety decision
+
+SoundCloud remains deferred after its pinned-runtime preflight audit.  The
+audit classifies the next product scope as `PUBLIC_MP3_128_ONLY_READY`: public
+execution can be constrained to the existing exact MP3/128 contract, whereas
+OAuth remains `EXECUTION_BINDING_BLOCKED` because the locked downloader does
+not carry a yt-dlp preflight format identity into its later acquisition call.
+The later public-only stage must force the child public account/selector so an
+OAuth account cannot change the media contract.  It must not add SoundCloud
+OAuth, collections, or a generic preflight framework.  Full evidence and the
+recommended Stage 30.6.6 scope are in
+[`stage30.6.5-soundcloud-media-preflight.md`](stage30.6.5-soundcloud-media-preflight.md).
+
 ## Validation and release procedure
 
 Mandatory deterministic release gates are run from the repository root:

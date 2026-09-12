@@ -113,7 +113,7 @@ class OnTheSpotProvider(MusicProvider):
         raise UnsupportedProvider()
 
     async def classify_url(self, url: str) -> MediaReference:
-        host, _, _ = _validated_url(url)
+        host, segments, _ = _validated_url(url)
         if host not in {"soundcloud.com", "m.soundcloud.com"}:
             return self.detect_media(url)
         raw = await self._process_client.match_url(url)
@@ -122,11 +122,11 @@ class OnTheSpotProvider(MusicProvider):
         item_id = raw.get("item_id")
         if service != MusicProviderName.SOUNDCLOUD.value or not isinstance(item_id, str):
             raise UnsupportedMediaType()
-        canonical = urlsplit(url)._replace(query="", fragment="").geturl()
         if item_type == "track":
-            return TrackReference(MusicProviderName.SOUNDCLOUD, item_id, canonical)
-        if item_type == "album":
-            return AlbumReference(MusicProviderName.SOUNDCLOUD, item_id, canonical)
+            canonical = self._detect_known_track(host, segments, "")
+            if canonical is None:
+                raise UnsupportedMediaType()
+            return canonical
         raise UnsupportedMediaType()
 
     async def get_album(self, url: str) -> AlbumSnapshot:
@@ -207,6 +207,11 @@ class OnTheSpotProvider(MusicProvider):
         return tuple(providers)
 
     async def list_provider_accounts(self, provider: MusicProviderName) -> tuple[str, ...]:
+        # Public SoundCloud is application-accountless.  In particular, never
+        # hand a child-owned OAuth account ID to Stage 25 for this production
+        # path; the worker itself selects its guarded public runtime account.
+        if provider is MusicProviderName.SOUNDCLOUD:
+            return ()
         values = await self._process_client.list_provider_accounts(provider.value)
         return tuple(value for value in values if value)
 
@@ -522,7 +527,9 @@ class OnTheSpotProvider(MusicProvider):
                 return TrackReference(MusicProviderName.YOUTUBE_MUSIC, item_id, canonical)
 
         if host in {"soundcloud.com", "m.soundcloud.com"} and len(segments) == 2:
-            if all(_PATH_SEGMENT.fullmatch(segment) for segment in segments):
+            if all(_PATH_SEGMENT.fullmatch(segment) for segment in segments) and segments[
+                1
+            ].lower() not in {"likes", "reposts", "sets"}:
                 canonical = f"https://soundcloud.com/{segments[0]}/{segments[1]}"
                 return TrackReference(MusicProviderName.SOUNDCLOUD, canonical, canonical)
 
@@ -864,6 +871,8 @@ def _provider_track_url(provider: MusicProviderName, item_id: str) -> str | None
         return f"https://www.deezer.com/track/{item_id}"
     if provider is MusicProviderName.QOBUZ:
         return f"https://play.qobuz.com/track/{item_id}"
+    if provider is MusicProviderName.SOUNDCLOUD:
+        return item_id if item_id.startswith(("https://", "http://")) else None
     if provider is MusicProviderName.SPOTIFY:
         return f"https://open.spotify.com/track/{item_id}"
     if provider is MusicProviderName.TIDAL:

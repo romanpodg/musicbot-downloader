@@ -26,7 +26,13 @@ import sys
 import time
 import uuid
 from collections.abc import Mapping
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextlib import (
+    AbstractContextManager,
+    contextmanager,
+    nullcontext,
+    redirect_stderr,
+    redirect_stdout,
+)
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
@@ -118,6 +124,8 @@ _SEARCHABLE_SERVICES = frozenset(
 _MAX_SEARCH_RESULTS = 10
 MAX_ALBUM_TRACKS = 500
 _MAX_ALBUM_TEXT_LENGTH = 1024
+_SOUNDCLOUD_PUBLIC_SELECTOR = "bestaudio[ext=mp3]"
+_SOUNDCLOUD_PUBLIC_FORMAT_ID = re.compile(r"^http_mp3(?:_|$)")
 _YOUTUBE_MUSIC_STATIC_PLAYLIST_ID = re.compile(r"^PL[A-Za-z0-9_-]{10,}$")
 _JOB_ID = re.compile(r"^[0-9a-f]{32}$")
 _TIDAL_FLOW_ID = re.compile(r"^[0-9a-f]{16}$")
@@ -486,6 +494,11 @@ class OnTheSpotWorker:
     def list_provider_accounts(self, provider: str) -> list[str]:
         if not self._initialized:
             self.initialize()
+        if provider == "soundcloud":
+            # Stage 30.6.6 never lets Stage 25 rank or select child-owned
+            # SoundCloud OAuth state.  The public execution context below is
+            # deliberately accountless at the application boundary.
+            return []
         return sorted(
             {
                 str(account.get("uuid"))
@@ -519,10 +532,15 @@ class OnTheSpotWorker:
         if search_function is None:
             raise WorkerError("unsupported_provider")
         try:
-            with _silence_upstream():
+            token_context: AbstractContextManager[Any]
+            if provider == "soundcloud":
+                token_context = self._public_soundcloud_execution()
+            else:
                 token = self._accounts.get_account_token(provider)
                 if provider in _AUTHENTICATED_SERVICES and token is None:
                     raise WorkerError("provider_authentication_error")
+                token_context = nullcontext(token)
+            with _silence_upstream(), token_context as token:
                 previous_limit = self._config.get("max_search_results")
                 self._config.set("max_search_results", limit)
                 try:
@@ -593,7 +611,10 @@ class OnTheSpotWorker:
             return _source_result(status, code)
 
         try:
-            with _silence_upstream():
+            token_context: AbstractContextManager[Any]
+            if provider == "soundcloud":
+                token_context = self._public_soundcloud_execution()
+            else:
                 token = self._accounts.get_account_token(provider)
                 if provider in _AUTHENTICATED_SERVICES and token is None:
                     status = "AUTH_REQUIRED" if provider in _USER_AUTH_SERVICES else "UNAVAILABLE"
@@ -603,6 +624,8 @@ class OnTheSpotWorker:
                         else "provider_unavailable"
                     )
                     return _source_result(status, code)
+                token_context = nullcontext(token)
+            with _silence_upstream(), token_context as token:
                 metadata_function = self._registry.get_metadata_function(provider, "track")
                 raw = metadata_function(token, provider_track_id)
         except (KeyError, IndexError):
@@ -623,6 +646,11 @@ class OnTheSpotWorker:
             # required before advertising the exact MP3_128 source to Stage 25.
             return _source_result("SOURCE_UNAVAILABLE", "source_unavailable")
         selected_account = _selected_account(active_accounts, token)
+        if provider == "soundcloud":
+            # Availability is deliberately independent from claimed media
+            # facts.  Stage 25 must use prepare_source() to prove the pinned
+            # public selector's exact MP3_128 representation.
+            return _source_result("AVAILABLE")
         if provider == "apple_music" and selected_account.get("account_type") != "premium":
             return _source_result("AUTH_REQUIRED", "authentication_required")
         return _source_result("AVAILABLE", native=_native_media(provider, selected_account))
@@ -640,6 +668,13 @@ class OnTheSpotWorker:
         requires_auth = bool(capabilities.requires_auth)
         if not capabilities.download_supported:
             return _health_result("UNAVAILABLE", requires_auth, False, "RUNTIME_UNAVAILABLE")
+        if provider == "soundcloud":
+            try:
+                with self._public_soundcloud_execution():
+                    pass
+            except Exception:
+                return _health_result("UNAVAILABLE", False, True, "RUNTIME_UNAVAILABLE")
+            return _health_result("READY", False, True)
         configured = any(
             isinstance(account, Mapping)
             and account.get("service") == provider
@@ -1941,10 +1976,15 @@ class OnTheSpotWorker:
         if isinstance(native, dict):
             return {"status": "AVAILABLE", "native": native}
         try:
-            with _silence_upstream():
+            token_context: AbstractContextManager[Any]
+            if provider == "soundcloud":
+                token_context = self._public_soundcloud_execution()
+            else:
                 token = self._accounts.get_account_token(provider)
                 if token is None:
                     raise WorkerError("provider_authentication_error")
+                token_context = nullcontext(token)
+            with _silence_upstream(), token_context as token:
                 if provider == "deezer":
                     native = self._prepare_deezer(token, provider_track_id)
                 elif provider == "tidal":
@@ -1974,10 +2014,19 @@ class OnTheSpotWorker:
             return status
         partial = self._download_destination(job_id, plan_rank)
         try:
-            with _silence_upstream():
+            token_context: AbstractContextManager[Any]
+            if provider == "soundcloud":
+                if account_id is not None:
+                    # Parent-visible account IDs are never valid for the
+                    # public-only SoundCloud branch.
+                    raise WorkerError("provider_authentication_error")
+                token_context = self._public_soundcloud_execution()
+            else:
                 token = self._account_token(provider, account_id)
                 if token is None and provider in _AUTHENTICATED_SERVICES:
                     raise WorkerError("provider_authentication_error")
+                token_context = nullcontext(token)
+            with _silence_upstream(), token_context as token:
                 metadata_function = self._registry.get_metadata_function(provider, "track")
                 metadata = metadata_function(token, provider_track_id)
                 if not isinstance(metadata, Mapping) or metadata.get("is_playable") is False:
@@ -2113,9 +2162,79 @@ class OnTheSpotWorker:
 
     @staticmethod
     def _prepare_soundcloud(token: Any, provider_track_id: str) -> dict[str, Any] | None:
-        if not isinstance(token, Mapping) or not token.get("oauth_token"):
-            return {"codec": "mp3", "container": "mp3", "bitrate_kbps": 128, "lossless": False}
-        return None
+        """Prove the pinned public selector's exact representation in the child.
+
+        yt-dlp may expose signed stream URLs in this result.  This method
+        intentionally reduces that result to technical facts before it crosses
+        the worker boundary.
+        """
+
+        if _soundcloud_oauth_token(token):
+            return None
+        canonical_url = _canonical_soundcloud_track_url(provider_track_id)
+        if canonical_url is None:
+            return None
+        yt_dlp = importlib.import_module("yt_dlp")
+        downloader_type = getattr(yt_dlp, "YoutubeDL", None)
+        if not callable(downloader_type):
+            return None
+        options = {
+            "format": _SOUNDCLOUD_PUBLIC_SELECTOR,
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+        }
+        with downloader_type(options) as downloader:
+            result = downloader.extract_info(canonical_url, download=False)
+        return _public_soundcloud_media(result)
+
+    @contextmanager
+    def _public_soundcloud_execution(self):  # type: ignore[no-untyped-def]
+        """Temporarily force the child runtime onto its public SoundCloud account.
+
+        OAuth account state can coexist in the pinned runtime.  Neither its
+        token nor its account ordering is allowed to affect public search,
+        source checks, preflight, or acquisition.
+        """
+
+        active = [
+            account
+            for account in self._runtime.account_pool
+            if isinstance(account, Mapping)
+            and account.get("service") == "soundcloud"
+            and account.get("status") == "active"
+        ]
+        public = _public_soundcloud_account(active)
+        if public is None:
+            raise WorkerError("provider_unavailable")
+        account_id = public.get("uuid")
+        if not isinstance(account_id, str) or not account_id:
+            raise WorkerError("provider_unavailable")
+        configured = self._config.get("accounts", [])
+        if not isinstance(configured, list):
+            raise WorkerError("provider_unavailable")
+        index = next(
+            (
+                position
+                for position, account in enumerate(configured)
+                if isinstance(account, Mapping)
+                and account.get("service") == "soundcloud"
+                and account.get("uuid") == account_id
+            ),
+            None,
+        )
+        if index is None:
+            raise WorkerError("provider_unavailable")
+        previous = self._config.get("active_account_number", 0)
+        self._config.set("active_account_number", index)
+        try:
+            token = self._accounts.get_account_token("soundcloud")
+            if token is None or _soundcloud_oauth_token(token):
+                raise WorkerError("provider_unavailable")
+            yield token
+        finally:
+            self._config.set("active_account_number", previous)
 
     @staticmethod
     def _source_exception_result(provider: str, exc: Exception) -> dict[str, Any]:
@@ -3260,6 +3379,84 @@ def _public_bandcamp_mp3_url(value: object) -> bool:
     except ValueError:
         return False
     return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+
+
+def _canonical_soundcloud_track_url(value: object) -> str | None:
+    """Accept only the canonical public single-track URL shape."""
+
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return None
+    host = parsed.hostname.lower() if parsed.hostname else ""
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or (port is not None and port != (80 if parsed.scheme == "http" else 443))
+        or host not in {"soundcloud.com", "m.soundcloud.com"}
+        or len(segments) != 2
+        or not all(re.fullmatch(r"[A-Za-z0-9._~-]+", segment) for segment in segments)
+    ):
+        return None
+    return urlunsplit(("https", "soundcloud.com", f"/{segments[0]}/{segments[1]}", "", ""))
+
+
+def _soundcloud_oauth_token(value: object) -> bool:
+    return isinstance(value, Mapping) and bool(value.get("oauth_token"))
+
+
+def _public_soundcloud_account(
+    accounts: list[Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
+    """Return the only account form allowed by the public production path."""
+
+    public = [
+        account
+        for account in accounts
+        if account.get("account_type") == "public"
+        and account.get("bitrate") == "128k"
+        and not _soundcloud_oauth_token(account.get("login"))
+    ]
+    return min(public, key=lambda account: str(account.get("uuid", ""))) if public else None
+
+
+def _public_soundcloud_media(value: object) -> dict[str, Any] | None:
+    """Reduce one yt-dlp public-selection result to exact safe media facts."""
+
+    if not isinstance(value, Mapping):
+        return None
+    requested = value.get("requested_downloads")
+    if not isinstance(requested, list) or len(requested) != 1:
+        return None
+    selected = requested[0]
+    if not isinstance(selected, Mapping):
+        return None
+    format_id = selected.get("format_id")
+    extension = selected.get("ext")
+    codec = selected.get("acodec")
+    protocol = selected.get("protocol")
+    bitrate = selected.get("abr")
+    if (
+        not isinstance(format_id, str)
+        or _SOUNDCLOUD_PUBLIC_FORMAT_ID.match(format_id) is None
+        or not isinstance(extension, str)
+        or extension.lower() != "mp3"
+        or not isinstance(codec, str)
+        or codec.lower() != "mp3"
+        or not isinstance(protocol, str)
+        or protocol.lower() not in {"http", "https"}
+        or isinstance(bitrate, bool)
+        or not isinstance(bitrate, (int, float))
+        or bitrate != 128
+    ):
+        return None
+    return {"codec": "mp3", "container": "mp3", "bitrate_kbps": 128, "lossless": False}
 
 
 def _selected_account(accounts: list[Mapping[str, Any]], token: Any) -> Mapping[str, Any]:

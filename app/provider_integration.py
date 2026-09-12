@@ -251,8 +251,12 @@ DEFAULT_PROVIDER_INTEGRATIONS = ProviderIntegrationRegistry(
         ),
         ProviderIntegrationSpec(
             MusicProviderName.SOUNDCLOUD,
-            ProviderSearchIntegrationState.DEFERRED,
+            ProviderSearchIntegrationState.ENABLED,
             ProviderAccountIntegrationMode.NOT_REQUIRED,
+            # SoundCloud is intentionally appended after the established
+            # production search order.  This is presentation only: Stage 25
+            # still admits it solely when the exact MP3_128 path is feasible.
+            search_order=7,
         ),
         ProviderIntegrationSpec(
             MusicProviderName.APPLE_MUSIC,

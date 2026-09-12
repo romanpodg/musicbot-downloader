@@ -98,9 +98,9 @@ _CAPABILITIES = {
         _media(
             lossy=True,
             lossless=False,
-            codecs=(NativeCodec.MP3, NativeCodec.AAC),
-            containers=(NativeContainer.MP3, NativeContainer.M4A),
-            bitrates=(128, 256),
+            codecs=(NativeCodec.MP3,),
+            containers=(NativeContainer.MP3,),
+            bitrates=(128,),
             potential_media=(NativeMediaInfo(NativeCodec.MP3, NativeContainer.MP3, 128),),
         ),
     ),

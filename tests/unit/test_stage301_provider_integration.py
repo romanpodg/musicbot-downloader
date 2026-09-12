@@ -53,6 +53,7 @@ def test_stage301_default_manifest_is_complete_and_preserves_the_production_matr
         MusicProviderName.QOBUZ,
         MusicProviderName.APPLE_MUSIC,
         MusicProviderName.BANDCAMP,
+        MusicProviderName.SOUNDCLOUD,
     )
     assert registry.managed_account_providers() == (
         MusicProviderName.TIDAL,
@@ -77,11 +78,12 @@ def test_stage301_default_manifest_is_complete_and_preserves_the_production_matr
     assert registry.for_provider(MusicProviderName.BANDCAMP).account is (
         ProviderAccountIntegrationMode.NOT_REQUIRED
     )
-    for provider in (MusicProviderName.SOUNDCLOUD,):
-        assert registry.for_provider(provider).search is ProviderSearchIntegrationState.DEFERRED
-        assert (
-            registry.for_provider(provider).account is ProviderAccountIntegrationMode.NOT_REQUIRED
-        )
+    assert registry.for_provider(MusicProviderName.SOUNDCLOUD).search is (
+        ProviderSearchIntegrationState.ENABLED
+    )
+    assert registry.for_provider(MusicProviderName.SOUNDCLOUD).account is (
+        ProviderAccountIntegrationMode.NOT_REQUIRED
+    )
     assert registry.for_provider(MusicProviderName.APPLE_MUSIC).search is (
         ProviderSearchIntegrationState.ENABLED
     )
@@ -189,6 +191,7 @@ def test_stage302_application_search_registry_includes_enabled_ytm_in_stable_ord
         MusicProviderName.QOBUZ,
         MusicProviderName.APPLE_MUSIC,
         MusicProviderName.BANDCAMP,
+        MusicProviderName.SOUNDCLOUD,
     )
     assert registry.get(MusicProviderName.YOUTUBE_MUSIC) is not None
     runtime.list_searchable_providers.assert_not_awaited()

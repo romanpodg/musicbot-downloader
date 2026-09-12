@@ -93,15 +93,11 @@ def test_track_playlist_and_malformed_routing_remain_distinct() -> None:
         provider.detect_media("https://music.youtube.com/playlist?list=synthetic")
 
 
-async def test_soundcloud_album_type_uses_isolated_match_boundary() -> None:
+async def test_soundcloud_collection_type_is_explicitly_deferred() -> None:
     process = Process({})
     provider = OnTheSpotProvider(process)  # type: ignore[arg-type]
-    reference = await provider.classify_url("https://soundcloud.com/artist/release")
-    assert reference == AlbumReference(
-        MusicProviderName.SOUNDCLOUD,
-        "77",
-        "https://soundcloud.com/artist/release",
-    )
+    with pytest.raises(UnsupportedMediaType):
+        await provider.classify_url("https://soundcloud.com/artist/release")
 
 
 async def test_normalized_album_snapshot_preserves_order_multidisc_and_unicode() -> None:

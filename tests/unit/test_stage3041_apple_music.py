@@ -31,7 +31,7 @@ from app.providers.apple_music_authorization import (
 from app.providers.onthespot.capabilities import ONTHESPOT_CAPABILITIES
 
 
-def test_apple_is_promoted_in_manifest_without_changing_deferred_providers() -> None:
+def test_apple_is_promoted_in_manifest_with_public_soundcloud_appended() -> None:
     assert DEFAULT_PROVIDER_INTEGRATIONS.enabled_search_providers() == (
         MusicProviderName.SPOTIFY,
         MusicProviderName.DEEZER,
@@ -40,6 +40,7 @@ def test_apple_is_promoted_in_manifest_without_changing_deferred_providers() -> 
         MusicProviderName.QOBUZ,
         MusicProviderName.APPLE_MUSIC,
         MusicProviderName.BANDCAMP,
+        MusicProviderName.SOUNDCLOUD,
     )
     assert DEFAULT_PROVIDER_INTEGRATIONS.managed_account_providers() == (
         MusicProviderName.TIDAL,

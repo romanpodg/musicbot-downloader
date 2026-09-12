@@ -11,7 +11,7 @@ from app.core.enums import (
     NativeContainer,
     ProviderRuntimeStatus,
 )
-from app.core.exceptions import InvalidTrackUrl, UnsupportedProvider
+from app.core.exceptions import InvalidTrackUrl, UnsupportedMediaType, UnsupportedProvider
 from app.core.models import TrackSearchRequest
 from app.providers.base import ProviderAvailability
 from app.providers.onthespot.provider import OnTheSpotProvider
@@ -135,6 +135,27 @@ def test_preserves_required_youtube_music_query_and_removes_tracking() -> None:
     assert reference.provider is MusicProviderName.YOUTUBE_MUSIC
     assert reference.provider_track_id == "abc_123-XYZ"
     assert reference.source_url == "https://music.youtube.com/watch?v=abc_123-XYZ"
+
+
+def test_soundcloud_track_urls_use_the_existing_single_track_route() -> None:
+    reference = _provider().detect_url("https://m.soundcloud.com/artist/public-track?tracking=yes")
+
+    assert reference.provider is MusicProviderName.SOUNDCLOUD
+    assert reference.provider_track_id == "https://soundcloud.com/artist/public-track"
+    assert reference.source_url == "https://soundcloud.com/artist/public-track"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://soundcloud.com/artist/sets/release",
+        "https://soundcloud.com/artist/likes",
+        "https://soundcloud.com/artist/reposts",
+    ],
+)
+def test_soundcloud_collection_and_dynamic_routes_are_not_tracks(url: str) -> None:
+    with pytest.raises(UnsupportedMediaType):
+        _provider().detect_url(url)
 
 
 @pytest.mark.asyncio

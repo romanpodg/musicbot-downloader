@@ -230,6 +230,40 @@ def _stage25_candidate(provider: MusicProviderName, media_id: str) -> ProviderCa
             MusicProviderName.BANDCAMP,
             {MusicProviderName.QOBUZ: ("qobuz-account",)},
         ),
+        (
+            QualityProfile.MP3_128,
+            (
+                (
+                    MusicProviderName.SOUNDCLOUD,
+                    "https://soundcloud.com/artist/public-track",
+                    NativeMediaInfo(NativeCodec.MP3, NativeContainer.MP3, 128),
+                ),
+                (
+                    MusicProviderName.QOBUZ,
+                    "qobuz-flac",
+                    NativeMediaInfo(NativeCodec.FLAC, NativeContainer.FLAC),
+                ),
+            ),
+            MusicProviderName.SOUNDCLOUD,
+            {MusicProviderName.QOBUZ: ("qobuz-account",)},
+        ),
+        (
+            QualityProfile.LOSSLESS,
+            (
+                (
+                    MusicProviderName.SOUNDCLOUD,
+                    "https://soundcloud.com/artist/public-track",
+                    NativeMediaInfo(NativeCodec.MP3, NativeContainer.MP3, 128),
+                ),
+                (
+                    MusicProviderName.QOBUZ,
+                    "qobuz-lossless",
+                    NativeMediaInfo(NativeCodec.FLAC, NativeContainer.FLAC),
+                ),
+            ),
+            MusicProviderName.QOBUZ,
+            {MusicProviderName.QOBUZ: ("qobuz-account",)},
+        ),
     ],
 )
 async def test_stage25_uses_complete_quality_matrix_before_affinity(
