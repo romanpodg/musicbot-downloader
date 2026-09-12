@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
-from app.core.enums import BatchSourceType
+from app.core.enums import BatchSourceType, MusicProviderName
 from app.core.exceptions import (
     AlbumResolutionFailed,
     MetadataUnavailable,
@@ -68,6 +68,16 @@ class TelegramMediaRequestService:
                 )
             )
         if isinstance(reference, AlbumReference):
+            if reference.provider in {MusicProviderName.APPLE_MUSIC, MusicProviderName.QOBUZ}:
+                return MediaAdmission(
+                    batch=await self._expand_collection(
+                        user=user,
+                        telegram_chat_id=telegram_chat_id,
+                        source_message_id=source_message_id,
+                        source_type=BatchSourceType.ALBUM,
+                        source_reference=reference.source_url,
+                    )
+                )
             try:
                 return MediaAdmission(
                     album=await self._albums.request_album(
@@ -85,29 +95,47 @@ class TelegramMediaRequestService:
             ) as exc:
                 raise AlbumResolutionFailed() from exc
         if isinstance(reference, PlaylistReference):
-            if self._batches is None or self._preferences is None:
-                raise UnsupportedMediaType()
-            preferences = await self._preferences.get_for_user(user.id)
-            confirmation_id = (
-                "pl:"
-                + hashlib.blake2s(
-                    f"{user.id}:{telegram_chat_id}:{source_message_id}".encode(), digest_size=20
-                ).hexdigest()
-            )
-            try:
-                batch = await self._batches.expand(
-                    user_id=user.id,
-                    confirmation_id=confirmation_id,
+            return MediaAdmission(
+                batch=await self._expand_collection(
+                    user=user,
+                    telegram_chat_id=telegram_chat_id,
+                    source_message_id=source_message_id,
                     source_type=BatchSourceType.PLAYLIST,
                     source_reference=reference.source_url,
-                    preferences=preferences,
                 )
-            except (
-                MetadataUnavailable,
-                ProviderAuthenticationError,
-                ProviderUnavailable,
-                UnsupportedAlbum,
-            ) as exc:
-                raise AlbumResolutionFailed() from exc
-            return MediaAdmission(batch=batch)
+            )
         raise TypeError("unsupported media reference")
+
+    async def _expand_collection(
+        self,
+        *,
+        user: User,
+        telegram_chat_id: int,
+        source_message_id: int,
+        source_type: BatchSourceType,
+        source_reference: str,
+    ) -> BatchDownloadRequest:
+        if self._batches is None or self._preferences is None:
+            raise UnsupportedMediaType()
+        preferences = await self._preferences.get_for_user(user.id)
+        confirmation_id = (
+            "co:"
+            + hashlib.blake2s(
+                f"{user.id}:{telegram_chat_id}:{source_message_id}".encode(), digest_size=20
+            ).hexdigest()
+        )
+        try:
+            return await self._batches.expand(
+                user_id=user.id,
+                confirmation_id=confirmation_id,
+                source_type=source_type,
+                source_reference=source_reference,
+                preferences=preferences,
+            )
+        except (
+            MetadataUnavailable,
+            ProviderAuthenticationError,
+            ProviderUnavailable,
+            UnsupportedAlbum,
+        ) as exc:
+            raise AlbumResolutionFailed() from exc

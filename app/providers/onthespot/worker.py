@@ -29,7 +29,7 @@ from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from app.core.enums import MusicProviderName
 from app.providers.onthespot.capabilities import ONTHESPOT_CAPABILITIES
@@ -277,15 +277,20 @@ class OnTheSpotWorker:
     def resolve_album_id(self, service: str, album_id: str) -> dict[str, Any]:
         if service not in _DOWNLOAD_SERVICES or not album_id or len(album_id) > 2048:
             raise WorkerError("unsupported_album")
-        get_track_ids = self._registry.SERVICE_ALBUM_TRACK_ID_FUNCTIONS.get(service)
-        if get_track_ids is None:
-            raise WorkerError("unsupported_album")
         try:
             with _silence_upstream():
                 token = self._accounts.get_account_token(service)
                 if service in _AUTHENTICATED_SERVICES and token is None:
                     raise WorkerError("provider_authentication_error")
-                raw_ids = get_track_ids(token, album_id)
+                if service == "apple_music":
+                    raw_ids = _apple_music_album_track_ids_complete(token, album_id)
+                elif service == "qobuz":
+                    raw_ids = _qobuz_album_track_ids_complete(token, album_id)
+                else:
+                    get_track_ids = self._registry.SERVICE_ALBUM_TRACK_ID_FUNCTIONS.get(service)
+                    if get_track_ids is None:
+                        raise WorkerError("unsupported_album")
+                    raw_ids = get_track_ids(token, album_id)
         except WorkerError:
             raise
         except (KeyError, IndexError) as exc:
@@ -358,15 +363,25 @@ class OnTheSpotWorker:
     def resolve_playlist_id(self, service: str, playlist_id: str) -> dict[str, Any]:
         if service not in _DOWNLOAD_SERVICES or not playlist_id or len(playlist_id) > 2048:
             raise WorkerError("unsupported_album")
-        get_playlist = self._registry.SERVICE_PLAYLIST_DATA_FUNCTIONS.get(service)
-        if get_playlist is None:
+        # The pinned Qobuz helper asks for only its first 500 entries and does
+        # not expose a reliable continuation/completeness contract.  A partial
+        # snapshot must never become a durable Stage 23 batch.
+        if service == "qobuz":
             raise WorkerError("unsupported_album")
         try:
             with _silence_upstream():
                 token = self._accounts.get_account_token(service)
                 if service in _AUTHENTICATED_SERVICES and token is None:
                     raise WorkerError("provider_authentication_error")
-                playlist_title, playlist_creator, raw_ids = get_playlist(token, playlist_id)
+                if service == "apple_music":
+                    playlist_title, playlist_creator, raw_ids = _apple_music_playlist_data_complete(
+                        token, playlist_id
+                    )
+                else:
+                    get_playlist = self._registry.SERVICE_PLAYLIST_DATA_FUNCTIONS.get(service)
+                    if get_playlist is None:
+                        raise WorkerError("unsupported_album")
+                    playlist_title, playlist_creator, raw_ids = get_playlist(token, playlist_id)
         except WorkerError:
             raise
         except (KeyError, IndexError) as exc:
@@ -2223,6 +2238,209 @@ def _album_positive_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return number if number > 0 else None
+
+
+def _apple_music_album_track_ids_complete(session: Any, album_id: str) -> list[str]:
+    """Expand an Apple album relationship only when every song page is known.
+
+    This deliberately stays in the worker: the session and Apple API objects
+    must never cross the parent IPC boundary.
+    """
+
+    apple_music = importlib.import_module("onthespot.api.apple_music")
+    storefront = _apple_music_storefront(session)
+    payload = apple_music.make_call(
+        f"{apple_music.BASE_URL}/catalog/{storefront}/albums/{album_id}",
+        session=session,
+        skip_cache=True,
+    )
+    album = _apple_music_single_resource(payload)
+    relationships = album.get("relationships")
+    tracks = relationships.get("tracks") if isinstance(relationships, Mapping) else None
+    if not isinstance(tracks, Mapping):
+        raise WorkerError("metadata_unavailable")
+    attributes = album.get("attributes")
+    expected_total = (
+        _collection_total(attributes.get("trackCount"))
+        if isinstance(attributes, Mapping) and "trackCount" in attributes
+        else None
+    )
+    return _apple_music_song_ids_complete(
+        tracks,
+        lambda url: apple_music.make_call(url, session=session, skip_cache=True),
+        base_url=str(apple_music.BASE_URL),
+        expected_total=expected_total,
+    )
+
+
+def _apple_music_playlist_data_complete(
+    session: Any, playlist_id: str
+) -> tuple[str | None, str | None, list[str]]:
+    """Follow Apple continuation URLs without trusting an offset guess."""
+
+    apple_music = importlib.import_module("onthespot.api.apple_music")
+    storefront = _apple_music_storefront(session)
+    base_url = str(apple_music.BASE_URL)
+    playlist_payload = apple_music.make_call(
+        f"{base_url}/catalog/{storefront}/playlists/{playlist_id}",
+        session=session,
+        skip_cache=True,
+    )
+    playlist = _apple_music_single_resource(playlist_payload)
+    attributes = playlist.get("attributes")
+    if not isinstance(attributes, Mapping):
+        raise WorkerError("metadata_unavailable")
+    title = _album_text(attributes.get("name"))
+    creator = _album_text(attributes.get("curatorName"))
+    first_page = apple_music.make_call(
+        f"{base_url}/catalog/{storefront}/playlists/{playlist_id}/tracks?limit=100",
+        session=session,
+        skip_cache=True,
+    )
+    return (
+        title,
+        creator,
+        _apple_music_song_ids_complete(
+            first_page,
+            lambda url: apple_music.make_call(url, session=session, skip_cache=True),
+            base_url=base_url,
+        ),
+    )
+
+
+def _apple_music_song_ids_complete(
+    first_page: Mapping[str, Any],
+    fetch_page: Any,
+    *,
+    base_url: str,
+    expected_total: int | None = None,
+) -> list[str]:
+    """Return ordered Apple song IDs, following each trusted continuation once."""
+
+    page: Mapping[str, Any] = first_page
+    seen_pages: set[str] = set()
+    item_ids: list[str] = []
+    while True:
+        raw_items = page.get("data")
+        if not isinstance(raw_items, list):
+            raise WorkerError("metadata_unavailable")
+        for item in raw_items:
+            if not isinstance(item, Mapping) or item.get("type") != "songs":
+                raise WorkerError("metadata_unavailable")
+            item_id = item.get("id")
+            if not isinstance(item_id, str) or not item_id or len(item_id) > 2048:
+                raise WorkerError("metadata_unavailable")
+            item_ids.append(item_id)
+            if len(item_ids) > MAX_ALBUM_TRACKS:
+                raise WorkerError("album_too_large")
+        next_page = page.get("next")
+        if next_page is None:
+            if expected_total is not None and expected_total != len(item_ids):
+                raise WorkerError("metadata_unavailable")
+            if not item_ids:
+                raise WorkerError("metadata_unavailable")
+            return item_ids
+        if not isinstance(next_page, str) or not next_page:
+            raise WorkerError("metadata_unavailable")
+        continuation = _apple_music_continuation_url(next_page, base_url=base_url)
+        if continuation in seen_pages:
+            raise WorkerError("metadata_unavailable")
+        seen_pages.add(continuation)
+        next_result = fetch_page(continuation)
+        if not isinstance(next_result, Mapping):
+            raise WorkerError("metadata_unavailable")
+        page = next_result
+
+
+def _apple_music_storefront(session: Any) -> str:
+    cookies = getattr(session, "cookies", None)
+    storefront = cookies.get("itua") if cookies is not None else None
+    if not isinstance(storefront, str) or not storefront or len(storefront) > 32:
+        raise WorkerError("provider_authentication_error")
+    return storefront
+
+
+def _apple_music_single_resource(payload: Any) -> Mapping[str, Any]:
+    if not isinstance(payload, Mapping):
+        raise WorkerError("metadata_unavailable")
+    data = payload.get("data")
+    if not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], Mapping):
+        raise WorkerError("metadata_unavailable")
+    return data[0]
+
+
+def _apple_music_continuation_url(value: str, *, base_url: str) -> str:
+    base = urlsplit(base_url)
+    candidate = urlsplit(urljoin(base_url.rstrip("/") + "/", value))
+    if (
+        candidate.scheme != "https"
+        or candidate.hostname != base.hostname
+        or candidate.username is not None
+        or candidate.password is not None
+        or candidate.fragment
+        or not candidate.path.startswith(base.path.rstrip("/") + "/")
+    ):
+        raise WorkerError("metadata_unavailable")
+    return candidate.geturl()
+
+
+def _qobuz_album_track_ids_complete(token: Any, album_id: str) -> list[str]:
+    """Require Qobuz's reported count before accepting its fixed-size page."""
+
+    if not isinstance(token, Mapping):
+        raise WorkerError("provider_authentication_error")
+    user_auth_token = token.get("user_auth_token")
+    app_id = token.get("app_id")
+    if (
+        not isinstance(user_auth_token, str)
+        or not user_auth_token
+        or not isinstance(app_id, str)
+        or not app_id
+    ):
+        raise WorkerError("provider_authentication_error")
+    qobuz = importlib.import_module("onthespot.api.qobuz")
+    payload = qobuz.make_call(
+        f"{qobuz.BASE_URL}/album/get?album_id={album_id}",
+        headers={"X-User-Auth-Token": user_auth_token, "X-App-Id": app_id},
+        params={"limit": "500"},
+    )
+    if not isinstance(payload, Mapping):
+        raise WorkerError("metadata_unavailable")
+    tracks = payload.get("tracks")
+    if not isinstance(tracks, Mapping):
+        raise WorkerError("metadata_unavailable")
+    raw_items = tracks.get("items")
+    if not isinstance(raw_items, list):
+        raise WorkerError("metadata_unavailable")
+    total = _collection_total(tracks.get("total"))
+    if total is None:
+        total = _collection_total(payload.get("tracks_count"))
+    if total is None:
+        raise WorkerError("metadata_unavailable")
+    if total > MAX_ALBUM_TRACKS:
+        raise WorkerError("album_too_large")
+    item_ids: list[str] = []
+    for item in raw_items:
+        item_id = item.get("id") if isinstance(item, Mapping) else None
+        if not isinstance(item_id, (str, int)) or isinstance(item_id, bool):
+            raise WorkerError("metadata_unavailable")
+        normalized = str(item_id).strip()
+        if not normalized or len(normalized) > 2048:
+            raise WorkerError("metadata_unavailable")
+        item_ids.append(normalized)
+    if total != len(item_ids) or not item_ids:
+        raise WorkerError("metadata_unavailable")
+    return item_ids
+
+
+def _collection_total(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        total = int(value)
+    except (TypeError, ValueError):
+        return None
+    return total if total >= 0 else None
 
 
 def _bounded_number(value: object, *, default: int, minimum: int, maximum: int) -> float:

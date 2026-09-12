@@ -3,27 +3,42 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 
 from app.core.delivery_targets import PrivateUserTarget
+from app.core.download import DownloadDeliveryTarget, DownloadRequest
+from app.core.download_preferences import UserDownloadPreferences
 from app.core.enums import (
+    BatchSourceType,
     MusicProviderName,
     NativeCodec,
     NativeContainer,
     ProviderResolutionStatus,
     ProviderRuntimeStatus,
+    QualityPreference,
     QualityProfile,
 )
-from app.core.models import DownloadProviderCandidate, NativeMediaInfo, ProviderResolutionResult
+from app.core.models import (
+    DownloadProviderCandidate,
+    NativeMediaInfo,
+    ProviderResolutionResult,
+    ResolvedCollection,
+    ResolvedCollectionItem,
+)
 from app.core.provider_resolution import (
     CanonicalMediaIdentity,
+    CanonicalTrackAdmission,
     ProviderCandidate,
     ProviderCandidateRanker,
     match_media,
 )
+from app.core.telegram_context import TelegramChatType, TelegramContext
 from app.providers.onthespot.capabilities import ONTHESPOT_CAPABILITIES
 from app.services.artifacts import DownloadArtifactManager
+from app.services.batch_download import BatchDownloadService
+from app.services.download_lifecycle import DownloadLifecycleService
 from app.services.quality_resolution import QualityResolver
 from app.services.stage25_execution import Stage25DownloadExecutor
 from app.services.workers import DownloadWorkerBackend
@@ -257,4 +272,146 @@ async def test_stage25_uses_complete_quality_matrix_before_affinity(
 
     assert pipeline.calls == [
         (expected, accounts.get(expected, (None,))[0] if accounts.get(expected) else None)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_apple_collection_admission_executes_lossless_from_qobuz_without_affinity(
+    database: Database, tmp_path
+) -> None:  # type: ignore[no-untyped-def]
+    async with database.transaction() as repositories:
+        user = await repositories.users.create_user(30_620)
+        track = await repositories.tracks.create_track(
+            title="Cross-provider recording", artist="Stage 30.6.2", isrc="USABC1234567"
+        )
+        source = await repositories.track_sources.upsert_source(
+            track_id=track.id,
+            provider=MusicProviderName.QOBUZ,
+            provider_track_id="qobuz-lossless",
+            url="https://example.test/qobuz-lossless",
+        )
+    admission = CanonicalTrackAdmission(
+        track.id,
+        CanonicalMediaIdentity.from_values(
+            title="Cross-provider recording", artist="Stage 30.6.2", isrc="USABC1234567"
+        ),
+    )
+    lifecycle = DownloadLifecycleService(database)
+
+    @dataclass
+    class AdmissionResolver:
+        async def resolve(self, **_: object) -> CanonicalTrackAdmission:
+            return admission
+
+    async def child(request: DownloadRequest, *, target: DownloadDeliveryTarget):
+        durable = await lifecycle.admit(
+            confirmation_id=request.confirmation_id or "missing",
+            request=request,
+            canonical_track_id=track.id,
+            target=target,
+        )
+        return SimpleNamespace(request_id=durable.request.id)
+
+    collection = ResolvedCollection(
+        source_type=BatchSourceType.ALBUM,
+        provider=MusicProviderName.APPLE_MUSIC,
+        collection_id="apple-album",
+        source_reference="https://music.apple.com/us/album/release/apple-album",
+        title="Apple discovery only",
+        creator="Apple artist",
+        items=(ResolvedCollectionItem(1, "apple-item"),),
+    )
+    batches = BatchDownloadService(
+        database,
+        SimpleNamespace(resolve_collection=None),
+        child_admitter=child,
+        item_admission_resolver=AdmissionResolver(),
+    )
+    batch = await batches.create_from_collection(
+        user_id=user.id,
+        confirmation_id="stage3062-apple-qobuz",
+        collection=collection,
+        preferences=UserDownloadPreferences(user.id, quality=QualityPreference.LOSSLESS),
+    )
+    target = DownloadDeliveryTarget(
+        user_id=user.telegram_id,
+        context=TelegramContext(user.telegram_id, user.telegram_id, TelegramChatType.PRIVATE),
+        delivery_target=PrivateUserTarget(user.telegram_id),
+        source_message_id=30_620,
+    )
+    assert await batches.admit_pending(batch.id, target=target) == 1
+
+    async with database.transaction() as repositories:
+        request = await repositories.download_lifecycle.get_by_confirmation(
+            "stage3062-apple-qobuz:1"
+        )
+        assert (
+            request is not None and request.provider is None and request.provider_media_id is None
+        )
+        job = await repositories.download_jobs.submit(
+            track_id=track.id,
+            quality_profile=QualityProfile.LOSSLESS,
+            max_active=10,
+            now=utc_now(),
+        )
+        durable_batch = await repositories.batch_download.get(batch.id)
+    assert durable_batch is not None and durable_batch.provider is MusicProviderName.APPLE_MUSIC
+
+    identity = admission.identity
+    stage_candidates = (
+        ProviderCandidate(
+            MusicProviderName.APPLE_MUSIC,
+            "apple-aac256",
+            identity,
+            match_media(identity, identity),
+            ONTHESPOT_CAPABILITIES[MusicProviderName.APPLE_MUSIC].media,
+        ),
+        ProviderCandidate(
+            MusicProviderName.QOBUZ,
+            "qobuz-lossless",
+            identity,
+            match_media(identity, identity),
+            ONTHESPOT_CAPABILITIES[MusicProviderName.QOBUZ].media,
+        ),
+    )
+    quality = _QualityProviderSnapshot(
+        (
+            _media_candidate(
+                MusicProviderName.APPLE_MUSIC,
+                "apple-aac256",
+                1,
+                NativeMediaInfo(NativeCodec.AAC, NativeContainer.M4A, 256),
+            ),
+            _media_candidate(
+                MusicProviderName.QOBUZ,
+                "qobuz-lossless",
+                source.source.id,
+                NativeMediaInfo(NativeCodec.FLAC, NativeContainer.FLAC),
+            ),
+        )
+    )
+    artifacts = DownloadArtifactManager(tmp_path / "artifacts")
+    pipeline = _ExactPipeline(
+        artifacts, {(MusicProviderName.QOBUZ, "qobuz-account"): None}, source.source.id
+    )
+    executor = Stage25DownloadExecutor(
+        database,
+        pipeline,
+        _Accounts({MusicProviderName.QOBUZ: ("qobuz-account",)}),
+        _Stage25Candidates(stage_candidates),
+        ProviderCandidateRanker(),
+        quality_resolver=QualityResolver(quality),
+    )
+    result = await executor.download(job)
+
+    assert result.provider is MusicProviderName.QOBUZ
+    assert pipeline.calls == [(MusicProviderName.QOBUZ, "qobuz-account")]
+    async with database.transaction() as repositories:
+        lifecycle_job = await repositories.download_lifecycle.get_job_for_request(request.id)
+        assert lifecycle_job is not None
+        attempts = await repositories.provider_resolution.list_attempts(lifecycle_job.id)
+        candidates = await repositories.provider_resolution.list_candidates(request.id)
+    assert [attempt.status for attempt in attempts] == ["SUCCEEDED"]
+    assert [(candidate.provider, candidate.provider_media_id) for candidate in candidates] == [
+        (MusicProviderName.QOBUZ.value, "qobuz-lossless")
     ]

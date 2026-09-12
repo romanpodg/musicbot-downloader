@@ -73,6 +73,26 @@ performs global candidate discovery, quality planning, source checking, ranking,
 and execution. `MediaArtifactSpec` and SingleFlight remain provider-neutral
 technical identities.
 
+## Stage 30.6.2 collection routing
+
+Apple Music album and playlist URLs, and Qobuz album URLs, are expanded through
+the isolated OnTheSpot worker and normalized directly into the existing Stage 23
+`ResolvedCollection` snapshot. Apple continuation URLs are followed inside that
+child boundary; order and duplicate occurrences are retained exactly. Apple
+albums also require their relationship count to agree with the fully expanded
+song relationship.
+
+Qobuz album expansion accepts its fixed 500-item runtime response only when its
+reported total is present and exactly matches the returned item count. A larger
+or unverifiable response fails closed and cannot create a partial batch.
+
+**Qobuz playlists are explicitly deferred.** The pinned runtime requests only
+the first 500 playlist IDs and provides neither a durable total-count proof nor
+a safe continuation mechanism. Their URLs are recognized, then rejected before
+Stage 23 snapshot creation; treating the first 500 entries as a complete
+playlist is forbidden. This stage does not add a provider-specific batch
+pipeline, new provider credentials, or collection-specific Stage 28 UX.
+
 ## Validation and release procedure
 
 Mandatory deterministic release gates are run from the repository root:

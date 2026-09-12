@@ -162,6 +162,10 @@ class OnTheSpotProvider(MusicProvider):
         reference = await self.classify_url(url)
         if not isinstance(reference, PlaylistReference):
             raise UnsupportedAlbum()
+        if reference.provider is MusicProviderName.QOBUZ:
+            # The pinned runtime exposes only a fixed 500-item Qobuz playlist
+            # response with no usable completeness/continuation contract.
+            raise UnsupportedAlbum()
         raw = await self._process_client.resolve_playlist(reference.source_url)
         return _playlist_collection(raw, reference)
 
@@ -172,6 +176,8 @@ class OnTheSpotProvider(MusicProvider):
             raise MetadataUnavailable()
         source_url = _provider_playlist_url(provider, provider_playlist_id)
         if source_url is None:
+            raise UnsupportedAlbum()
+        if provider is MusicProviderName.QOBUZ:
             raise UnsupportedAlbum()
         reference = PlaylistReference(provider, provider_playlist_id, source_url)
         raw = await self._process_client.resolve_playlist_id(provider.value, provider_playlist_id)
@@ -610,6 +616,14 @@ class OnTheSpotProvider(MusicProvider):
                     item_id,
                     f"https://music.apple.com/{segments[0].lower()}/playlist/{item_id}",
                 )
+        if host in {"qobuz.com", "www.qobuz.com", "play.qobuz.com", "open.qobuz.com"}:
+            if "playlist" in segments and _SIMPLE_ID.fullmatch(segments[-1]):
+                item_id = segments[-1]
+                return PlaylistReference(
+                    MusicProviderName.QOBUZ,
+                    item_id,
+                    f"https://play.qobuz.com/playlist/{item_id}",
+                )
         if host in {"tidal.com", "www.tidal.com", "listen.tidal.com"} and "playlist" in segments:
             index = segments.index("playlist")
             if index + 1 < len(segments) and _SIMPLE_ID.fullmatch(segments[index + 1]):
@@ -864,6 +878,8 @@ def _provider_playlist_url(provider: MusicProviderName, item_id: str) -> str | N
         return f"https://music.apple.com/us/playlist/{item_id}"
     if provider is MusicProviderName.DEEZER:
         return f"https://www.deezer.com/playlist/{item_id}"
+    if provider is MusicProviderName.QOBUZ:
+        return f"https://play.qobuz.com/playlist/{item_id}"
     if provider is MusicProviderName.SPOTIFY:
         return f"https://open.spotify.com/playlist/{item_id}"
     if provider is MusicProviderName.TIDAL:
