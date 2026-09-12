@@ -7,10 +7,10 @@ their respective stages; they do not override this document.
 ## Provider set and account model
 
 The enabled search order is **Spotify, Deezer, Tidal, YouTube Music, Qobuz, Apple Music,
-and Bandcamp**. The managed-account presentation order is **Tidal, Deezer,
-Spotify, Qobuz, Apple Music**. YouTube Music and Bandcamp are public,
-application-unmanaged providers. SoundCloud remains deferred; it is not an
-enabled search provider.
+Bandcamp, and SoundCloud**. The managed-account presentation order is **Tidal,
+Deezer, Spotify, Qobuz, Apple Music**. YouTube Music, Bandcamp, and SoundCloud
+are public, application-unmanaged providers. The production registry describes
+only application-supported behavior, not every upstream-runtime capability.
 
 | Provider | Search | Account model | Current native-media truth | Exact current profile behavior |
 | --- | --- | --- | --- | --- |
@@ -21,6 +21,7 @@ enabled search provider.
 | Qobuz | enabled | managed child-owned email/password session | genuine FLAC/lossless | `LOSSLESS` direct; safe transcodes to every current lossy profile |
 | Apple Music | enabled | managed child-owned media-user-token session | AAC/M4A nominal 256 kbps | `AAC_256` direct only |
 | Bandcamp | enabled | public bootstrap inside the isolated worker | public MP3/128 | `MP3_128` direct only |
+| SoundCloud | enabled | guarded public child-runtime context only; no application account | public MP3/128 | `MP3_128` direct only, after exact preflight |
 
 The application exposes five and only five profiles: `AAC_128`, `AAC_256`,
 `MP3_128`, `MP3_320`, and `LOSSLESS`. Lossless-to-lossy transcode is allowed;
@@ -37,6 +38,13 @@ provider `READY` state does not prove that every track can be acquired.
 availability check. Credentials, sessions, manifests, and upstream objects stay
 inside the isolated OnTheSpot child; the parent keeps only sanitized lifecycle
 and health state.
+
+`prepare_source()` performs source preparation and, only where established,
+exact source preflight. SoundCloud is the current case: it proves public
+MP3/128 before acquisition. Stage 25 remains the final authority for candidate
+discovery, quality planning, account eligibility, fallback, artifact probing,
+and successful execution provenance. Other providers do not acquire a
+SoundCloud-specific preflight requirement.
 
 Managed-account reset is a local application/runtime reset. It removes the
 selected provider's child-owned local authentication state and reloads status;
@@ -116,21 +124,44 @@ the authoritative completeness contract. A Bandcamp collection remains
 discovery provenance only: its admitted children are provider-neutral and can
 select another feasible Stage 25 source (for example Qobuz for `LOSSLESS`).
 
-Purchased/private releases, accounts, libraries, lossless formats, playlists,
-and SoundCloud remain outside this stage.
+Purchased/private releases, accounts, libraries, lossless formats, and playlists
+remain outside the Bandcamp scope. SoundCloud's separate public-only execution
+contract is defined below.
 
-## Stage 30.6.5 SoundCloud media-safety decision
+## Final Stage 30.6 collection and public-media scope
 
-SoundCloud remains deferred after its pinned-runtime preflight audit.  The
-audit classifies the next product scope as `PUBLIC_MP3_128_ONLY_READY`: public
-execution can be constrained to the existing exact MP3/128 contract, whereas
-OAuth remains `EXECUTION_BINDING_BLOCKED` because the locked downloader does
-not carry a yt-dlp preflight format identity into its later acquisition call.
-The later public-only stage must force the child public account/selector so an
-OAuth account cannot change the media contract.  It must not add SoundCloud
-OAuth, collections, or a generic preflight framework.  Full evidence and the
-recommended Stage 30.6.6 scope are in
-[`stage30.6.5-soundcloud-media-preflight.md`](stage30.6.5-soundcloud-media-preflight.md).
+Every enabled collection is an immutable, complete ordered `ResolvedCollection`
+snapshot that enters Stage 23, then `CollectionItemAdmissionResolver`, then a
+provider-neutral child request. Collection provider provenance never becomes
+download-provider affinity: Stage 25 may choose the best safe provider for the
+requested quality. Duplicate collection occurrences remain distinct Stage 23
+positions even if cache or SingleFlight later shares a technical artifact.
+
+| Provider | Track URLs | Collection URLs | Explicitly deferred |
+| --- | --- | --- | --- |
+| YouTube Music | `music.youtube.com/watch?v=...` | finite `music.youtube.com/playlist?list=PL...` only | albums, `RD...`, `OLAK...`, `LL...`, mixes/radio, and generic YouTube collections |
+| Qobuz | canonical track forms | albums | playlists: pinned runtime cannot prove complete pagination |
+| Apple Music | album-song URL with `?i=...` | albums and playlists | none within the implemented public collection scope |
+| Bandcamp | public canonical `/track/...` | public canonical `/album/...` | playlists, purchased/private content, library, and lossless purchase formats |
+| SoundCloud | canonical public `/artist/track` forms confirmed as tracks by the child | none | sets, playlists, likes, user pages, OAuth, authenticated formats, dynamic AAC/M4A or MP3/320, and premium behavior |
+
+Apple playlist continuation URLs and relationship totals, Qobuz album totals,
+YTM `playlist_count`, and Bandcamp finite JSON-LD membership are completeness
+authorities. If any proof is absent, inconsistent, unrepresentable, or exceeds
+the established safe boundary, discovery fails before a Stage 23 batch is
+created; silent truncation is forbidden.
+
+SoundCloud public execution is deliberately narrower than upstream capability.
+OAuth remains `EXECUTION_BINDING_BLOCKED`: even if OAuth-like state exists in
+the isolated runtime, it is not surfaced as an application account, cannot be
+selected by Stage 25, and cannot affect source preparation or download format
+selection. The worker forces a public child context and exact public MP3/128
+selector for preflight. After acquisition, the final artifact is probed again;
+an unexpected codec, container, or bitrate fails the ProviderAttempt and cannot
+become a successful DownloadResult, cache entry, or delivered artifact. Full
+audit evidence remains in
+[`stage30.6.5-soundcloud-media-preflight.md`](stage30.6.5-soundcloud-media-preflight.md)
+and [`stage30.6.6-soundcloud-public-mp3.md`](stage30.6.6-soundcloud-public-mp3.md).
 
 ## Validation and release procedure
 
@@ -172,6 +203,7 @@ commit credential values.
 | Tidal | Same command with `tidal`; complete its existing device-link session first | bounded catalog search and metadata |
 | YouTube Music | `ONTHESPOT_YTM_TEST_TRACK_URL='https://music.youtube.com/watch?v=…' uv run pytest tests/integration/test_onthespot_external.py::test_youtube_music_native_aac128_smoke_when_explicitly_enabled -m external -ra` | public track metadata, source, bounded acquisition, AAC/M4A 128 probe |
 | Bandcamp | `BANDCAMP_TEST_TRACK_URL='https://artist.bandcamp.com/track/…' BANDCAMP_TEST_ALBUM_URL='https://artist.bandcamp.com/album/…' uv run pytest tests/integration/test_onthespot_external.py::test_bandcamp_public_mp3_128_smoke_when_explicitly_enabled -m external -ra` | public track metadata, MP3/128 source/acquisition probe, and album expansion |
+| SoundCloud | no deterministic external smoke is claimed without a stable public fixture | `NOT_RUN`; deterministic public-only, OAuth-lockdown, preflight, and artifact-drift regressions are required instead |
 | Qobuz | `QOBUZ_EMAIL=… QOBUZ_PASSWORD=… QOBUZ_QUERY='artist title' uv run pytest tests/integration/test_stage303_qobuz_external.py -m external -ra` | existing child-boundary authorization, search, metadata, source check; not an acquisition benchmark |
 | Apple Music | `APPLE_MUSIC_MEDIA_USER_TOKEN=… APPLE_MUSIC_EXTERNAL_QUERY='artist title' uv run pytest tests/integration/test_stage3041_apple_music_external.py -m external -ra` | existing child-boundary authorization, search, source, bounded acquisition, AAC/M4A 256 probe, and decrypted provenance |
 

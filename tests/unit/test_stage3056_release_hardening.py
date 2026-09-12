@@ -22,12 +22,13 @@ def test_packaging_ignores_generated_stage_artifacts_and_validation_environments
         assert any(item.rstrip("/") == required for item in ignored)
 
 
-def test_current_provider_document_declares_bandcamp_contract_and_smokes() -> None:
+def test_current_provider_document_declares_final_stage306_provider_contract_and_smokes() -> None:
     document = (ROOT / "docs" / "stage30-provider-platform.md").read_text(encoding="utf-8")
     for required in (
-        "Spotify, Deezer, Tidal, YouTube Music, Qobuz, Apple Music,\nand Bandcamp",
-        "Tidal, Deezer,\nSpotify, Qobuz, Apple Music",
-        "SoundCloud remains deferred",
+        "Spotify, Deezer, Tidal, YouTube Music, Qobuz, Apple Music,\nBandcamp, and SoundCloud",
+        "Tidal,\nDeezer, Spotify, Qobuz, Apple Music",
+        "guarded public child-runtime context only",
+        "EXECUTION_BINDING_BLOCKED",
         "public MP3/128",
         "`AAC_128`, `AAC_256`,\n`MP3_128`, `MP3_320`, and `LOSSLESS`",
         "`MusicProvider.check_source()` remains the authoritative",
