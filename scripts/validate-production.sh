@@ -7,7 +7,14 @@ cd "$ROOT_DIR"
 IMAGE="${MUSICBOT_IMAGE:-musicbot-downloader:stage30.5.6}"
 VALIDATION_IMAGE="${MUSICBOT_VALIDATION_IMAGE:-musicbot-downloader:stage30.5.6-validation}"
 RUN_ID="${GITHUB_RUN_ID:-local}-$$"
-HOST_BASETEMP=".pytest-tmp/stage30.5.6-host-${RUN_ID}"
+# NTFS mounts used by WSL cannot represent the restrictive POSIX modes that
+# the lifecycle and backup tests intentionally assert.  Keep those temporary
+# files on the WSL filesystem; other hosts retain the repository-local path.
+if [[ -n "${WSL_DISTRO_NAME:-}" ]]; then
+  HOST_BASETEMP="/tmp/musicbot/stage30.5.6-host-${RUN_ID}"
+else
+  HOST_BASETEMP=".pytest-tmp/stage30.5.6-host-${RUN_ID}"
+fi
 DATA_VOLUME="musicbot-stage124-data-${RUN_ID}"
 UPGRADE_VOLUME="musicbot-stage124-upgrade-${RUN_ID}"
 LOCK_CONTAINER="musicbot-stage124-lock-${RUN_ID}"
@@ -20,8 +27,14 @@ export UV_PROJECT_ENVIRONMENT="$VALIDATION_VENV"
 
 echo "== current-tree host validation =="
 echo "source_revision=$SOURCE_REVISION"
-git diff --check
-git diff --cached --check
+# The checkout is commonly shared between Windows and WSL.  On a CRLF
+# checkout, Git otherwise reports every CR as trailing whitespace even when
+# the line has no trailing spaces or tabs.  Keep the whitespace gate, but
+# treat CRLF as a valid line ending for this invocation only.
+GIT_WHITESPACE_RULES='blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol'
+git -c "core.whitespace=$GIT_WHITESPACE_RULES" diff --check
+git -c "core.whitespace=$GIT_WHITESPACE_RULES" diff --cached --check
+mkdir -p -- "$(dirname -- "$HOST_BASETEMP")"
 uv lock --check
 uv sync --locked --extra dev --extra onthespot
 uv run ruff format --check .

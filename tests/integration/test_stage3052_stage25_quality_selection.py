@@ -29,7 +29,8 @@ from app.services.stage25_execution import Stage25DownloadExecutor
 from app.services.workers import DownloadWorkerBackend
 from app.storage import Database
 from app.storage.models.base import utc_now
-from tests.integration.test_stage25_worker_execution import _Accounts, _ExactPipeline
+
+from .stage25_test_support import _Accounts, _ExactPipeline
 
 
 @dataclass
