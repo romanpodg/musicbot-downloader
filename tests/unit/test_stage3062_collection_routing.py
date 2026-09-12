@@ -5,12 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from app.core.download_preferences import UserDownloadPreferences
 from app.core.enums import BatchSourceType, MusicProviderName
-from app.core.exceptions import UnsupportedAlbum
+from app.core.exceptions import UnsupportedAlbum, UnsupportedMediaType
 from app.providers.base import AlbumReference, PlaylistReference, TrackReference
 from app.providers.onthespot.provider import OnTheSpotProvider
 from app.providers.onthespot.worker import (
@@ -18,6 +19,7 @@ from app.providers.onthespot.worker import (
     WorkerError,
     _apple_music_song_ids_complete,
     _qobuz_album_track_ids_complete,
+    _youtube_music_playlist_snapshot,
 )
 from app.services.telegram_media_requests import TelegramMediaRequestService
 
@@ -135,6 +137,120 @@ def test_apple_and_qobuz_collection_urls_are_distinct_from_track_urls() -> None:
     )
 
 
+def test_ytm_static_playlist_routing_preserves_track_routing_and_rejects_dynamic_forms() -> None:
+    provider = OnTheSpotProvider.__new__(OnTheSpotProvider)
+    playlist = provider.detect_media(
+        "https://music.youtube.com/playlist?list=PLabc_1234567890&feature=share"
+    )
+    assert isinstance(playlist, PlaylistReference)
+    assert playlist.provider is MusicProviderName.YOUTUBE_MUSIC
+    assert playlist.provider_playlist_id == "PLabc_1234567890"
+    assert playlist.source_url == "https://music.youtube.com/playlist?list=PLabc_1234567890"
+
+    track = provider.detect_media(
+        "https://music.youtube.com/watch?v=abc_123-XYZ&list=PLabc_1234567890"
+    )
+    assert isinstance(track, TrackReference)
+    assert track.source_url == "https://music.youtube.com/watch?v=abc_123-XYZ"
+
+    for collection_id in ("RDCLAK5uy_dynamic", "OLAK5uy_album_form", "LLliked_library"):
+        with pytest.raises(UnsupportedMediaType):
+            provider.detect_media(f"https://music.youtube.com/playlist?list={collection_id}")
+
+
+def test_ytm_flat_snapshot_requires_declared_complete_count_and_preserves_occurrences() -> None:
+    payload = {
+        "id": "PLabc_1234567890",
+        "title": "Sparse YTM playlist",
+        "channel": "Playlist channel",
+        "playlist_count": 4,
+        "entries": (
+            {"id": "video-one", "title": "First", "channel": "Artist one", "duration": 180},
+            {"id": "video-two", "title": "Second"},
+            {"id": "video-one", "title": "First again", "duration": 181},
+            {"id": "private-video", "title": "[Private video]", "availability": "private"},
+        ),
+    }
+    title, creator, items = _youtube_music_playlist_snapshot(payload, "PLabc_1234567890")
+
+    assert (title, creator) == ("Sparse YTM playlist", "Playlist channel")
+    assert [(item["position"], item["provider_media_id"]) for item in items] == [
+        (1, "video-one"),
+        (2, "video-two"),
+        (3, "video-one"),
+        (4, "private-video"),
+    ]
+    assert items[0]["duration_ms"] == 180_000
+    assert items[1]["artist"] is None and items[1]["duration_ms"] is None
+
+
+def test_ytm_snapshot_materializes_all_flattened_continuation_entries_in_order() -> None:
+    playlist_id = "PLabc_1234567890"
+
+    def entries():
+        yield from ({"id": "first"}, {"id": "boundary"})
+        # This second fixture segment models the extractor-owned continuation.
+        yield from ({"id": "after-boundary"}, {"id": "first"})
+
+    _, _, items = _youtube_music_playlist_snapshot(
+        {"id": playlist_id, "playlist_count": 4, "entries": entries()}, playlist_id
+    )
+    assert [item["provider_media_id"] for item in items] == [
+        "first",
+        "boundary",
+        "after-boundary",
+        "first",
+    ]
+
+
+async def test_ytm_complete_snapshot_is_normalized_through_the_existing_playlist_adapter() -> None:
+    playlist_id = "PLabc_1234567890"
+    process = SimpleNamespace(
+        resolve_playlist=AsyncMock(
+            return_value={
+                "provider": "youtube_music",
+                "provider_playlist_id": playlist_id,
+                "title": "YTM discovery",
+                "creator": "Channel",
+                "items": [
+                    {
+                        "position": 1,
+                        "provider_media_id": "video-id",
+                        "title": "Sparse title",
+                        "source_url": "https://music.youtube.com/watch?v=video-id",
+                    }
+                ],
+            }
+        )
+    )
+    provider = OnTheSpotProvider(process)  # type: ignore[arg-type]
+
+    collection = await provider.get_playlist(
+        f"https://music.youtube.com/playlist?list={playlist_id}"
+    )
+
+    assert collection.provider is MusicProviderName.YOUTUBE_MUSIC
+    assert collection.collection_id == playlist_id
+    assert [(item.position, item.provider_media_id) for item in collection.items] == [
+        (1, "video-id")
+    ]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"id": "PLabc_1234567890", "playlist_count": 3, "entries": [{"id": "only-one"}]},
+        {"id": "PLabc_1234567890", "entries": [{"id": "only-one"}]},
+        {"id": "PLabc_1234567890", "playlist_count": 1, "entries": [{"title": "removed"}]},
+    ],
+)
+def test_ytm_snapshot_fails_closed_for_partial_or_unrepresentable_entries(
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(WorkerError, match="metadata_unavailable"):
+        _youtube_music_playlist_snapshot(payload, "PLabc_1234567890")
+
+
 async def test_qobuz_playlist_is_explicitly_deferred_before_ipc() -> None:
     provider = OnTheSpotProvider.__new__(OnTheSpotProvider)
     provider._process_client = SimpleNamespace(
@@ -143,6 +259,37 @@ async def test_qobuz_playlist_is_explicitly_deferred_before_ipc() -> None:
 
     with pytest.raises(UnsupportedAlbum):
         await provider.get_playlist("https://play.qobuz.com/playlist/list-1")
+
+
+async def test_ytm_playlist_enters_the_existing_stage23_batch_service() -> None:
+    batches = _Batches()
+    service = TelegramMediaRequestService(
+        _Provider(
+            PlaylistReference(
+                MusicProviderName.YOUTUBE_MUSIC,
+                "PLabc_1234567890",
+                "https://music.youtube.com/playlist?list=PLabc_1234567890",
+            )
+        ),  # type: ignore[arg-type]
+        _Tracks(),  # type: ignore[arg-type]
+        _Albums(),  # type: ignore[arg-type]
+        batches,  # type: ignore[arg-type]
+        _Preferences(),  # type: ignore[arg-type]
+    )
+
+    admission = await service.request(
+        user=SimpleNamespace(id=71),
+        telegram_chat_id=72,
+        source_message_id=73,
+        url="https://music.youtube.com/playlist?list=PLabc_1234567890",
+    )
+
+    assert admission.batch is not None
+    assert batches.calls[0]["source_type"] is BatchSourceType.PLAYLIST
+    assert (
+        batches.calls[0]["source_reference"]
+        == "https://music.youtube.com/playlist?list=PLabc_1234567890"
+    )
 
 
 @dataclass

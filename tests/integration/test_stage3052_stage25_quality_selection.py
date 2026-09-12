@@ -276,8 +276,33 @@ async def test_stage25_uses_complete_quality_matrix_before_affinity(
 
 
 @pytest.mark.asyncio
-async def test_apple_collection_admission_executes_lossless_from_qobuz_without_affinity(
-    database: Database, tmp_path
+@pytest.mark.parametrize(
+    ("collection_provider", "collection_id", "source_reference", "collection_item", "native"),
+    [
+        (
+            MusicProviderName.APPLE_MUSIC,
+            "apple-album",
+            "https://music.apple.com/us/album/release/apple-album",
+            "apple-item",
+            NativeMediaInfo(NativeCodec.AAC, NativeContainer.M4A, 256),
+        ),
+        (
+            MusicProviderName.YOUTUBE_MUSIC,
+            "PLabc_1234567890",
+            "https://music.youtube.com/playlist?list=PLabc_1234567890",
+            "ytm-video",
+            NativeMediaInfo(NativeCodec.AAC, NativeContainer.M4A, 128),
+        ),
+    ],
+)
+async def test_collection_admission_executes_lossless_from_qobuz_without_provider_affinity(
+    database: Database,
+    tmp_path,
+    collection_provider: MusicProviderName,
+    collection_id: str,
+    source_reference: str,
+    collection_item: str,
+    native: NativeMediaInfo,
 ) -> None:  # type: ignore[no-untyped-def]
     async with database.transaction() as repositories:
         user = await repositories.users.create_user(30_620)
@@ -313,13 +338,13 @@ async def test_apple_collection_admission_executes_lossless_from_qobuz_without_a
         return SimpleNamespace(request_id=durable.request.id)
 
     collection = ResolvedCollection(
-        source_type=BatchSourceType.ALBUM,
-        provider=MusicProviderName.APPLE_MUSIC,
-        collection_id="apple-album",
-        source_reference="https://music.apple.com/us/album/release/apple-album",
-        title="Apple discovery only",
-        creator="Apple artist",
-        items=(ResolvedCollectionItem(1, "apple-item"),),
+        source_type=BatchSourceType.PLAYLIST,
+        provider=collection_provider,
+        collection_id=collection_id,
+        source_reference=source_reference,
+        title="Discovery only",
+        creator="Collection creator",
+        items=(ResolvedCollectionItem(1, collection_item),),
     )
     batches = BatchDownloadService(
         database,
@@ -355,13 +380,13 @@ async def test_apple_collection_admission_executes_lossless_from_qobuz_without_a
             now=utc_now(),
         )
         durable_batch = await repositories.batch_download.get(batch.id)
-    assert durable_batch is not None and durable_batch.provider is MusicProviderName.APPLE_MUSIC
+    assert durable_batch is not None and durable_batch.provider is collection_provider
 
     identity = admission.identity
     stage_candidates = (
         ProviderCandidate(
-            MusicProviderName.APPLE_MUSIC,
-            "apple-aac256",
+            collection_provider,
+            "discovery-provider-source",
             identity,
             match_media(identity, identity),
             ONTHESPOT_CAPABILITIES[MusicProviderName.APPLE_MUSIC].media,
@@ -377,10 +402,10 @@ async def test_apple_collection_admission_executes_lossless_from_qobuz_without_a
     quality = _QualityProviderSnapshot(
         (
             _media_candidate(
-                MusicProviderName.APPLE_MUSIC,
-                "apple-aac256",
+                collection_provider,
+                "discovery-provider-source",
                 1,
-                NativeMediaInfo(NativeCodec.AAC, NativeContainer.M4A, 256),
+                native,
             ),
             _media_candidate(
                 MusicProviderName.QOBUZ,

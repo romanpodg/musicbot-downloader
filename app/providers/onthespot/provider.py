@@ -74,6 +74,7 @@ from app.providers.tidal_authorization import (
 
 _SPOTIFY_ID = re.compile(r"^[A-Za-z0-9]{22}$")
 _SIMPLE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
+_YOUTUBE_MUSIC_STATIC_PLAYLIST_ID = re.compile(r"^PL[A-Za-z0-9_-]{10,}$")
 _PATH_SEGMENT = re.compile(r"^[A-Za-z0-9._~-]+$")
 _SAFE_METADATA_KEYS = frozenset({"item_id", "is_playable", "release_year"})
 MAX_ALBUM_TRACKS = 500
@@ -104,7 +105,7 @@ class OnTheSpotProvider(MusicProvider):
         album = self._detect_known_album(host, segments)
         if album is not None:
             return album
-        playlist = self._detect_known_playlist(host, segments)
+        playlist = self._detect_known_playlist(host, segments, query)
         if playlist is not None:
             return playlist
         if self._is_known_host(host):
@@ -581,7 +582,9 @@ class OnTheSpotProvider(MusicProvider):
         return None
 
     @staticmethod
-    def _detect_known_playlist(host: str, segments: list[str]) -> PlaylistReference | None:
+    def _detect_known_playlist(
+        host: str, segments: list[str], query: str
+    ) -> PlaylistReference | None:
         """Recognize playlist identities even when the pinned runtime cannot expand them."""
         if host == "open.spotify.com":
             if len(segments) == 3 and segments[0].startswith("intl-"):
@@ -632,6 +635,21 @@ class OnTheSpotProvider(MusicProvider):
                     MusicProviderName.TIDAL,
                     item_id,
                     f"https://tidal.com/browse/playlist/{item_id}",
+                )
+        if host == "music.youtube.com" and segments == ["playlist"]:
+            # The pinned yt-dlp runtime classifies PL-prefixed lists as ordinary
+            # finite playlists. Other accepted YouTube namespaces include
+            # mixes/radios (RD), albums (OLAK5uy_), liked/library lists (LL/WL),
+            # and dynamic feeds that cannot enter a bounded Stage 23 snapshot.
+            playlist_ids = parse_qs(query, keep_blank_values=True).get("list", [])
+            if len(playlist_ids) == 1 and _YOUTUBE_MUSIC_STATIC_PLAYLIST_ID.fullmatch(
+                playlist_ids[0]
+            ):
+                item_id = playlist_ids[0]
+                return PlaylistReference(
+                    MusicProviderName.YOUTUBE_MUSIC,
+                    item_id,
+                    f"https://music.youtube.com/playlist?list={item_id}",
                 )
         return None
 
@@ -884,6 +902,10 @@ def _provider_playlist_url(provider: MusicProviderName, item_id: str) -> str | N
         return f"https://open.spotify.com/playlist/{item_id}"
     if provider is MusicProviderName.TIDAL:
         return f"https://tidal.com/browse/playlist/{item_id}"
+    if provider is MusicProviderName.YOUTUBE_MUSIC and _YOUTUBE_MUSIC_STATIC_PLAYLIST_ID.fullmatch(
+        item_id
+    ):
+        return f"https://music.youtube.com/playlist?list={item_id}"
     return None
 
 

@@ -117,6 +117,7 @@ _SEARCHABLE_SERVICES = frozenset(
 _MAX_SEARCH_RESULTS = 10
 MAX_ALBUM_TRACKS = 500
 _MAX_ALBUM_TEXT_LENGTH = 1024
+_YOUTUBE_MUSIC_STATIC_PLAYLIST_ID = re.compile(r"^PL[A-Za-z0-9_-]{10,}$")
 _JOB_ID = re.compile(r"^[0-9a-f]{32}$")
 _TIDAL_FLOW_ID = re.compile(r"^[0-9a-f]{16}$")
 _TIDAL_HTTP_TIMEOUT = (5.0, 10.0)
@@ -377,6 +378,10 @@ class OnTheSpotWorker:
                     playlist_title, playlist_creator, raw_ids = _apple_music_playlist_data_complete(
                         token, playlist_id
                     )
+                elif service == "youtube_music":
+                    playlist_title, playlist_creator, ytm_items = (
+                        _youtube_music_playlist_data_complete(playlist_id)
+                    )
                 else:
                     get_playlist = self._registry.SERVICE_PLAYLIST_DATA_FUNCTIONS.get(service)
                     if get_playlist is None:
@@ -388,6 +393,14 @@ class OnTheSpotWorker:
             raise WorkerError("provider_authentication_error") from exc
         except Exception as exc:
             raise WorkerError("metadata_unavailable") from exc
+        if service == "youtube_music":
+            return {
+                "provider": service,
+                "provider_playlist_id": playlist_id,
+                "title": playlist_title,
+                "creator": playlist_creator,
+                "items": ytm_items,
+            }
         if not isinstance(raw_ids, list) or not raw_ids or len(raw_ids) > MAX_ALBUM_TRACKS:
             raise WorkerError("metadata_unavailable")
         title = _album_text(playlist_title) or f"Playlist {playlist_id}"
@@ -2238,6 +2251,79 @@ def _album_positive_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return number if number > 0 else None
+
+
+def _youtube_music_playlist_data_complete(
+    playlist_id: str,
+) -> tuple[str, str | None, list[dict[str, Any]]]:
+    """Return one bounded, complete yt-dlp playlist snapshot inside the child."""
+    if _YOUTUBE_MUSIC_STATIC_PLAYLIST_ID.fullmatch(playlist_id) is None:
+        raise WorkerError("unsupported_album")
+    try:
+        from yt_dlp import YoutubeDL  # type: ignore[import-untyped]
+
+        url = f"https://music.youtube.com/playlist?list={playlist_id}"
+        with YoutubeDL({"quiet": True, "extract_flat": True}) as downloader:
+            payload = downloader.extract_info(url, download=False)
+    except Exception as exc:
+        raise WorkerError("metadata_unavailable") from exc
+    return _youtube_music_playlist_snapshot(payload, playlist_id)
+
+
+def _youtube_music_playlist_snapshot(
+    payload: Any, playlist_id: str
+) -> tuple[str, str | None, list[dict[str, Any]]]:
+    """Validate yt-dlp's result before sanitized collection data crosses IPC.
+
+    Materializing entries forces the pinned extractor's internal continuation
+    traversal to finish. A declared-count mismatch is terminal, never a partial
+    Stage 23 collection.
+    """
+    if _YOUTUBE_MUSIC_STATIC_PLAYLIST_ID.fullmatch(playlist_id) is None:
+        raise WorkerError("unsupported_album")
+    if not isinstance(payload, Mapping) or payload.get("id") != playlist_id:
+        raise WorkerError("metadata_unavailable")
+    expected_count = _album_positive_int(payload.get("playlist_count"))
+    if expected_count is None:
+        raise WorkerError("metadata_unavailable")
+    if expected_count > MAX_ALBUM_TRACKS:
+        raise WorkerError("album_too_large")
+    raw_entries = payload.get("entries")
+    if raw_entries is None or isinstance(raw_entries, (str, bytes, Mapping)):
+        raise WorkerError("metadata_unavailable")
+    try:
+        entries = list(raw_entries)
+    except TypeError as exc:
+        raise WorkerError("metadata_unavailable") from exc
+    if len(entries) != expected_count:
+        raise WorkerError("metadata_unavailable")
+
+    items: list[dict[str, Any]] = []
+    for position, entry in enumerate(entries, 1):
+        if not isinstance(entry, Mapping):
+            raise WorkerError("metadata_unavailable")
+        media_id = entry.get("id")
+        if not isinstance(media_id, str) or not media_id or len(media_id) > 2048:
+            # Omitted unavailable entries have no durable occurrence identity;
+            # do not fabricate one or silently create a partial snapshot.
+            raise WorkerError("metadata_unavailable")
+        duration_seconds = _album_positive_int(entry.get("duration"))
+        items.append(
+            {
+                "provider_media_id": media_id,
+                "position": position,
+                "title": _album_text(entry.get("title")),
+                "artist": _album_text(
+                    entry.get("artist") or entry.get("channel") or entry.get("uploader")
+                ),
+                "duration_ms": duration_seconds * 1000 if duration_seconds is not None else None,
+                "source_url": f"https://music.youtube.com/watch?v={media_id}",
+            }
+        )
+
+    title = _album_text(payload.get("title")) or f"Playlist {playlist_id}"
+    creator = _album_text(payload.get("channel") or payload.get("uploader"))
+    return title, creator, items
 
 
 def _apple_music_album_track_ids_complete(session: Any, album_id: str) -> list[str]:
