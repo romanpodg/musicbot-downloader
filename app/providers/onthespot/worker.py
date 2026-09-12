@@ -11,6 +11,7 @@ from __future__ import annotations
 import builtins
 import errno
 import os
+from html import unescape
 
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 os.environ["LOG_LEVEL"] = "20"
@@ -29,7 +30,7 @@ from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from app.core.enums import MusicProviderName
 from app.providers.onthespot.capabilities import ONTHESPOT_CAPABILITIES
@@ -307,10 +308,16 @@ class OnTheSpotWorker:
         album_title: str | None = None
         album_artist: str | None = None
         release_date: str | None = None
+        expected_bandcamp_count: int | None = None
         durations_complete = True
         duration_total = 0
         for position, value in enumerate(raw_ids, start=1):
             track_id = str(value).strip()
+            if service == "bandcamp":
+                # The pinned JSON-LD list is authoritative only when every
+                # occurrence is a stable, canonical Bandcamp track URL. Do
+                # not admit an album with an opaque or malformed member.
+                track_id = _canonical_bandcamp_track_url(track_id) or ""
             if not track_id or len(track_id) > 2048:
                 raise WorkerError("metadata_unavailable")
             try:
@@ -324,6 +331,12 @@ class OnTheSpotWorker:
             release_date = release_date or _album_text(
                 raw.get("release_date") or raw.get("release_year")
             )
+            if service == "bandcamp":
+                total_tracks = _album_positive_int(raw.get("total_tracks"))
+                if total_tracks is not None:
+                    if expected_bandcamp_count not in {None, total_tracks}:
+                        raise WorkerError("metadata_unavailable")
+                    expected_bandcamp_count = total_tracks
             duration = _album_positive_int(raw.get("length"))
             if duration is None:
                 durations_complete = False
@@ -344,6 +357,12 @@ class OnTheSpotWorker:
                 }
             )
         if album_title is None or album_artist is None:
+            raise WorkerError("metadata_unavailable")
+        if expected_bandcamp_count is not None and expected_bandcamp_count != len(raw_ids):
+            # The pinned per-track page exposes JSON-LD numTracks where it is
+            # available. A mismatch means the finite JSON-LD occurrence list
+            # was incomplete, so fail before Stage 23 can persist a partial
+            # snapshot.
             raise WorkerError("metadata_unavailable")
         return {
             "provider": service,
@@ -532,6 +551,12 @@ class OnTheSpotWorker:
             candidate = {"provider": provider, "provider_track_id": str(item_id), "url": url}
             title = item.get("item_name")
             artist = item.get("item_by")
+            if provider == "bandcamp":
+                # The pinned search parser operates on page HTML. Normalize
+                # its display fragments inside the child before they reach the
+                # provider-neutral search boundary.
+                title = _bandcamp_search_text(title)
+                artist = _bandcamp_search_text(artist)
             if title is not None:
                 candidate["title"] = str(title)
             if artist is not None:
@@ -590,6 +615,12 @@ class OnTheSpotWorker:
         if not isinstance(raw, Mapping) or not raw:
             return _source_result("ERROR", "source_check_failed")
         if raw.get("is_playable") is False:
+            return _source_result("SOURCE_UNAVAILABLE", "source_unavailable")
+        if provider == "bandcamp" and not _public_bandcamp_mp3_url(raw.get("file_url")):
+            # In the pinned runtime, is_playable means the page metadata was
+            # parsed; it does not by itself mean the public mp3-128 field was
+            # present. The media URL stays child-owned, but its existence is
+            # required before advertising the exact MP3_128 source to Stage 25.
             return _source_result("SOURCE_UNAVAILABLE", "source_unavailable")
         selected_account = _selected_account(active_accounts, token)
         if provider == "apple_music" and selected_account.get("account_type") != "premium":
@@ -3183,6 +3214,52 @@ def _account_bitrate(account: Mapping[str, Any]) -> int | None:
     except ValueError:
         return None
     return bitrate if bitrate > 0 else None
+
+
+def _bandcamp_search_text(value: object) -> str | None:
+    """Convert the pinned HTML-search display field into bounded plain text."""
+
+    if not isinstance(value, str):
+        return None
+    text = re.sub(r"<[^>]*>", "", unescape(value))
+    text = " ".join(text.split())
+    return text[:_MAX_ALBUM_TEXT_LENGTH] or None
+
+
+def _canonical_bandcamp_track_url(value: str) -> str | None:
+    """Return the pinned runtime's stable public Bandcamp track identity."""
+
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return None
+    host = parsed.hostname.lower() if parsed.hostname else ""
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.username is not None
+        or parsed.password is not None
+        or (port is not None and port != (80 if parsed.scheme == "http" else 443))
+        or not host.endswith(".bandcamp.com")
+        or len(segments) != 2
+        or segments[0] != "track"
+        or not re.fullmatch(r"[A-Za-z0-9._~-]+", segments[1])
+    ):
+        return None
+    return urlunsplit(("https", host, f"/track/{segments[1]}", "", ""))
+
+
+def _public_bandcamp_mp3_url(value: object) -> bool:
+    """Check only the presence of the pinned public mp3-128 metadata field."""
+
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+    return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
 
 
 def _selected_account(accounts: list[Mapping[str, Any]], token: Any) -> Mapping[str, Any]:

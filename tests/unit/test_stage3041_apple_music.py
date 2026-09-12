@@ -39,6 +39,7 @@ def test_apple_is_promoted_in_manifest_without_changing_deferred_providers() -> 
         MusicProviderName.YOUTUBE_MUSIC,
         MusicProviderName.QOBUZ,
         MusicProviderName.APPLE_MUSIC,
+        MusicProviderName.BANDCAMP,
     )
     assert DEFAULT_PROVIDER_INTEGRATIONS.managed_account_providers() == (
         MusicProviderName.TIDAL,

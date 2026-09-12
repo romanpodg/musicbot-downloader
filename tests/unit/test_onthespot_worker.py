@@ -58,11 +58,19 @@ def _worker(
 
 
 def test_available_source_returns_only_normalized_facts() -> None:
-    result = _worker("bandcamp", {"is_playable": True}).check_source("bandcamp", "track-id")
+    result = _worker(
+        "bandcamp", {"is_playable": True, "file_url": "https://cdn.test/native.mp3"}
+    ).check_source("bandcamp", "track-id")
     assert result == {
         "status": "AVAILABLE",
         "native": {"codec": "mp3", "container": "mp3", "bitrate_kbps": 128},
     }
+
+
+def test_bandcamp_requires_the_pinned_public_mp3_128_url() -> None:
+    result = _worker("bandcamp", {"is_playable": True}).check_source("bandcamp", "track-id")
+
+    assert result == {"status": "SOURCE_UNAVAILABLE", "error_code": "source_unavailable"}
 
 
 def test_authenticated_provider_without_active_account_requires_auth() -> None:
@@ -130,7 +138,12 @@ def test_http_auth_failure_is_normalized(status_code: int) -> None:
 def test_native_download_bypasses_upstream_conversion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    worker = _worker("bandcamp", {"is_playable": True}, token=object(), account_type="public")
+    worker = _worker(
+        "bandcamp",
+        {"is_playable": True, "file_url": "https://cdn.test/native.mp3"},
+        token=object(),
+        account_type="public",
+    )
     job_id = "a" * 32
     source = tmp_path / job_id / "attempt-001" / "source"
     source.mkdir(parents=True)
@@ -165,7 +178,12 @@ def test_native_download_bypasses_upstream_conversion(
 
 
 def test_native_download_normalizes_enospc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    worker = _worker("bandcamp", {"is_playable": True}, token=object(), account_type="public")
+    worker = _worker(
+        "bandcamp",
+        {"is_playable": True, "file_url": "https://cdn.test/native.mp3"},
+        token=object(),
+        account_type="public",
+    )
     job_id = "b" * 32
     (tmp_path / job_id / "attempt-001" / "source").mkdir(parents=True)
     monkeypatch.setenv("MUSICBOT_TEMP_DIR", str(tmp_path))

@@ -163,6 +163,23 @@ def _stage25_candidate(provider: MusicProviderName, media_id: str) -> ProviderCa
             },
         ),
         (
+            QualityProfile.LOSSLESS,
+            (
+                (
+                    MusicProviderName.BANDCAMP,
+                    "https://artist.bandcamp.com/track/public-mp3",
+                    NativeMediaInfo(NativeCodec.MP3, NativeContainer.MP3, 128),
+                ),
+                (
+                    MusicProviderName.QOBUZ,
+                    "qobuz-flac",
+                    NativeMediaInfo(NativeCodec.FLAC, NativeContainer.FLAC),
+                ),
+            ),
+            MusicProviderName.QOBUZ,
+            {MusicProviderName.QOBUZ: ("qobuz-account",)},
+        ),
+        (
             QualityProfile.AAC_256,
             (
                 (
@@ -196,6 +213,23 @@ def _stage25_candidate(provider: MusicProviderName, media_id: str) -> ProviderCa
             MusicProviderName.QOBUZ,
             {MusicProviderName.QOBUZ: ("qobuz-account",)},
         ),
+        (
+            QualityProfile.MP3_128,
+            (
+                (
+                    MusicProviderName.BANDCAMP,
+                    "https://artist.bandcamp.com/track/public-mp3",
+                    NativeMediaInfo(NativeCodec.MP3, NativeContainer.MP3, 128),
+                ),
+                (
+                    MusicProviderName.QOBUZ,
+                    "qobuz-flac",
+                    NativeMediaInfo(NativeCodec.FLAC, NativeContainer.FLAC),
+                ),
+            ),
+            MusicProviderName.BANDCAMP,
+            {MusicProviderName.QOBUZ: ("qobuz-account",)},
+        ),
     ],
 )
 async def test_stage25_uses_complete_quality_matrix_before_affinity(
@@ -226,8 +260,8 @@ async def test_stage25_uses_complete_quality_matrix_before_affinity(
             confirmation_id=f"stage3052-{track_id}",
             source_type="DIRECT_URL",
             source_reference=str(track_id),
-            provider=MusicProviderName.QOBUZ.value,
-            provider_media_id="qobuz-flac",
+            provider=candidates[0][0].value,
+            provider_media_id=candidates[0][1],
             delivery_target_type=PrivateUserTarget(telegram_id).target_type,
             delivery_target_id=telegram_id,
             now=utc_now(),
@@ -249,7 +283,7 @@ async def test_stage25_uses_complete_quality_matrix_before_affinity(
         for provider, provider_accounts in accounts.items()
         for account in provider_accounts
     }
-    outcome_keys.update({(MusicProviderName.YOUTUBE_MUSIC, None): None})
+    outcome_keys.update({(provider, None): None for provider, _, _ in candidates})
     pipeline = _ExactPipeline(DownloadArtifactManager(tmp_path / "artifacts"), outcome_keys, 1)
     executor = Stage25DownloadExecutor(
         database,
@@ -292,6 +326,13 @@ async def test_stage25_uses_complete_quality_matrix_before_affinity(
             "https://music.youtube.com/playlist?list=PLabc_1234567890",
             "ytm-video",
             NativeMediaInfo(NativeCodec.AAC, NativeContainer.M4A, 128),
+        ),
+        (
+            MusicProviderName.BANDCAMP,
+            "https://artist.bandcamp.com/track/public-mp3",
+            "https://artist.bandcamp.com/album/release",
+            "https://artist.bandcamp.com/track/public-mp3",
+            NativeMediaInfo(NativeCodec.MP3, NativeContainer.MP3, 128),
         ),
     ],
 )
@@ -389,7 +430,7 @@ async def test_collection_admission_executes_lossless_from_qobuz_without_provide
             "discovery-provider-source",
             identity,
             match_media(identity, identity),
-            ONTHESPOT_CAPABILITIES[MusicProviderName.APPLE_MUSIC].media,
+            ONTHESPOT_CAPABILITIES[collection_provider].media,
         ),
         ProviderCandidate(
             MusicProviderName.QOBUZ,

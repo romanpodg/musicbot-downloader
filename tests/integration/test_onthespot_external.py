@@ -119,3 +119,49 @@ async def test_youtube_music_native_aac128_smoke_when_explicitly_enabled() -> No
         assert abs(probed.bitrate_kbps - 128) <= 26
     finally:
         await provider.close()
+
+
+@pytest.mark.external
+@pytest.mark.asyncio
+async def test_bandcamp_public_mp3_128_smoke_when_explicitly_enabled() -> None:
+    """Opt-in public Bandcamp metadata/source/acquisition/album smoke."""
+
+    track_url = os.getenv("BANDCAMP_TEST_TRACK_URL")
+    album_url = os.getenv("BANDCAMP_TEST_ALBUM_URL")
+    if not track_url or not album_url:
+        pytest.skip("Set BANDCAMP_TEST_TRACK_URL and BANDCAMP_TEST_ALBUM_URL for the smoke")
+    if shutil.which("ffprobe") is None:
+        pytest.skip("ffprobe is required for the Bandcamp smoke")
+    root = Path(tempfile.mkdtemp(prefix="musicbot-bandcamp-smoke-"))
+    client = OnTheSpotProcessClient(temp_dir=root)
+    provider = OnTheSpotProvider(client)
+    job_id = uuid.uuid4().hex
+    (root / job_id / "attempt-001" / "source").mkdir(parents=True)
+    try:
+        reference = provider.detect_url(track_url)
+        assert reference.provider is MusicProviderName.BANDCAMP
+        metadata = await provider.get_metadata(reference.source_url)
+        check = await provider.check_source(metadata.provider, metadata.provider_track_id)
+        assert check.status is ProviderRuntimeStatus.AVAILABLE
+        prepared = await provider.download_source(
+            metadata.provider, metadata.provider_track_id, job_id, 1, timeout_seconds=120
+        )
+        assert prepared.file_path is not None
+        probed = await MediaProbe(root).probe(
+            prepared.file_path,
+            provider=prepared.provider,
+            provider_track_id=prepared.provider_track_id,
+            native_encoded=prepared.native_encoded,
+            provider_decrypted=prepared.provider_decrypted,
+        )
+        assert probed.codec is NativeCodec.MP3
+        assert probed.container is NativeContainer.MP3
+        assert probed.bitrate_kbps is not None
+        assert abs(probed.bitrate_kbps - 128) <= 26
+
+        album = await provider.get_album(album_url)
+        assert album.provider is MusicProviderName.BANDCAMP
+        assert album.tracks
+        assert [track.position for track in album.tracks] == list(range(1, len(album.tracks) + 1))
+    finally:
+        await provider.close()

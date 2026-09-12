@@ -35,7 +35,7 @@ PROFILES = (
 )
 
 
-def test_six_enabled_search_providers_and_deferred_boundaries_are_unchanged() -> None:
+def test_bandcamp_is_enabled_without_reordering_existing_search_providers() -> None:
     assert DEFAULT_PROVIDER_INTEGRATIONS.enabled_search_providers() == (
         MusicProviderName.SPOTIFY,
         MusicProviderName.DEEZER,
@@ -43,14 +43,14 @@ def test_six_enabled_search_providers_and_deferred_boundaries_are_unchanged() ->
         MusicProviderName.YOUTUBE_MUSIC,
         MusicProviderName.QOBUZ,
         MusicProviderName.APPLE_MUSIC,
+        MusicProviderName.BANDCAMP,
     )
     assert (
         DEFAULT_PROVIDER_INTEGRATIONS.for_provider(MusicProviderName.BANDCAMP).search
-        is ProviderSearchIntegrationState.DEFERRED
+        is ProviderSearchIntegrationState.ENABLED
     )
-    assert (
-        DEFAULT_PROVIDER_INTEGRATIONS.for_provider(MusicProviderName.SOUNDCLOUD).search
-        is ProviderSearchIntegrationState.DEFERRED
+    assert DEFAULT_PROVIDER_INTEGRATIONS.for_provider(MusicProviderName.SOUNDCLOUD).search is (
+        ProviderSearchIntegrationState.DEFERRED
     )
 
 

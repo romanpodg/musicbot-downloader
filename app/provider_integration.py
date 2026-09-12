@@ -242,8 +242,12 @@ DEFAULT_PROVIDER_INTEGRATIONS = ProviderIntegrationRegistry(
         ),
         ProviderIntegrationSpec(
             MusicProviderName.BANDCAMP,
-            ProviderSearchIntegrationState.DEFERRED,
+            ProviderSearchIntegrationState.ENABLED,
             ProviderAccountIntegrationMode.NOT_REQUIRED,
+            # Append the public provider so the established provider order is
+            # unchanged. This is search presentation order only; Stage 25
+            # still ranks feasible sources by their verified quality plan.
+            search_order=6,
         ),
         ProviderIntegrationSpec(
             MusicProviderName.SOUNDCLOUD,

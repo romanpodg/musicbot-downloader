@@ -16,8 +16,10 @@ from app.providers.base import AlbumReference, PlaylistReference, TrackReference
 from app.providers.onthespot.provider import OnTheSpotProvider
 from app.providers.onthespot.worker import (
     MAX_ALBUM_TRACKS,
+    OnTheSpotWorker,
     WorkerError,
     _apple_music_song_ids_complete,
+    _bandcamp_search_text,
     _qobuz_album_track_ids_complete,
     _youtube_music_playlist_snapshot,
 )
@@ -135,6 +137,71 @@ def test_apple_and_qobuz_collection_urls_are_distinct_from_track_urls() -> None:
     assert isinstance(
         provider.detect_media("https://play.qobuz.com/playlist/list-1"), PlaylistReference
     )
+
+
+def _bandcamp_album_worker(track_ids: list[str], total_tracks: int | None) -> OnTheSpotWorker:
+    worker = OnTheSpotWorker()
+    worker._initialized = True
+    worker._accounts = SimpleNamespace(get_account_token=lambda _: None)
+    worker._registry = SimpleNamespace(
+        SERVICE_ALBUM_TRACK_ID_FUNCTIONS={"bandcamp": lambda _token, _album: track_ids}
+    )
+
+    def metadata(_provider: str, track_id: str) -> dict[str, object]:
+        result: dict[str, object] = {
+            "title": f"Title {track_id.rsplit('/', 1)[-1]}",
+            "artists": "Artist",
+            "album_name": "Complete album",
+            "album_artists": "Artist",
+            "track_number": 1,
+        }
+        if total_tracks is not None:
+            result["total_tracks"] = total_tracks
+        return result
+
+    worker._raw_track_metadata = metadata  # type: ignore[method-assign]
+    return worker
+
+
+def test_bandcamp_album_snapshot_keeps_jsonld_order_and_duplicate_occurrences() -> None:
+    urls = [
+        "https://artist.bandcamp.com/track/a?tracking=1",
+        "https://artist.bandcamp.com/track/b",
+        "https://artist.bandcamp.com/track/a",
+        "https://artist.bandcamp.com/track/c",
+    ]
+
+    snapshot = _bandcamp_album_worker(urls, 4).resolve_album_id(
+        "bandcamp", "https://artist.bandcamp.com/album/release"
+    )
+
+    assert [item["provider_track_id"] for item in snapshot["tracks"]] == [
+        "https://artist.bandcamp.com/track/a",
+        "https://artist.bandcamp.com/track/b",
+        "https://artist.bandcamp.com/track/a",
+        "https://artist.bandcamp.com/track/c",
+    ]
+    assert [item["position"] for item in snapshot["tracks"]] == [1, 2, 3, 4]
+
+
+@pytest.mark.parametrize(
+    ("track_ids", "total_tracks"),
+    [
+        (["https://artist.bandcamp.com/track/a"], 2),
+        (["https://invalid.example/track/a"], 1),
+    ],
+)
+def test_bandcamp_album_snapshot_fails_closed_when_incomplete_or_unrepresentable(
+    track_ids: list[str], total_tracks: int
+) -> None:
+    with pytest.raises(WorkerError, match="metadata_unavailable"):
+        _bandcamp_album_worker(track_ids, total_tracks).resolve_album_id(
+            "bandcamp", "https://artist.bandcamp.com/album/release"
+        )
+
+
+def test_bandcamp_search_display_text_never_leaks_html_fragments() -> None:
+    assert _bandcamp_search_text("  <b>Artist &amp; Title</b>  ") == "Artist & Title"
 
 
 def test_ytm_static_playlist_routing_preserves_track_routing_and_rejects_dynamic_forms() -> None:
@@ -332,7 +399,10 @@ class _Preferences:
         return UserDownloadPreferences(user_id)
 
 
-@pytest.mark.parametrize("provider", [MusicProviderName.APPLE_MUSIC, MusicProviderName.QOBUZ])
+@pytest.mark.parametrize(
+    "provider",
+    [MusicProviderName.APPLE_MUSIC, MusicProviderName.BANDCAMP, MusicProviderName.QOBUZ],
+)
 async def test_supported_provider_albums_enter_the_existing_batch_service(
     provider: MusicProviderName,
 ) -> None:

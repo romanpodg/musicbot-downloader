@@ -68,7 +68,11 @@ class TelegramMediaRequestService:
                 )
             )
         if isinstance(reference, AlbumReference):
-            if reference.provider in {MusicProviderName.APPLE_MUSIC, MusicProviderName.QOBUZ}:
+            if reference.provider in {
+                MusicProviderName.APPLE_MUSIC,
+                MusicProviderName.BANDCAMP,
+                MusicProviderName.QOBUZ,
+            }:
                 return MediaAdmission(
                     batch=await self._expand_collection(
                         user=user,

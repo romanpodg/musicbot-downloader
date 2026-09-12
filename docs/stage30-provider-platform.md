@@ -6,11 +6,11 @@ their respective stages; they do not override this document.
 
 ## Provider set and account model
 
-The enabled search order is **Spotify, Deezer, Tidal, YouTube Music, Qobuz,
-Apple Music**. The managed-account presentation order is **Tidal, Deezer,
-Spotify, Qobuz, Apple Music**. YouTube Music is the one public,
-application-unmanaged provider. Bandcamp and SoundCloud remain deferred; they
-are not enabled search providers.
+The enabled search order is **Spotify, Deezer, Tidal, YouTube Music, Qobuz, Apple Music,
+and Bandcamp**. The managed-account presentation order is **Tidal, Deezer,
+Spotify, Qobuz, Apple Music**. YouTube Music and Bandcamp are public,
+application-unmanaged providers. SoundCloud remains deferred; it is not an
+enabled search provider.
 
 | Provider | Search | Account model | Current native-media truth | Exact current profile behavior |
 | --- | --- | --- | --- | --- |
@@ -20,6 +20,7 @@ are not enabled search providers.
 | YouTube Music | enabled | public, no managed application account | AAC/M4A nominal 128 kbps | `AAC_128` direct only |
 | Qobuz | enabled | managed child-owned email/password session | genuine FLAC/lossless | `LOSSLESS` direct; safe transcodes to every current lossy profile |
 | Apple Music | enabled | managed child-owned media-user-token session | AAC/M4A nominal 256 kbps | `AAC_256` direct only |
+| Bandcamp | enabled | public bootstrap inside the isolated worker | public MP3/128 | `MP3_128` direct only |
 
 The application exposes five and only five profiles: `AAC_128`, `AAC_256`,
 `MP3_128`, `MP3_320`, and `LOSSLESS`. Lossless-to-lossy transcode is allowed;
@@ -93,6 +94,31 @@ Stage 23 snapshot creation; treating the first 500 entries as a complete
 playlist is forbidden. This stage does not add a provider-specific batch
 pipeline, new provider credentials, or collection-specific Stage 28 UX.
 
+## Stage 30.6.4 Bandcamp public MP3/128
+
+Bandcamp is enabled only through the existing provider registry, isolated
+OnTheSpot worker, provider-neutral search/canonical resolution, Stage 23
+collection admission, and Stage 25 execution path. It has no application-owned
+account lifecycle or credential persistence.
+
+The pinned `8ed6cf33ef772e6569d5014237e0fb4ce8b9e45d` runtime supplies public
+track search, canonical track and album URLs, a finite JSON-LD album track list,
+metadata, and a public `mp3-128` media field fetched through its HTTP download
+path. The worker exposes only the exact MP3/128 fact. `check_source()` requires
+both track metadata and a non-empty public `mp3-128` URL; page existence alone
+is `SOURCE_UNAVAILABLE` and follows normal Stage 25 fallback.
+
+Album occurrence order and duplicates are preserved from the JSON-LD list. Each
+member must normalize to a canonical Bandcamp track URL or discovery fails
+closed. Where the pinned per-track metadata exposes `numTracks`, it must equal
+the normalized occurrence count; otherwise the finite JSON-LD list itself is
+the authoritative completeness contract. A Bandcamp collection remains
+discovery provenance only: its admitted children are provider-neutral and can
+select another feasible Stage 25 source (for example Qobuz for `LOSSLESS`).
+
+Purchased/private releases, accounts, libraries, lossless formats, playlists,
+and SoundCloud remain outside this stage.
+
 ## Validation and release procedure
 
 Mandatory deterministic release gates are run from the repository root:
@@ -132,6 +158,7 @@ commit credential values.
 | Deezer | Same command with `deezer`; configure the existing child-owned ARL first | bounded catalog search and metadata |
 | Tidal | Same command with `tidal`; complete its existing device-link session first | bounded catalog search and metadata |
 | YouTube Music | `ONTHESPOT_YTM_TEST_TRACK_URL='https://music.youtube.com/watch?v=…' uv run pytest tests/integration/test_onthespot_external.py::test_youtube_music_native_aac128_smoke_when_explicitly_enabled -m external -ra` | public track metadata, source, bounded acquisition, AAC/M4A 128 probe |
+| Bandcamp | `BANDCAMP_TEST_TRACK_URL='https://artist.bandcamp.com/track/…' BANDCAMP_TEST_ALBUM_URL='https://artist.bandcamp.com/album/…' uv run pytest tests/integration/test_onthespot_external.py::test_bandcamp_public_mp3_128_smoke_when_explicitly_enabled -m external -ra` | public track metadata, MP3/128 source/acquisition probe, and album expansion |
 | Qobuz | `QOBUZ_EMAIL=… QOBUZ_PASSWORD=… QOBUZ_QUERY='artist title' uv run pytest tests/integration/test_stage303_qobuz_external.py -m external -ra` | existing child-boundary authorization, search, metadata, source check; not an acquisition benchmark |
 | Apple Music | `APPLE_MUSIC_MEDIA_USER_TOKEN=… APPLE_MUSIC_EXTERNAL_QUERY='artist title' uv run pytest tests/integration/test_stage3041_apple_music_external.py -m external -ra` | existing child-boundary authorization, search, source, bounded acquisition, AAC/M4A 256 probe, and decrypted provenance |
 
