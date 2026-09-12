@@ -54,7 +54,12 @@ class DownloadTrackUseCase:
     ) -> DownloadSubmission:
         if request.user_id != target.user_id:
             raise ValueError("download request and delivery target users differ")
-        canonical_track_id = await self._resolver.resolve_track_id(request.recognized_track)
+        if request.canonical_admission is not None:
+            canonical_track_id = request.canonical_admission.track_id
+        else:
+            if request.recognized_track is None:
+                raise ValueError("download request has no admission identity")
+            canonical_track_id = await self._resolver.resolve_track_id(request.recognized_track)
         if canonical_track_id <= 0:
             raise ValueError("recognized track resolver returned an invalid track ID")
         return await self._submissions.submit(

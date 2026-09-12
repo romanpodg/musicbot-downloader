@@ -9,6 +9,7 @@ import pytest
 from app.core.download_preferences import UserDownloadPreferences
 from app.core.enums import BatchItemStatus, BatchSourceType, BatchStatus, MusicProviderName
 from app.core.models import ResolvedCollection, ResolvedCollectionItem
+from app.core.provider_resolution import CanonicalMediaIdentity, CanonicalTrackAdmission
 from app.services.batch_download import BatchDownloadService
 from app.services.collection_status_presentation import CollectionStatusPresentationService
 from app.telegram import TelegramDeliveryReceipt, TelegramGatewayError
@@ -23,6 +24,14 @@ class _Resolver:
         self, source_type: BatchSourceType, source_reference: str
     ) -> ResolvedCollection:
         return self.collection
+
+
+class _ItemAdmissionResolver:
+    async def resolve(self, **_: object) -> CanonicalTrackAdmission:
+        return CanonicalTrackAdmission(
+            28,
+            CanonicalMediaIdentity.from_values(title="Stage 28", artist="Resolver"),
+        )
 
 
 class _Gateway:
@@ -214,7 +223,10 @@ async def test_restart_reconciliation_reuses_live_parent_message_without_spam(da
         return SimpleNamespace(request_id=None)
 
     restarted_batches = BatchDownloadService(
-        database, _Resolver(_collection("a", "b", "c")), child_admitter=resume_child
+        database,
+        _Resolver(_collection("a", "b", "c")),
+        child_admitter=resume_child,
+        item_admission_resolver=_ItemAdmissionResolver(),
     )
     restarted_presentation = _presentation(database, restarted_batches, gateway, now)
     restarted_batches.set_presentation_observer(restarted_presentation.refresh)

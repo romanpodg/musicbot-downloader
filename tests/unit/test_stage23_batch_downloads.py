@@ -10,6 +10,7 @@ from app.core.download import DownloadDeliveryTarget
 from app.core.download_preferences import UserDownloadPreferences
 from app.core.enums import BatchSourceType, BatchStatus, MusicProviderName
 from app.core.models import ResolvedCollection, ResolvedCollectionItem
+from app.core.provider_resolution import CanonicalMediaIdentity, CanonicalTrackAdmission
 from app.core.telegram_context import TelegramChatType, TelegramContext
 from app.providers.onthespot.provider import OnTheSpotProvider
 from app.services.batch_download import ActiveBatchLimitExceeded, BatchDownloadService
@@ -36,6 +37,14 @@ class _Resolver:
 
     async def resolve_collection(self, source_type: BatchSourceType, source_reference: str):
         return self.collection
+
+
+class _ItemAdmissionResolver:
+    async def resolve(self, **_: object) -> CanonicalTrackAdmission:
+        return CanonicalTrackAdmission(
+            23,
+            CanonicalMediaIdentity.from_values(title="Stage 23", artist="Resolver"),
+        )
 
 
 @pytest.mark.asyncio
@@ -124,7 +133,12 @@ async def test_child_admission_is_single_and_forces_private_user(database):
         calls.append(target)
         return type("Result", (), {"request_id": None})()
 
-    service = BatchDownloadService(database, _Resolver(_collection("a")), child_admitter=admit)
+    service = BatchDownloadService(
+        database,
+        _Resolver(_collection("a")),
+        child_admitter=admit,
+        item_admission_resolver=_ItemAdmissionResolver(),
+    )
     batch = await service.expand(
         user_id=user.id,
         confirmation_id="confirm-admit",

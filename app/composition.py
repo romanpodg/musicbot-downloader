@@ -56,6 +56,7 @@ from app.services.artifact_cleanup import (
 from app.services.artifacts import ActiveArtifactRegistry, DownloadArtifactManager
 from app.services.authorization import TelegramAuthorizationService
 from app.services.batch_download import BatchDownloadService
+from app.services.collection_item_admission import ResolveTrackCollectionItemAdmissionResolver
 from app.services.collection_status_presentation import CollectionStatusPresentationService
 from app.services.crash_recovery import CrashRecoveryService
 from app.services.deep_links import DeepLinkRegistryService
@@ -425,6 +426,7 @@ async def compose_stage9(
         database,
         provider,
         child_admitter=download_use_case.execute,
+        item_admission_resolver=ResolveTrackCollectionItemAdmissionResolver(track_resolution),
         child_canceller=lifecycle.cancel,
         max_items=settings.max_batch_items,
         max_active_batches_per_user=settings.max_active_batches_per_user,

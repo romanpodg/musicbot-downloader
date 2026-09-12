@@ -85,7 +85,21 @@ class DownloadLifecycleService:
             # normal USER resolver supplies PRIVATE_USER before this boundary.
             pass
         now = self.clock()
-        provider = request.recognized_track.provider
+        canonical_admission = request.canonical_admission
+        recognized_track = request.recognized_track
+        provider = recognized_track.provider if recognized_track is not None else None
+        if canonical_admission is not None:
+            media_title = canonical_admission.identity.title
+            media_artist = canonical_admission.identity.artist
+            media_album = canonical_admission.identity.album
+            provider_media_id = None
+        elif recognized_track is not None:
+            media_title = recognized_track.title
+            media_artist = ", ".join(artist.name for artist in recognized_track.artists)
+            media_album = recognized_track.album.title if recognized_track.album else None
+            provider_media_id = recognized_track.provider_track_id
+        else:
+            raise ValueError("download request has no admission identity")
         async with self.database.transaction() as repositories:
             user = await repositories.users.get_by_telegram_id(request.user_id)
             if user is None:
@@ -118,6 +132,8 @@ class DownloadLifecycleService:
                     self._capability_provider(provider)
                     if self._capability_provider is not None and provider is not None
                     else ONTHESPOT_CAPABILITIES.get(provider)
+                    if provider is not None
+                    else None
                 )
                 if capabilities is not None:
                     profile = self._profile_resolver.resolve(
@@ -129,12 +145,10 @@ class DownloadLifecycleService:
                 source_type=source_type.value,
                 source_reference=str(canonical_track_id),
                 provider=provider.value if provider is not None else None,
-                provider_media_id=request.recognized_track.provider_track_id,
-                media_title=request.recognized_track.title,
-                media_artist=", ".join(artist.name for artist in request.recognized_track.artists),
-                media_album=(
-                    request.recognized_track.album.title if request.recognized_track.album else None
-                ),
+                provider_media_id=provider_media_id,
+                media_title=media_title,
+                media_artist=media_artist,
+                media_album=media_album,
                 replay_of_request_id=request.replay_of_request_id,
                 delivery_target_type=target.delivery_target.target_type,
                 delivery_target_id=target.delivery_target.chat_id,

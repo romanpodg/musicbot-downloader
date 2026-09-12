@@ -18,13 +18,14 @@ from app.core.download import DownloadDeliveryTarget, DownloadOptions, DownloadR
 from app.core.download_preferences import EffectiveDownloadProfile, UserDownloadPreferences
 from app.core.enums import BatchItemStatus, BatchSourceType, BatchStatus
 from app.core.exceptions import (
+    DatabaseConcurrencyError,
     MetadataUnavailable,
     ProviderAuthenticationError,
     ProviderUnavailable,
 )
 from app.core.models import ResolvedCollection, ResolvedCollectionItem
-from app.core.search import Artist, Track
 from app.core.telegram_context import TelegramChatType, TelegramContext
+from app.services.collection_item_admission import CollectionItemAdmissionResolver
 from app.storage import Database
 from app.storage.models import BatchDownloadRequest
 from app.storage.models.base import utc_now
@@ -90,6 +91,7 @@ class BatchDownloadService:
         resolver: CollectionResolver,
         child_admitter: ChildAdmission | None = None,
         *,
+        item_admission_resolver: CollectionItemAdmissionResolver | None = None,
         child_canceller: Callable[[int], object] | None = None,
         max_items: int = 100,
         max_active_batches_per_user: int = 2,
@@ -100,6 +102,7 @@ class BatchDownloadService:
         self.database = database
         self.resolver = resolver
         self.child_admitter = child_admitter
+        self.item_admission_resolver = item_admission_resolver
         self.child_canceller = child_canceller
         self.max_items = max_items
         self.max_active_batches_per_user = max_active_batches_per_user
@@ -179,6 +182,8 @@ class BatchDownloadService:
     async def admit_pending(self, batch_id: int, *, target: DownloadDeliveryTarget) -> int:
         if self.child_admitter is None:
             raise RuntimeError("child admission port is not configured")
+        if self.item_admission_resolver is None:
+            raise RuntimeError("collection-item admission resolver is not configured")
         async with self.database.transaction() as repositories:
             batch = await repositories.batch_download.get(batch_id)
             if batch is None or batch.status in {
@@ -206,45 +211,35 @@ class BatchDownloadService:
             async with self.database.transaction() as repositories:
                 if not await repositories.batch_download.claim_pending_item(item.id, self.clock()):
                     continue
-            artist = Artist(item.artist or batch.creator or "Unknown")
-            track = Track(
-                id=f"batch-{batch.id}-{item.position}",
-                title=item.title or item.provider_media_id,
-                artists=(artist,),
-                provider=batch.provider,
-                provider_track_id=item.provider_media_id,
-                duration_ms=item.duration_ms,
-            )
-            frozen_profile = self._frozen_profile(batch)
-            request = DownloadRequest(
-                user_id=batch.requester_user_id,
-                recognized_track=track,
-                options=DownloadOptions(
-                    quality_profile=(
-                        frozen_profile.quality_profile if frozen_profile is not None else None
-                    )
-                ),
-                confirmation_id=f"{batch.confirmation_id}:{item.position}",
-                effective_profile=frozen_profile,
-            )
             try:
+                admission = await self.item_admission_resolver.resolve(
+                    collection_provider=batch.provider,
+                    provider_media_id=item.provider_media_id,
+                )
+                frozen_profile = self._frozen_profile(batch)
+                request = DownloadRequest(
+                    # DownloadRequest is a Telegram-facing admission intent;
+                    # the durable batch retains its separate database owner ID.
+                    user_id=owner_telegram_id,
+                    options=DownloadOptions(
+                        quality_profile=(
+                            frozen_profile.quality_profile if frozen_profile is not None else None
+                        )
+                    ),
+                    confirmation_id=f"{batch.confirmation_id}:{item.position}",
+                    effective_profile=frozen_profile,
+                    canonical_admission=admission,
+                )
                 result = await self.child_admitter(request, target=child_target)
             except Exception as exc:
-                if isinstance(exc, ProviderAuthenticationError):
-                    error_code = "PROVIDER_AUTH"
-                elif isinstance(exc, ProviderUnavailable):
-                    error_code = "PROVIDER_UNAVAILABLE"
-                elif isinstance(exc, MetadataUnavailable):
-                    error_code = "MEDIA_NOT_FOUND"
-                else:
-                    error_code = "INTERNAL"
+                error_code = self._admission_failure_code(exc)
                 async with self.database.transaction() as repositories:
                     await repositories.batch_download.set_item(
                         item.id,
                         status=BatchItemStatus.FAILED,
                         now=self.clock(),
                         error_code=error_code,
-                        error_message=str(exc)[:256],
+                        error_message=None,
                     )
                 continue
             async with self.database.transaction() as repositories:
@@ -267,6 +262,19 @@ class BatchDownloadService:
             # same fair Stage 21 queue instead of waiting behind one fan-out.
             await asyncio.sleep(0)
         return admitted
+
+    @staticmethod
+    def _admission_failure_code(exc: Exception) -> str:
+        """Map pre-admission failures to stable, retry-compatible public codes."""
+        if isinstance(exc, ProviderAuthenticationError):
+            return "PROVIDER_AUTH"
+        if isinstance(exc, ProviderUnavailable):
+            return "PROVIDER_UNAVAILABLE"
+        if isinstance(exc, MetadataUnavailable):
+            return "MEDIA_NOT_FOUND"
+        if isinstance(exc, DatabaseConcurrencyError):
+            return "PROVIDER_TEMPORARY"
+        return "INTERNAL"
 
     async def cancel(self, batch_id: int, *, user_id: int) -> bool:
         async with self.database.transaction() as repositories:

@@ -56,13 +56,22 @@ then applies the final Stage 29 clustering and ambiguity-aware decision.
 Equivalent provider permutations must not change the semantic recording result,
 although their representative source may differ.
 
-Admission identity and acquisition provenance intentionally differ. Stage 24
-`DownloadRequest`/`TelegramCacheKey` retain the admitted provider; successful
-`DownloadResult`, `ProviderAttempt`, `UploadJob`, and Stage 8
-`TelegramFileCache` retain the provider that actually acquired the media. Thus
-an Apple admission that safely falls back to Qobuz can correctly retain Apple
-as admission identity and Qobuz as `source_provider`. `MediaArtifactSpec` and
-SingleFlight remain provider-neutral technical identities.
+Admission identity and acquisition provenance intentionally differ. Direct
+admission can retain its source provider in Stage 24 `DownloadRequest` and
+`TelegramCacheKey`; successful `DownloadResult`, `ProviderAttempt`, `UploadJob`,
+and Stage 8 `TelegramFileCache` retain the provider that actually acquired the
+media. Thus an Apple direct admission that safely falls back to Qobuz can
+correctly retain Apple as admission identity and Qobuz as `source_provider`.
+
+Stage 30.6.1 makes collection membership more specific: `BatchDownloadRequest`
+and `BatchDownloadItem` retain the collection provider, collection ID, ordered
+provider item ID, and position as durable discovery provenance. Before a child
+is admitted, `CollectionItemAdmissionResolver` crosses the existing canonical
+resolution boundary and produces a provider-neutral canonical admission. The
+ordinary child request therefore has no collection-provider affinity; Stage 25
+performs global candidate discovery, quality planning, source checking, ranking,
+and execution. `MediaArtifactSpec` and SingleFlight remain provider-neutral
+technical identities.
 
 ## Validation and release procedure
 

@@ -86,6 +86,22 @@ class CanonicalMediaIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class CanonicalTrackAdmission:
+    """A resolved canonical recording used for provider-neutral admission.
+
+    This deliberately carries no source provider or provider media ID.  Those
+    remain discovery provenance, while Stage 25 owns later source selection.
+    """
+
+    track_id: int
+    identity: CanonicalMediaIdentity
+
+    def __post_init__(self) -> None:
+        if self.track_id <= 0:
+            raise ValueError("canonical track ID must be positive")
+
+
+@dataclass(frozen=True, slots=True)
 class MediaMatch:
     score: float
     method: MatchMethod
@@ -248,6 +264,7 @@ def match_candidates(
 __all__ = [
     "AUTO_MATCH_STRONG_SCORE",
     "CanonicalMediaIdentity",
+    "CanonicalTrackAdmission",
     "DURATION_TOLERANCE_MS",
     "MatchMethod",
     "MediaMatch",

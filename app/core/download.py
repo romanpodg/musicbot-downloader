@@ -8,6 +8,7 @@ from enum import StrEnum
 from app.core.delivery_targets import DeliveryTarget
 from app.core.download_preferences import EffectiveDownloadProfile
 from app.core.enums import QualityProfile
+from app.core.provider_resolution import CanonicalTrackAdmission
 from app.core.search import Track
 from app.core.telegram_context import TelegramContext
 
@@ -30,7 +31,7 @@ class DownloadRequest:
     """One user's confirmed intent to download a normalized Stage 17 catalog track."""
 
     user_id: int
-    recognized_track: Track
+    recognized_track: Track | None = None
     options: DownloadOptions = DownloadOptions()
     confirmation_id: str | None = None
     # Filled at admission time; workers use this immutable snapshot only.
@@ -38,12 +39,23 @@ class DownloadRequest:
     # Stage 24 provenance only.  It is populated by history replay, never by
     # an untrusted Telegram callback.
     replay_of_request_id: int | None = None
+    # Collection admission has already crossed the canonical resolver.  It
+    # intentionally supplies no provider affinity to the durable request.
+    canonical_admission: CanonicalTrackAdmission | None = None
 
     def __post_init__(self) -> None:
         if self.user_id <= 0:
             raise ValueError("download user ID must be positive")
-        if not isinstance(self.recognized_track, Track):
-            raise TypeError("download request requires a recognized search Track")
+        if self.recognized_track is None and self.canonical_admission is None:
+            raise TypeError("download request requires a recognized Track or canonical admission")
+        if self.recognized_track is not None and not isinstance(self.recognized_track, Track):
+            raise TypeError("download request recognized track must be a search Track")
+        if self.canonical_admission is not None and not isinstance(
+            self.canonical_admission, CanonicalTrackAdmission
+        ):
+            raise TypeError("download request canonical admission is invalid")
+        if self.recognized_track is not None and self.canonical_admission is not None:
+            raise ValueError("download request must not combine source and canonical admission")
         if not isinstance(self.options, DownloadOptions):
             raise TypeError("download request options must be DownloadOptions")
         if self.confirmation_id is not None and not self.confirmation_id:
