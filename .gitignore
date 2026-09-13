@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+README-project.md
 
 # Local provider/runtime state and credentials
 otsconfig.json
@@ -39,6 +40,7 @@ temp/*
 
 # Graphify is local-only for this single-device workflow
 graphify-out/
+.codex/
 
 # OS/editor noise
 .DS_Store

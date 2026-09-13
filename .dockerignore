@@ -36,6 +36,7 @@ temp/
 otsconfig.json
 .idea
 .vscode
+README-project.md
 
 # Keep release-validation inputs available only in the validation target.
 docs/
